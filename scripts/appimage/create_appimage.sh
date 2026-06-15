@@ -101,68 +101,68 @@ docker build --no-cache -t "$BUILD_IMAGE_NAME" -f Dockerfile.build .
 echo "Creating AppImage..."
 docker run --rm --privileged -v "$(pwd):/app" "$BUILD_IMAGE_NAME" bash -c '
 cd /app && \
-rm -rf VoidApp.AppDir && \
-mkdir -p VoidApp.AppDir/usr/bin VoidApp.AppDir/usr/lib VoidApp.AppDir/usr/share/applications && \
-find . -maxdepth 1 ! -name VoidApp.AppDir ! -name "." ! -name ".." -exec cp -r {} VoidApp.AppDir/usr/bin/ \; && \
-cp void.png VoidApp.AppDir/ && \
-echo "[Desktop Entry]" > VoidApp.AppDir/void.desktop && \
-echo "Name=Void" >> VoidApp.AppDir/void.desktop && \
-echo "Comment=Open source AI code editor." >> VoidApp.AppDir/void.desktop && \
-echo "GenericName=Text Editor" >> VoidApp.AppDir/void.desktop && \
-echo "Exec=void %F" >> VoidApp.AppDir/void.desktop && \
-echo "Icon=void" >> VoidApp.AppDir/void.desktop && \
-echo "Type=Application" >> VoidApp.AppDir/void.desktop && \
-echo "StartupNotify=false" >> VoidApp.AppDir/void.desktop && \
-echo "StartupWMClass=Void" >> VoidApp.AppDir/void.desktop && \
-echo "Categories=TextEditor;Development;IDE;" >> VoidApp.AppDir/void.desktop && \
-echo "MimeType=application/x-void-workspace;" >> VoidApp.AppDir/void.desktop && \
-echo "Keywords=void;" >> VoidApp.AppDir/void.desktop && \
-echo "Actions=new-empty-window;" >> VoidApp.AppDir/void.desktop && \
-echo "[Desktop Action new-empty-window]" >> VoidApp.AppDir/void.desktop && \
-echo "Name=New Empty Window" >> VoidApp.AppDir/void.desktop && \
-echo "Name[de]=Neues leeres Fenster" >> VoidApp.AppDir/void.desktop && \
-echo "Name[es]=Nueva ventana vacía" >> VoidApp.AppDir/void.desktop && \
-echo "Name[fr]=Nouvelle fenêtre vide" >> VoidApp.AppDir/void.desktop && \
-echo "Name[it]=Nuova finestra vuota" >> VoidApp.AppDir/void.desktop && \
-echo "Name[ja]=新しい空のウィンドウ" >> VoidApp.AppDir/void.desktop && \
-echo "Name[ko]=새 빈 창" >> VoidApp.AppDir/void.desktop && \
-echo "Name[ru]=Новое пустое окно" >> VoidApp.AppDir/void.desktop && \
-echo "Name[zh_CN]=新建空窗口" >> VoidApp.AppDir/void.desktop && \
-echo "Name[zh_TW]=開新空視窗" >> VoidApp.AppDir/void.desktop && \
-echo "Exec=void --new-window %F" >> VoidApp.AppDir/void.desktop && \
-echo "Icon=void" >> VoidApp.AppDir/void.desktop && \
-chmod +x VoidApp.AppDir/void.desktop && \
-cp VoidApp.AppDir/void.desktop VoidApp.AppDir/usr/share/applications/ && \
-echo "[Desktop Entry]" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "Name=Void - URL Handler" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "Comment=Open source AI code editor." > VoidApp.AppDir/void-url-handler.desktop && \
-echo "GenericName=Text Editor" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "Exec=void --open-url %U" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "Icon=void" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "Type=Application" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "NoDisplay=true" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "StartupNotify=true" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "Categories=Utility;TextEditor;Development;IDE;" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "MimeType=x-scheme-handler/void;" > VoidApp.AppDir/void-url-handler.desktop && \
-echo "Keywords=void;" > VoidApp.AppDir/void-url-handler.desktop && \
-chmod +x VoidApp.AppDir/void-url-handler.desktop && \
-cp VoidApp.AppDir/void-url-handler.desktop VoidApp.AppDir/usr/share/applications/ && \
-echo "#!/bin/bash" > VoidApp.AppDir/AppRun && \
-echo "HERE=\$(dirname \"\$(readlink -f \"\${0}\")\")" >> VoidApp.AppDir/AppRun && \
-echo "export PATH=\${HERE}/usr/bin:\${PATH}" >> VoidApp.AppDir/AppRun && \
-echo "export LD_LIBRARY_PATH=\${HERE}/usr/lib:\${LD_LIBRARY_PATH}" >> VoidApp.AppDir/AppRun && \
-echo "exec \${HERE}/usr/bin/void --no-sandbox \"\$@\"" >> VoidApp.AppDir/AppRun && \
-chmod +x VoidApp.AppDir/AppRun && \
-chmod -R 755 VoidApp.AppDir && \
+rm -rf TroveApp.AppDir && \
+mkdir -p TroveApp.AppDir/usr/bin TroveApp.AppDir/usr/lib TroveApp.AppDir/usr/share/applications && \
+find . -maxdepth 1 ! -name TroveApp.AppDir ! -name "." ! -name ".." -exec cp -r {} TroveApp.AppDir/usr/bin/ \; && \
+cp void.png TroveApp.AppDir/ && \
+echo "[Desktop Entry]" > TroveApp.AppDir/trove.desktop && \
+echo "Name=Void" >> TroveApp.AppDir/trove.desktop && \
+echo "Comment=Open source AI code editor." >> TroveApp.AppDir/trove.desktop && \
+echo "GenericName=Text Editor" >> TroveApp.AppDir/trove.desktop && \
+echo "Exec=trove %F" >> TroveApp.AppDir/trove.desktop && \
+echo "Icon=void" >> TroveApp.AppDir/trove.desktop && \
+echo "Type=Application" >> TroveApp.AppDir/trove.desktop && \
+echo "StartupNotify=false" >> TroveApp.AppDir/trove.desktop && \
+echo "StartupWMClass=Trove" >> TroveApp.AppDir/trove.desktop && \
+echo "Categories=TextEditor;Development;IDE;" >> TroveApp.AppDir/trove.desktop && \
+echo "MimeType=application/x-void-workspace;" >> TroveApp.AppDir/trove.desktop && \
+echo "Keywords=void;" >> TroveApp.AppDir/trove.desktop && \
+echo "Actions=new-empty-window;" >> TroveApp.AppDir/trove.desktop && \
+echo "[Desktop Action new-empty-window]" >> TroveApp.AppDir/trove.desktop && \
+echo "Name=New Empty Window" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[de]=Neues leeres Fenster" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[es]=Nueva ventana vacía" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[fr]=Nouvelle fenêtre vide" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[it]=Nuova finestra vuota" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[ja]=新しい空のウィンドウ" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[ko]=새 빈 창" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[ru]=Новое пустое окно" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[zh_CN]=新建空窗口" >> TroveApp.AppDir/trove.desktop && \
+echo "Name[zh_TW]=開新空視窗" >> TroveApp.AppDir/trove.desktop && \
+echo "Exec=trove --new-window %F" >> TroveApp.AppDir/trove.desktop && \
+echo "Icon=void" >> TroveApp.AppDir/trove.desktop && \
+chmod +x TroveApp.AppDir/trove.desktop && \
+cp TroveApp.AppDir/trove.desktop TroveApp.AppDir/usr/share/applications/ && \
+echo "[Desktop Entry]" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "Name=Trove - URL Handler" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "Comment=Open source AI code editor." > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "GenericName=Text Editor" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "Exec=trove --open-url %U" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "Icon=void" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "Type=Application" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "NoDisplay=true" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "StartupNotify=true" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "Categories=Utility;TextEditor;Development;IDE;" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "MimeType=x-scheme-handler/void;" > TroveApp.AppDir/trove-url-handler.desktop && \
+echo "Keywords=void;" > TroveApp.AppDir/trove-url-handler.desktop && \
+chmod +x TroveApp.AppDir/trove-url-handler.desktop && \
+cp TroveApp.AppDir/trove-url-handler.desktop TroveApp.AppDir/usr/share/applications/ && \
+echo "#!/bin/bash" > TroveApp.AppDir/AppRun && \
+echo "HERE=\$(dirname \"\$(readlink -f \"\${0}\")\")" >> TroveApp.AppDir/AppRun && \
+echo "export PATH=\${HERE}/usr/bin:\${PATH}" >> TroveApp.AppDir/AppRun && \
+echo "export LD_LIBRARY_PATH=\${HERE}/usr/lib:\${LD_LIBRARY_PATH}" >> TroveApp.AppDir/AppRun && \
+echo "exec \${HERE}/usr/bin/void --no-sandbox \"\$@\"" >> TroveApp.AppDir/AppRun && \
+chmod +x TroveApp.AppDir/AppRun && \
+chmod -R 755 TroveApp.AppDir && \
 
 # Strip unneeded symbols from the binary to reduce size
-strip --strip-unneeded VoidApp.AppDir/usr/bin/void
+strip --strip-unneeded TroveApp.AppDir/usr/bin/void
 
-ls -la VoidApp.AppDir/ && \
-ARCH=x86_64 ./appimagetool -n VoidApp.AppDir Void-x86_64.AppImage
+ls -la TroveApp.AppDir/ && \
+ARCH=x86_64 ./appimagetool -n TroveApp.AppDir Void-x86_64.AppImage
 '
 
 # Clean up
-rm -rf VoidApp.AppDir .dockerignore appimagetool
+rm -rf TroveApp.AppDir .dockerignore appimagetool
 
 echo "AppImage creation complete! Your AppImage is: Void-x86_64.AppImage"

@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { app, protocol, session, Session, systemPreferences, WebFrameMain } from 'electron';
+import { app, nativeImage, protocol, session, Session, systemPreferences, WebFrameMain } from 'electron';
 import { addUNCHostToAllowlist, disableUNCAccessRestrictions } from '../../base/node/unc.js';
 import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js';
 import { hostname, release } from 'os';
@@ -125,14 +125,16 @@ import ErrorTelemetry from '../../platform/telemetry/electron-main/errorTelemetr
 
 // in theory this is not allowed
 // ignore the eslint errors below
-import { IMetricsService } from '../../workbench/contrib/void/common/metricsService.js';
-import { IVoidUpdateService } from '../../workbench/contrib/void/common/voidUpdateService.js';
-import { MetricsMainService } from '../../workbench/contrib/void/electron-main/metricsMainService.js';
-import { VoidMainUpdateService } from '../../workbench/contrib/void/electron-main/voidUpdateMainService.js';
-import { LLMMessageChannel } from '../../workbench/contrib/void/electron-main/sendLLMMessageChannel.js';
-import { VoidSCMService } from '../../workbench/contrib/void/electron-main/voidSCMMainService.js';
-import { IVoidSCMService } from '../../workbench/contrib/void/common/voidSCMTypes.js';
-import { MCPChannel } from '../../workbench/contrib/void/electron-main/mcpChannel.js';
+import { IMetricsService } from '../../workbench/contrib/trove/common/metricsService.js';
+import { ITroveUpdateService } from '../../workbench/contrib/trove/common/troveUpdateService.js';
+import { MetricsMainService } from '../../workbench/contrib/trove/electron-main/metricsMainService.js';
+import { TroveMainUpdateService } from '../../workbench/contrib/trove/electron-main/troveUpdateMainService.js';
+import { LLMMessageChannel } from '../../workbench/contrib/trove/electron-main/sendLLMMessageChannel.js';
+import { TroveSCMService } from '../../workbench/contrib/trove/electron-main/troveSCMMainService.js';
+import { ITroveSCMService } from '../../workbench/contrib/trove/common/troveSCMTypes.js';
+import { MCPChannel } from '../../workbench/contrib/trove/electron-main/mcpChannel.js';
+import { IRepoIntelligenceMainService } from '../../workbench/contrib/trove/common/repoIntelligenceTypes.js';
+import { RepoIntelligenceMainService } from '../../workbench/contrib/trove/electron-main/repoIntelligence/repoIntelligenceService.impl.js';
 /**
  * The main VS Code application. There will only ever be one instance,
  * even if the user starts many instances (e.g. from the command line).
@@ -541,6 +543,19 @@ export class CodeApplication extends Disposable {
 		const win32AppUserModelId = this.productService.win32AppUserModelId;
 		if (isWindows && win32AppUserModelId) {
 			app.setAppUserModelId(win32AppUserModelId);
+		}
+
+		if (isMacintosh && app.dock) {
+			for (const iconPath of [
+				join(this.environmentMainService.appRoot, 'resources/darwin/code.icns'),
+				join(process.resourcesPath, `${this.productService.nameShort}.icns`),
+			]) {
+				const icon = nativeImage.createFromPath(iconPath);
+				if (!icon.isEmpty()) {
+					app.dock.setIcon(icon);
+					break;
+				}
+			}
 		}
 
 		// Fix native tabs on macOS 10.13
@@ -1101,10 +1116,11 @@ export class CodeApplication extends Disposable {
 			services.set(ITelemetryService, NullTelemetryService);
 		}
 
-		// Void main process services (required for services with a channel for comm between browser and electron-main (node))
+		// Trove main process services (required for services with a channel for comm between browser and electron-main (node))
 		services.set(IMetricsService, new SyncDescriptor(MetricsMainService, undefined, false));
-		services.set(IVoidUpdateService, new SyncDescriptor(VoidMainUpdateService, undefined, false));
-		services.set(IVoidSCMService, new SyncDescriptor(VoidSCMService, undefined, false));
+		services.set(ITroveUpdateService, new SyncDescriptor(TroveMainUpdateService, undefined, false));
+		services.set(ITroveSCMService, new SyncDescriptor(TroveSCMService, undefined, false));
+		services.set(IRepoIntelligenceMainService, new SyncDescriptor(RepoIntelligenceMainService, undefined, false));
 
 		// Default Extensions Profile Init
 		services.set(IExtensionsProfileScannerService, new SyncDescriptor(ExtensionsProfileScannerService, undefined, true));
@@ -1236,23 +1252,27 @@ export class CodeApplication extends Disposable {
 		mainProcessElectronServer.registerChannel('logger', loggerChannel);
 		sharedProcessClient.then(client => client.registerChannel('logger', loggerChannel));
 
-		// Void - use loggerChannel as reference
+		// Trove - use loggerChannel as reference
 		const metricsChannel = ProxyChannel.fromService(accessor.get(IMetricsService), disposables);
-		mainProcessElectronServer.registerChannel('void-channel-metrics', metricsChannel);
+		mainProcessElectronServer.registerChannel('trove-channel-metrics', metricsChannel);
 
-		const voidUpdatesChannel = ProxyChannel.fromService(accessor.get(IVoidUpdateService), disposables);
-		mainProcessElectronServer.registerChannel('void-channel-update', voidUpdatesChannel);
+		const troveUpdatesChannel = ProxyChannel.fromService(accessor.get(ITroveUpdateService), disposables);
+		mainProcessElectronServer.registerChannel('trove-channel-update', troveUpdatesChannel);
 
 		const sendLLMMessageChannel = new LLMMessageChannel(accessor.get(IMetricsService));
-		mainProcessElectronServer.registerChannel('void-channel-llmMessage', sendLLMMessageChannel);
+		mainProcessElectronServer.registerChannel('trove-channel-llmMessage', sendLLMMessageChannel);
 
-		// Void added this
-		const voidSCMChannel = ProxyChannel.fromService(accessor.get(IVoidSCMService), disposables);
-		mainProcessElectronServer.registerChannel('void-channel-scm', voidSCMChannel);
+		// Trove added this
+		const voidSCMChannel = ProxyChannel.fromService(accessor.get(ITroveSCMService), disposables);
+		mainProcessElectronServer.registerChannel('trove-channel-scm', voidSCMChannel);
 
-		// Void added this
+		// Trove added this
 		const mcpChannel = new MCPChannel();
-		mainProcessElectronServer.registerChannel('void-channel-mcp', mcpChannel);
+		mainProcessElectronServer.registerChannel('trove-channel-mcp', mcpChannel);
+
+		// Trove added this — repository intelligence
+		const repoIntelligenceChannel = ProxyChannel.fromService(accessor.get(IRepoIntelligenceMainService), disposables);
+		mainProcessElectronServer.registerChannel('trove-channel-repoIntelligence', repoIntelligenceChannel);
 
 		// Extension Host Debug Broadcasting
 		const electronExtensionHostDebugBroadcastChannel = new ElectronExtensionHostDebugBroadcastChannel(accessor.get(IWindowsMainService));

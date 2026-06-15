@@ -37,6 +37,27 @@ interface ParsedExtHostArgs {
 	useHostProxy?: 'true' | 'false'; // use a string, as undefined is also a valid value
 }
 
+// silence noisy warnings when in development
+if (process.env.VSCODE_DEV) {
+	const warningListeners = process.listeners('warning');
+	process.removeAllListeners('warning');
+	process.on('warning', (warning: Error & { code?: string; name?: string }) => {
+		if (warning.code === 'ExperimentalWarning' || warning.name === 'ExperimentalWarning' || warning.name === 'DeprecationWarning') {
+			console.debug(warning);
+			return;
+		}
+
+		// Electron utility-process extension hosts can legitimately attach many message listeners.
+		if (warning.name === 'MaxListenersExceededWarning' && warning.message?.includes('[Worker]')) {
+			return;
+		}
+
+		for (const listener of warningListeners) {
+			listener(warning);
+		}
+	});
+}
+
 // workaround for https://github.com/microsoft/vscode/issues/85490
 // remove --inspect-port=0 after start so that it doesn't trigger LSP debugging
 (function removeInspectPort() {

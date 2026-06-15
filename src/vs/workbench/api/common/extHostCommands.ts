@@ -76,7 +76,7 @@ export class ExtHostCommands implements ExtHostCommandsShape {
 				// converted to their internal command and don't need
 				// any indirection commands
 				const candidate = this._apiCommands.get(id);
-				return candidate?.result === ApiCommandResult.Void
+				return candidate?.result === ApiCommandResult.Trove
 					? candidate : undefined;
 			},
 			logService
@@ -483,7 +483,7 @@ export class ApiCommandArgument<V, O = V> {
 
 export class ApiCommandResult<V, O = V> {
 
-	static readonly Void = new ApiCommandResult<void, void>('no result', v => v);
+	static readonly Trove = new ApiCommandResult<void, void>('no result', v => v);
 
 	constructor(
 		readonly description: string,

@@ -230,7 +230,7 @@ export class WorkbenchLanguageService extends LanguageService {
 		@IEnvironmentService environmentService: IEnvironmentService,
 		@ILogService private readonly logService: ILogService
 	) {
-		super(environmentService.verbose || environmentService.isExtensionDevelopment || !environmentService.isBuilt);
+		super(environmentService.verbose);
 		this._configurationService = configurationService;
 		this._extensionService = extensionService;
 

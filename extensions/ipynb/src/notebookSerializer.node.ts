@@ -10,6 +10,7 @@ import { NotebookSerializerBase } from './notebookSerializer';
 export class NotebookSerializer extends NotebookSerializerBase {
 	private experimentalSave = vscode.workspace.getConfiguration('ipynb').get('experimental.serialization', false);
 	private worker?: import('node:worker_threads').Worker;
+	private workerPromise?: Promise<import('node:worker_threads').Worker>;
 	private tasks = new Map<string, DeferredPromise<Uint8Array>>();
 
 	constructor(context: vscode.ExtensionContext) {
@@ -27,6 +28,8 @@ export class NotebookSerializer extends NotebookSerializerBase {
 		} catch {
 			//
 		}
+		this.worker = undefined;
+		this.workerPromise = undefined;
 		super.dispose();
 	}
 
@@ -49,28 +52,37 @@ export class NotebookSerializer extends NotebookSerializerBase {
 		if (this.worker) {
 			return this.worker;
 		}
+		if (!this.workerPromise) {
+			this.workerPromise = this._createWorker();
+		}
+		return this.workerPromise;
+	}
+
+	private async _createWorker() {
 		const { Worker } = await import('node:worker_threads');
 		const outputDir = getOutputDir(this.context);
-		this.worker = new Worker(vscode.Uri.joinPath(this.context.extensionUri, outputDir, 'notebookSerializerWorker.js').fsPath, {});
-		this.worker.on('exit', (exitCode) => {
+		const worker = new Worker(vscode.Uri.joinPath(this.context.extensionUri, outputDir, 'notebookSerializerWorker.js').fsPath, {});
+		worker.on('exit', (exitCode) => {
 			if (!this.disposed) {
 				console.error(`IPynb Notebook Serializer Worker exited unexpectedly`, exitCode);
 			}
 			this.worker = undefined;
+			this.workerPromise = undefined;
 		});
-		this.worker.on('message', (result: { data: Uint8Array; id: string }) => {
+		worker.on('message', (result: { data: Uint8Array; id: string }) => {
 			const task = this.tasks.get(result.id);
 			if (task) {
 				task.complete(result.data);
 				this.tasks.delete(result.id);
 			}
 		});
-		this.worker.on('error', (err) => {
+		worker.on('error', (err) => {
 			if (!this.disposed) {
 				console.error(`IPynb Notebook Serializer Worker errored unexpectedly`, err);
 			}
 		});
-		return this.worker;
+		this.worker = worker;
+		return worker;
 	}
 	private async serializeViaWorker(data: vscode.NotebookData): Promise<Uint8Array> {
 		const worker = await this.startWorker();

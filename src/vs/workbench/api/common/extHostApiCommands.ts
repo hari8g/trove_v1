@@ -435,7 +435,7 @@ const newCommands: ApiCommand[] = [
 			).optional(),
 			ApiCommandArgument.String.with('label', '').optional()
 		],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	new ApiCommand(
 		'vscode.openWith', '_workbench.openWith', 'Opens the provided resource with a specific editor.',
@@ -447,7 +447,7 @@ const newCommands: ApiCommand[] = [
 				v => !v ? v : typeof v === 'number' ? [typeConverters.ViewColumn.from(v), undefined] : [typeConverters.ViewColumn.from(v.viewColumn), typeConverters.TextEditorOpenOptions.from(v)],
 			).optional()
 		],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	new ApiCommand(
 		'vscode.diff', '_workbench.diff', 'Opens the provided resources in the diff editor to compare their contents.',
@@ -460,7 +460,7 @@ const newCommands: ApiCommand[] = [
 				v => v && [typeConverters.ViewColumn.from(v.viewColumn), typeConverters.TextEditorOpenOptions.from(v)]
 			).optional(),
 		],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	new ApiCommand(
 		'vscode.changes', '_workbench.changes', 'Opens a list of resources in the changes editor to compare their contents.',
@@ -485,7 +485,7 @@ const newCommands: ApiCommand[] = [
 				},
 				v => v)
 		],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	// --- type hierarchy
 	new ApiCommand(
@@ -507,23 +507,23 @@ const newCommands: ApiCommand[] = [
 	new ApiCommand(
 		'vscode.revealTestInExplorer', '_revealTestInExplorer', 'Reveals a test instance in the explorer',
 		[ApiCommandArgument.TestItem],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	new ApiCommand(
 		'vscode.startContinuousTestRun', 'testing.startContinuousRunFromExtension', 'Starts running the given tests with continuous run mode.',
 		[ApiCommandArgument.TestProfile, ApiCommandArgument.Arr(ApiCommandArgument.TestItem)],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	new ApiCommand(
 		'vscode.stopContinuousTestRun', 'testing.stopContinuousRunFromExtension', 'Stops running the given tests with continuous run mode.',
 		[ApiCommandArgument.Arr(ApiCommandArgument.TestItem)],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	// --- continue edit session
 	new ApiCommand(
 		'vscode.experimental.editSession.continue', '_workbench.editSessions.actions.continueEditSession', 'Continue the current edit session in a different workspace',
 		[ApiCommandArgument.Uri.with('workspaceUri', 'The target workspace to continue the current edit session in')],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	// --- context keys
 	new ApiCommand(
@@ -532,7 +532,7 @@ const newCommands: ApiCommand[] = [
 			ApiCommandArgument.String.with('name', 'The context key name'),
 			new ApiCommandArgument('value', 'The context key value', () => true, v => v),
 		],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	),
 	// --- inline chat
 	new ApiCommand(
@@ -551,7 +551,7 @@ const newCommands: ApiCommand[] = [
 				position: v.position ? typeConverters.Position.from(v.position) : undefined,
 			};
 		})],
-		ApiCommandResult.Void
+		ApiCommandResult.Trove
 	)
 ];
 

@@ -37,6 +37,12 @@ export class RendererProfiling {
 			return;
 		}
 
+		// Skip automatic renderer profiling in dev builds unless explicitly enabled — attaching
+		// chat sandbox terminals triggers long tasks that spam the console with lock/profiler noise.
+		if (!_environmentService.isBuilt && !configService.getValue('application.experimental.rendererProfiling')) {
+			return;
+		}
+
 		timerService.perfBaseline.then(perfBaseline => {
 			(_environmentService.isBuilt ? _logService.info : _logService.trace).apply(_logService, [`[perf] Render performance baseline is ${perfBaseline}ms`]);
 

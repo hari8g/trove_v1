@@ -1,0 +1,236 @@
+/*--------------------------------------------------------------------------------------
+ *  Copyright 2025 Glass Devtools, Inc. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
+ *--------------------------------------------------------------------------------------*/
+
+.monaco-editor .trove-sweepIdxBG {
+	background-color: var(--vscode-trove-sweepIdxBG);
+}
+
+.trove-sweepBG {
+	background-color: var(--vscode-trove-sweepBG);
+}
+
+.trove-highlightBG {
+	background-color: var(--vscode-trove-highlightBG);
+}
+
+.trove-greenBG {
+	background-color: var(--vscode-trove-greenBG);
+}
+
+.trove-redBG {
+	background-color: var(--vscode-trove-redBG);
+}
+
+
+/* Renamed from trove-watermark-button to trove-openfolder-button */
+.trove-openfolder-button {
+    padding: 8px 20px;
+    background-color: #306dce;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    outline: none !important;
+	box-shadow: none !important;
+	cursor: pointer;
+	transition: background-color 0.2s ease;
+}
+.trove-openfolder-button:hover {
+    background-color: #2563eb;
+}
+.trove-openfolder-button:active {
+    background-color: #2563eb;
+}
+
+/* Added for Open SSH button with slightly darker color */
+.trove-openssh-button {
+    padding: 8px 20px;
+    background-color: #656565; /* Slightly darker than the #5a5a5a in the TS file */
+    color: white;
+    border: none;
+    border-radius: 4px;
+    outline: none !important;
+	box-shadow: none !important;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+.trove-openssh-button:hover {
+    background-color: #474747; /* Darker on hover */
+}
+.trove-openssh-button:active {
+    background-color: #474747;
+}
+
+
+.trove-settings-watermark-button {
+	margin: 8px 0;
+	padding: 8px 20px;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: none;
+	border-radius: 4px;
+	outline: none !important;
+	box-shadow: none !important;
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.trove-settings-watermark-button:hover {
+	filter: brightness(1.1);
+}
+
+.trove-settings-watermark-button:active {
+	filter: brightness(1.1);
+}
+
+.trove-link {
+	color: #3b82f6;
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.trove-link:hover {
+	opacity: 80%;
+}
+
+/* MPS logo — dark asset on light themes; inverted on dark themes for contrast */
+.trove-icon,
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .letterpress {
+	width: 100%;
+	max-width: 220px;
+	max-height: 100%;
+	aspect-ratio: 1 / 1;
+	background-image: url('../../../../browser/parts/editor/media/trove-logo-dark.png');
+	background-size: contain;
+	background-position: center;
+	background-repeat: no-repeat;
+}
+
+.monaco-workbench.vs-dark .trove-icon,
+.monaco-workbench.hc-black .trove-icon,
+.monaco-workbench.vs-dark .part.editor > .content .editor-group-container > .editor-group-watermark > .letterpress,
+.monaco-workbench.hc-black .part.editor > .content .editor-group-container > .editor-group-watermark > .letterpress {
+	filter: invert(1);
+}
+
+/* Small MPS logo marks (banner, welcome pages, release notes, walkthrough) */
+.monaco-workbench.vs-dark .part.banner .icon-container.custom-icon,
+.monaco-workbench.hc-black .part.banner .icon-container.custom-icon,
+.monaco-workbench.vs-dark .file-icons-enabled .show-file-icons .vscode_getting_started_page-name-file-icon.file-icon::before,
+.monaco-workbench.hc-black .file-icons-enabled .show-file-icons .vscode_getting_started_page-name-file-icon.file-icon::before,
+.monaco-workbench.vs-dark .file-icons-enabled .show-file-icons .webview-vs_code_release_notes-name-file-icon.file-icon::before,
+.monaco-workbench.hc-black .file-icons-enabled .show-file-icons .webview-vs_code_release_notes-name-file-icon.file-icon::before,
+.monaco-workbench.vs-dark .file-icons-enabled .show-file-icons .vs_code_editor_walkthrough\.md-name-file-icon.md-ext-file-icon.ext-file-icon.markdown-lang-file-icon.file-icon::before,
+.monaco-workbench.hc-black .file-icons-enabled .show-file-icons .vs_code_editor_walkthrough\.md-name-file-icon.md-ext-file-icon.ext-file-icon.markdown-lang-file-icon.file-icon::before {
+	filter: invert(1);
+}
+
+/* styles for all containers used by trove */
+.trove-scope {
+	--scrollbar-vertical-width: 8px;
+	--scrollbar-horizontal-height: 6px;
+}
+
+/* Target both trove-scope and all its descendants with scrollbars */
+.trove-scope,
+.trove-scope * {
+	scrollbar-width: thin !important;
+	scrollbar-color: var(--trove-bg-1) var(--trove-bg-3) !important;
+	/* For Firefox */
+}
+
+.trove-scope::-webkit-scrollbar,
+.trove-scope *::-webkit-scrollbar {
+	width: var(--scrollbar-vertical-width) !important;
+	height: var(--scrollbar-horizontal-height) !important;
+	background-color: var(--trove-bg-3) !important;
+}
+
+.trove-scope::-webkit-scrollbar-thumb,
+.trove-scope *::-webkit-scrollbar-thumb {
+	background-color: var(--trove-bg-1) !important;
+	border-radius: 4px !important;
+	border: none !important;
+	-webkit-box-shadow: none !important;
+	box-shadow: none !important;
+}
+
+.trove-scope::-webkit-scrollbar-thumb:hover,
+.trove-scope *::-webkit-scrollbar-thumb:hover {
+	background-color: var(--trove-bg-1) !important;
+	filter: brightness(1.1) !important;
+}
+
+.trove-scope::-webkit-scrollbar-thumb:active,
+.trove-scope *::-webkit-scrollbar-thumb:active {
+	background-color: var(--trove-bg-1) !important;
+	filter: brightness(1.2) !important;
+}
+
+.trove-scope::-webkit-scrollbar-track,
+.trove-scope *::-webkit-scrollbar-track {
+	background-color: var(--trove-bg-3) !important;
+	border: none !important;
+}
+
+.trove-scope::-webkit-scrollbar-corner,
+.trove-scope *::-webkit-scrollbar-corner {
+	background-color: var(--trove-bg-3) !important;
+}
+
+/* Add trove-scrollable-element styles to match */
+.trove-scrollable-element {
+	background-color: var(--vscode-editor-background);
+	--scrollbar-vertical-width: 14px;
+	--scrollbar-horizontal-height: 6px;
+	overflow: auto;
+	/* Ensure scrollbars are shown when needed */
+}
+
+.trove-scrollable-element,
+.trove-scrollable-element * {
+	scrollbar-width: thin !important;
+	/* For Firefox */
+	scrollbar-color: var(--trove-bg-1) var(--trove-bg-3) !important;
+	/* For Firefox */
+}
+
+.trove-scrollable-element::-webkit-scrollbar,
+.trove-scrollable-element *::-webkit-scrollbar {
+	width: var(--scrollbar-vertical-width) !important;
+	height: var(--scrollbar-horizontal-height) !important;
+	background-color: var(--trove-bg-3) !important;
+}
+
+.trove-scrollable-element::-webkit-scrollbar-thumb,
+.trove-scrollable-element *::-webkit-scrollbar-thumb {
+	background-color: var(--trove-bg-1) !important;
+	border-radius: 4px !important;
+	border: none !important;
+	-webkit-box-shadow: none !important;
+	box-shadow: none !important;
+}
+
+.trove-scrollable-element::-webkit-scrollbar-thumb:hover,
+.trove-scrollable-element *::-webkit-scrollbar-thumb:hover {
+	background-color: var(--trove-bg-1) !important;
+	filter: brightness(1.1) !important;
+}
+
+.trove-scrollable-element::-webkit-scrollbar-thumb:active,
+.trove-scrollable-element *::-webkit-scrollbar-thumb:active {
+	background-color: var(--trove-bg-1) !important;
+	filter: brightness(1.2) !important;
+}
+
+.trove-scrollable-element::-webkit-scrollbar-track,
+.trove-scrollable-element *::-webkit-scrollbar-track {
+	background-color: var(--trove-bg-3) !important;
+	border: none !important;
+}
+
+.trove-scrollable-element::-webkit-scrollbar-corner,
+.trove-scrollable-element *::-webkit-scrollbar-corner {
+	background-color: var(--trove-bg-3) !important;
+}

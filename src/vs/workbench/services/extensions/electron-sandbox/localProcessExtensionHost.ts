@@ -263,7 +263,7 @@ export class NativeLocalProcessExtensionHost implements IExtensionHost {
 			const inspectorUrlMatch = output.data && output.data.match(/ws:\/\/([^\s]+):(\d+)\/[^\s]+/);
 			if (inspectorUrlMatch) {
 				const [, host, port] = inspectorUrlMatch;
-				if (!this._environmentService.isBuilt && !this._isExtensionDevTestFromCli) {
+				if (!this._environmentService.isBuilt && !this._isExtensionDevTestFromCli && this._environmentService.verbose) {
 					console.log(`%c[Extension Host] %cdebugger inspector at devtools://devtools/bundled/inspector.html?experiments=true&v8only=true&ws=${inspectorUrlMatch[1]}`, 'color: blue', 'color:');
 				}
 				if (!this._inspectListener) {

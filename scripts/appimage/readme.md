@@ -11,9 +11,9 @@ stable-linux.yml in the separate `void-builder/` repo,
 which runs a GitHub Action that builds the AppImage you see on our website.
 
 
-# Void AppImage Creation Script
+# Trove AppImage Creation Script
 
-This script automates the process of creating an AppImage for the  Void Editor using Docker. It works on macOS and Linux platforms.
+This script automates the process of creating an AppImage for the  Trove Editor using Docker. It works on macOS and Linux platforms.
 ## Requirements
 
 *   **Docker:** The script relies on Docker to build the AppImage inside a container.
@@ -87,7 +87,7 @@ These dependencies are installed within the Docker container (Ubuntu 20.04 base)
     Copy the following files to the directory where the app binary is being bundled (created during the build process):
 
     *   `create_appimage.sh`
-    *   `void.desktop`
+    *   `trove.desktop`
     *   `void.png`
 
 4.  **Run the Script:**
@@ -109,9 +109,9 @@ These dependencies are installed within the Docker container (Ubuntu 20.04 base)
 *   **Dockerfile Creation:** Creates a temporary `Dockerfile.build` for the Ubuntu-based environment.
 *   **Docker Image Build:** Builds a Docker image and runs the build process.
 *   **AppImage Creation:**
-    *   Creates the `VoidApp.AppDir` structure.
+    *   Creates the `TroveApp.AppDir` structure.
     *   Copies binaries, resources, and the `.desktop` entry.
-    *   Copies `void.desktop` and `void.png`.
+    *   Copies `trove.desktop` and `void.png`.
     *   Strips unnecessary symbols from the binary.
     *   Runs `appimagetool` to generate the AppImage.
 *   **Cleanup:** Removes the temporary `Dockerfile.build`.

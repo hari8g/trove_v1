@@ -1,0 +1,324 @@
+/*--------------------------------------------------------------------------------------
+ *  Copyright 2025 Glass Devtools, Inc. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
+ *--------------------------------------------------------------------------------------*/
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+& {
+	--trove-bg-1: var(--vscode-input-background);
+	--trove-bg-1-alt: var(--vscode-badge-background);
+	--trove-bg-2: var(--vscode-sideBar-background);
+	--trove-bg-2-alt: color-mix(in srgb, var(--vscode-editor-background) 30%, var(--vscode-sideBar-background) 70%);
+	--trove-bg-2-hover: color-mix(in srgb, var(--vscode-editor-foreground) 2%, var(--vscode-sideBar-background) 98%);
+	--trove-bg-3: var(--vscode-editor-background);
+
+	--trove-fg-0: color-mix(in srgb, var(--vscode-tab-activeForeground) 90%, black 10%);
+	--trove-fg-1: var(--vscode-editor-foreground);
+	--trove-fg-2: var(--vscode-input-foreground);
+	--trove-fg-3: var(--vscode-input-placeholderForeground);
+	/* --trove-fg-4: var(--vscode-tab-inactiveForeground); */
+	--trove-fg-4: var(--vscode-list-deemphasizedForeground);
+
+	--trove-warning: var(--vscode-charts-yellow);
+
+	--trove-border-1: var(--vscode-commandCenter-activeBorder);
+	--trove-border-2: var(--vscode-commandCenter-border);
+	--trove-border-3: var(--vscode-commandCenter-inactiveBorder);
+	--trove-border-4: var(--vscode-editorGroup-border);
+
+	--trove-ring-color: #007FD4;
+	--trove-link-color: #007FD4;
+}
+
+.select-child-restyle select {
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	padding-right: 24px;
+}
+
+.trove-force-child-placeholder-trove-fg-1 ::placeholder {
+	color: var(--trove-fg-3);
+}
+
+* {
+	outline: none !important;
+}
+
+
+
+.inherit-bg-all-restyle > * {
+	background-color: inherit !important;
+}
+
+
+.bg-editor-style-override {
+	--vscode-sideBar-background: var(--vscode-editor-background);
+}
+
+
+
+/* html {
+	font-size: var(--vscode-font-size);
+}
+
+.btn {
+	@apply cursor-pointer transition-colors;
+
+	&.btn-primary {
+		@apply bg-vscode-button-bg text-vscode-button-fg;
+
+		&:not(:disabled) {
+			@apply hover:bg-vscode-button-hoverBg;
+		}
+	}
+
+	&.btn-sm {
+		@apply px-3 py-1 text-sm;
+	}
+
+	&.btn-secondary {
+		@apply bg-vscode-button-secondary-bg text-vscode-button-secondary-fg;
+
+		&:not(:disabled) {
+			@apply hover:bg-vscode-button-secondary-hoverBg;
+		}
+	}
+
+	&:disabled {
+		@apply opacity-75 cursor-not-allowed;
+	}
+}
+
+.input {
+	@apply bg-vscode-input-bg text-vscode-input-fg border-vscode-input-border focus:outline-vscode-focus-border;
+}
+
+.dropdown {
+	@apply bg-vscode-dropdown-bg text-vscode-dropdown-foreground border-vscode-dropdown-border focus:outline-vscode-focus-border;
+} */
+
+/* Chat sandbox terminal — preserve xterm ANSI colors (don't inherit trove text color) */
+.trove-chat-terminal {
+	background-color: var(--vscode-terminal-background, var(--vscode-editor-background));
+	color: unset;
+}
+.trove-chat-terminal .xterm,
+.trove-chat-terminal .xterm-viewport,
+.trove-chat-terminal .xterm-screen {
+	background-color: transparent !important;
+}
+
+/* Colored terminal output in chat (ANSI + heuristics) */
+.trove-ansi-terminal {
+	color: var(--vscode-terminal-foreground, var(--vscode-editor-foreground));
+	background: var(--vscode-terminal-background, var(--vscode-editor-background));
+	padding: 8px;
+	border-radius: 4px;
+}
+.trove-ansi-fg-black { color: var(--vscode-terminal-ansiBlack); }
+.trove-ansi-fg-red { color: var(--vscode-terminal-ansiRed); }
+.trove-ansi-fg-green { color: var(--vscode-terminal-ansiGreen); }
+.trove-ansi-fg-yellow { color: var(--vscode-terminal-ansiYellow); }
+.trove-ansi-fg-blue { color: var(--vscode-terminal-ansiBlue); }
+.trove-ansi-fg-magenta { color: var(--vscode-terminal-ansiMagenta); }
+.trove-ansi-fg-cyan { color: var(--vscode-terminal-ansiCyan); }
+.trove-ansi-fg-white { color: var(--vscode-terminal-ansiWhite); }
+.trove-ansi-fg-bright-black { color: var(--vscode-terminal-ansiBrightBlack); }
+.trove-ansi-fg-bright-red { color: var(--vscode-terminal-ansiBrightRed); }
+.trove-ansi-fg-bright-green { color: var(--vscode-terminal-ansiBrightGreen); }
+.trove-ansi-fg-bright-yellow { color: var(--vscode-terminal-ansiBrightYellow); }
+.trove-ansi-fg-bright-blue { color: var(--vscode-terminal-ansiBrightBlue); }
+.trove-ansi-fg-bright-magenta { color: var(--vscode-terminal-ansiBrightMagenta); }
+.trove-ansi-fg-bright-cyan { color: var(--vscode-terminal-ansiBrightCyan); }
+.trove-ansi-fg-bright-white { color: var(--vscode-terminal-ansiBrightWhite); }
+.trove-ansi-bg-black { background-color: var(--vscode-terminal-ansiBlack); }
+.trove-ansi-bg-red { background-color: var(--vscode-terminal-ansiRed); }
+.trove-ansi-bg-green { background-color: var(--vscode-terminal-ansiGreen); }
+.trove-ansi-bg-yellow { background-color: var(--vscode-terminal-ansiYellow); }
+.trove-ansi-bg-blue { background-color: var(--vscode-terminal-ansiBlue); }
+.trove-ansi-bg-magenta { background-color: var(--vscode-terminal-ansiMagenta); }
+.trove-ansi-bg-cyan { background-color: var(--vscode-terminal-ansiCyan); }
+.trove-ansi-bg-white { background-color: var(--vscode-terminal-ansiWhite); }
+.trove-ansi-bold { font-weight: bold; }
+.trove-ansi-dim { opacity: 0.7; }
+.trove-ansi-italic { font-style: italic; }
+.trove-ansi-underline { text-decoration: underline; }
+.trove-ansi-cmd { color: var(--vscode-terminal-ansiCyan); font-weight: 600; }
+.trove-ansi-success { color: var(--vscode-terminal-ansiGreen); }
+.trove-ansi-error { color: var(--vscode-terminal-ansiRed); }
+.trove-ansi-warn { color: var(--vscode-terminal-ansiYellow); }
+.trove-ansi-info { color: var(--vscode-terminal-ansiBlue); }
+
+/* Agent delivery summary card */
+.trove-delivery-summary {
+	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 35%, var(--trove-border-3));
+	border-radius: 10px;
+	background: linear-gradient(
+		145deg,
+		color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-focusBorder) 12%) 0%,
+		var(--trove-bg-2) 100%
+	);
+	box-shadow: 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+	overflow: hidden;
+}
+.trove-delivery-summary-header {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 14px 14px 10px;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+}
+.trove-delivery-summary-title {
+	font-size: 14px;
+	font-weight: 650;
+	color: var(--trove-fg-1);
+	line-height: 1.3;
+}
+.trove-delivery-summary-subtitle {
+	font-size: 12px;
+	color: var(--trove-fg-4);
+	margin-top: 3px;
+	line-height: 1.45;
+}
+.trove-delivery-summary-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+.trove-delivery-section {
+	padding: 10px 14px;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+}
+.trove-delivery-section:first-child {
+	border-top: none;
+}
+.trove-delivery-section-title {
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--trove-fg-4);
+	margin-bottom: 6px;
+}
+.trove-delivery-section-body {
+	font-size: 12px;
+	color: var(--trove-fg-2);
+}
+.trove-delivery-command {
+	display: inline-block;
+	font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+	font-size: 11px;
+	padding: 4px 8px;
+	border-radius: 6px;
+	background: var(--trove-bg-1);
+	border: 1px solid var(--trove-border-3);
+	color: var(--trove-fg-1);
+}
+.trove-delivery-hint {
+	font-size: 11px;
+	color: var(--trove-fg-4);
+	line-height: 1.45;
+}
+.trove-delivery-link {
+	font-size: 12px;
+	color: var(--trove-link-color);
+	text-decoration: none;
+	max-width: 100%;
+}
+.trove-delivery-link:hover {
+	text-decoration: underline;
+}
+.trove-delivery-action {
+	font-size: 11px;
+	font-weight: 600;
+	padding: 4px 10px;
+	border-radius: 6px;
+	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 50%, var(--trove-border-3));
+	background: color-mix(in srgb, var(--vscode-button-background) 85%, transparent);
+	color: var(--vscode-button-foreground);
+	cursor: pointer;
+}
+.trove-delivery-action:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+/* Compact terminal success in chat */
+.trove-terminal-success-card {
+	border: 1px solid var(--trove-border-3);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed) 6%, var(--trove-bg-2));
+	overflow: hidden;
+}
+.trove-terminal-success-card-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+}
+.trove-terminal-success-toggle {
+	font-size: 11px;
+	color: var(--trove-link-color);
+	background: none;
+	border: none;
+	cursor: pointer;
+	padding: 2px 4px;
+	white-space: nowrap;
+}
+.trove-terminal-success-toggle:hover {
+	text-decoration: underline;
+}
+.trove-terminal-success-card-body {
+	border-top: 1px solid var(--trove-border-3);
+	padding: 8px;
+	max-height: 220px;
+	overflow: auto;
+	font-size: 12px;
+}
+
+/* Polished assistant summary prose */
+.trove-assistant-summary-prose {
+	padding: 10px 12px;
+	border-radius: 10px;
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+	background: color-mix(in srgb, var(--trove-bg-2) 92%, var(--vscode-editor-background) 8%);
+}
+.trove-assistant-summary-prose h1,
+.trove-assistant-summary-prose h2,
+.trove-assistant-summary-prose h3 {
+	color: var(--trove-fg-1);
+	margin-top: 0.85em;
+	margin-bottom: 0.35em;
+	padding-bottom: 0.25em;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+}
+.trove-assistant-summary-prose h1:first-child,
+.trove-assistant-summary-prose h2:first-child,
+.trove-assistant-summary-prose h3:first-child {
+	margin-top: 0;
+}
+.trove-assistant-summary-prose pre {
+	border-radius: 8px;
+	border: 1px solid var(--trove-border-3);
+	background: var(--trove-bg-1) !important;
+}
+.trove-assistant-summary-prose code {
+	background: color-mix(in srgb, var(--trove-bg-1) 80%, transparent);
+	padding: 0.1em 0.35em;
+	border-radius: 4px;
+}
+.trove-assistant-summary-prose ul,
+.trove-assistant-summary-prose ol {
+	padding-left: 1.25rem;
+}
+.trove-assistant-summary-prose li::marker {
+	color: var(--trove-fg-4);
+}
+.trove-assistant-summary-prose hr {
+	border-color: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+.trove-assistant-summary-prose a {
+	color: var(--trove-link-color);
+}

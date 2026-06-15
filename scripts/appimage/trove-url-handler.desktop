@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Trove - URL Handler
+Comment=Open source AI code editor.
+GenericName=Text Editor
+Exec=trove --open-url %U
+Icon=void
+Type=Application
+NoDisplay=true
+StartupNotify=true
+Categories=Utility;TextEditor;Development;IDE;
+MimeType=x-scheme-handler/void;
+Keywords=void;

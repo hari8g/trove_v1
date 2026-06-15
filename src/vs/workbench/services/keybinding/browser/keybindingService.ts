@@ -254,10 +254,15 @@ export class WorkbenchKeybindingService extends AbstractKeybindingService {
 				return;
 			}
 
-			if (browser.isFullscreen(mainWindow)) {
-				keyboard?.lock(['Escape']);
-			} else {
-				keyboard?.unlock();
+			try {
+				if (browser.isFullscreen(mainWindow)) {
+					keyboard?.lock(['Escape']);
+				} else {
+					keyboard?.unlock();
+				}
+			} catch (err) {
+				// Keyboard Lock API throws InvalidStateError in Electron/dev when not in a valid lock context
+				this._logService.trace('[KeybindingService] Keyboard lock/unlock failed (ignored)', err);
 			}
 
 			// update resolver which will bring back all unbound keyboard shortcuts

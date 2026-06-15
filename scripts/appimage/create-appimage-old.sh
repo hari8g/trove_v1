@@ -56,11 +56,11 @@ echo "Creating desktop file..."
 if ! cat > "$APP_DIR/$APP_NAME.desktop" <<EOF
 [Desktop Entry]
 Name=$APP_NAME
-Exec=void
+Exec=trove
 Icon=void
 Type=Application
 Categories=Utility;
-Comment=Void Linux Application
+Comment=Trove Linux Application
 EOF
 then
     echo "Error creating desktop file"
