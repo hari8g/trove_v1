@@ -152,6 +152,113 @@
 .trove-ansi-warn { color: var(--vscode-terminal-ansiYellow); }
 .trove-ansi-info { color: var(--vscode-terminal-ansiBlue); }
 
+/* Cursor-style context pills — inline in composer and user messages */
+.trove-context-pills {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+}
+
+/* Pills + textarea share one field (Cursor-style composer) */
+.trove-composer-inline-field {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	align-content: flex-start;
+	gap: 4px 6px;
+	width: 100%;
+	min-height: 72px;
+	padding: 0;
+	line-height: 1.45;
+	cursor: text;
+}
+
+.trove-composer-inline-textarea {
+	display: inline-block;
+	vertical-align: middle;
+	background: transparent !important;
+}
+
+.trove-context-pill--inline {
+	flex-shrink: 0;
+	margin: 1px 0;
+}
+
+.trove-context-pill {
+	display: inline-flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+	align-items: center;
+	gap: 4px;
+	height: 22px;
+	max-width: min(220px, 100%);
+	padding: 0 4px 0 5px;
+	border-radius: 5px;
+	font-size: 12px;
+	line-height: 1;
+	white-space: nowrap;
+	cursor: pointer;
+	border: none;
+	background: color-mix(in srgb, var(--vscode-badge-background, #2d2d30) 55%, var(--trove-bg-3));
+	color: color-mix(in srgb, var(--vscode-textLink-foreground, #3794ff) 88%, var(--trove-fg-1));
+	transition: background 0.12s ease;
+}
+
+.trove-context-pill:hover {
+	background: color-mix(in srgb, var(--vscode-badge-background, #2d2d30) 70%, var(--trove-bg-3));
+}
+
+.trove-context-pill--folder {
+	color: color-mix(in srgb, var(--vscode-symbolIcon-folderForeground, #dcb67a) 90%, var(--trove-fg-1));
+}
+
+.trove-context-pill--code {
+	color: var(--trove-fg-2);
+}
+
+.trove-context-pill--prospective {
+	opacity: 0.55;
+	border: 1px dashed color-mix(in srgb, var(--trove-fg-3) 40%, transparent);
+	background: transparent;
+}
+
+.trove-context-pill__icon {
+	flex-shrink: 0;
+	opacity: 0.85;
+}
+
+.trove-context-pill__name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+.trove-context-pill__remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: 16px;
+	height: 16px;
+	margin-left: 1px;
+	border-radius: 3px;
+	opacity: 0;
+	color: var(--trove-fg-3);
+	transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.trove-context-pill:hover .trove-context-pill__remove {
+	opacity: 0.7;
+}
+
+.trove-context-pill__remove:hover {
+	opacity: 1 !important;
+	background: color-mix(in srgb, var(--trove-fg-3) 18%, transparent);
+}
+
 /* Agent delivery summary card */
 .trove-delivery-summary {
 	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 35%, var(--trove-border-3));

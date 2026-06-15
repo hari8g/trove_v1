@@ -14,11 +14,9 @@ import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { ChatMode, FeatureName, ModelSelection, ProviderName } from '../common/troveSettingsTypes.js';
 import { IDirectoryStrService } from '../common/directoryStrService.js';
 import { ITerminalToolService } from './terminalToolService.js';
-import { ITroveModelService } from '../common/troveModelService.js';
-import { URI } from '../../../../base/common/uri.js';
-import { EndOfLinePreference } from '../../../../editor/common/model.js';
 import { ToolName } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
+import { IContextGatheringService } from './contextGatheringService.js';
 
 export const EMPTY_MESSAGE = '(empty message)'
 
@@ -272,7 +270,7 @@ const prepareOpenAIOrAnthropicMessages = ({
 	// A COMPLETE HACK: last message is system message for context purposes
 
 	const sysMsgParts: string[] = []
-	if (aiInstructions) sysMsgParts.push(`GUIDELINES (from the user's .troverules file):\n${aiInstructions}`)
+	if (aiInstructions) sysMsgParts.push(`GUIDELINES (from the user's global AI instructions setting):\n${aiInstructions}`)
 	if (systemMessage) sysMsgParts.push(systemMessage)
 	const combinedSystemMessage = sysMsgParts.join('\n\n')
 
@@ -540,40 +538,16 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		@IDirectoryStrService private readonly directoryStrService: IDirectoryStrService,
 		@ITerminalToolService private readonly terminalToolService: ITerminalToolService,
 		@ITroveSettingsService private readonly troveSettingsService: ITroveSettingsService,
-		@ITroveModelService private readonly troveModelService: ITroveModelService,
 		@IMCPService private readonly mcpService: IMCPService,
 		@IRepoIntelligenceService private readonly _repoIntelligenceService: IRepoIntelligenceService,
+		@IContextGatheringService private readonly _contextGatheringService: IContextGatheringService,
 	) {
 		super()
 	}
 
-	// Read .troverules files from workspace folders
-	private _getTroveRulesFileContents(): string {
-		try {
-			const workspaceFolders = this.workspaceContextService.getWorkspace().folders;
-			let troveRules = '';
-			for (const folder of workspaceFolders) {
-				const uri = URI.joinPath(folder.uri, '.troverules')
-				const { model } = this.troveModelService.getModel(uri)
-				if (!model) continue
-				troveRules += model.getValue(EndOfLinePreference.LF) + '\n\n';
-			}
-			return troveRules.trim();
-		}
-		catch (e) {
-			return ''
-		}
-	}
-
-	// Get combined AI instructions from settings and .troverules files
-	private _getCombinedAIInstructions(): string {
-		const globalAIInstructions = this.troveSettingsService.state.globalSettings.aiInstructions;
-		const troveRulesFileContent = this._getTroveRulesFileContents();
-
-		const ans: string[] = []
-		if (globalAIInstructions) ans.push(globalAIInstructions)
-		if (troveRulesFileContent) ans.push(troveRulesFileContent)
-		return ans.join('\n\n')
+	// Global AI instructions from Trove settings (not .troverules — those are injected via chat_systemMessage)
+	private _getGlobalAIInstructions(): string {
+		return this.troveSettingsService.state.globalSettings.aiInstructions?.trim() ?? '';
 	}
 
 
@@ -599,7 +573,8 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		if (!repoProfile && workspaceFolders[0]) {
 			repoProfile = await this._repoIntelligenceService.getProfile(workspaceFolders[0])
 		}
-		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile })
+		const workspaceRules = this._repoIntelligenceService.getWorkspaceRules()
+		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules })
 		return systemMessage
 	}
 
@@ -640,6 +615,23 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		return simpleLLMMessages
 	}
 
+	private _prependRecentlyViewedCodeToLatestUserMessage(messages: SimpleLLMMessage[]): void {
+		const snippets = this._contextGatheringService.getCachedSnippets()
+		if (!snippets.length) return
+
+		const snippetBlock = `\n\n<recently_viewed_code>\n${snippets.slice(0, 4).join('\n---\n')}\n</recently_viewed_code>`
+		let latestUserIdx = -1
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i].role === 'user') {
+				latestUserIdx = i
+				break
+			}
+		}
+		if (latestUserIdx !== -1) {
+			messages[latestUserIdx].content = snippetBlock + messages[latestUserIdx].content
+		}
+	}
+
 	prepareLLMSimpleMessages: IConvertToLLMMessageService['prepareLLMSimpleMessages'] = ({ simpleMessages, systemMessage, modelSelection, featureName }) => {
 		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined }
 
@@ -655,7 +647,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const modelSelectionOptions = this.troveSettingsService.state.optionsOfModelSelection[featureName][modelSelection.providerName]?.[modelSelection.modelName]
 
 		// Get combined AI instructions
-		const aiInstructions = this._getCombinedAIInstructions();
+		const aiInstructions = this._getGlobalAIInstructions();
 
 		const isReasoningEnabled = getIsReasoningEnabledState(featureName, providerName, modelName, modelSelectionOptions, overridesOfModel)
 		const reservedOutputTokenSpace = getReservedOutputTokenSpace(providerName, modelName, { isReasoningEnabled, overridesOfModel })
@@ -692,10 +684,11 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const modelSelectionOptions = this.troveSettingsService.state.optionsOfModelSelection['Chat'][modelSelection.providerName]?.[modelSelection.modelName]
 
 		// Get combined AI instructions
-		const aiInstructions = this._getCombinedAIInstructions();
+		const aiInstructions = this._getGlobalAIInstructions();
 		const isReasoningEnabled = getIsReasoningEnabledState('Chat', providerName, modelName, modelSelectionOptions, overridesOfModel)
 		const reservedOutputTokenSpace = getReservedOutputTokenSpace(providerName, modelName, { isReasoningEnabled, overridesOfModel })
 		const llmMessages = this._chatMessagesToSimpleMessages(chatMessages)
+		this._prependRecentlyViewedCodeToLatestUserMessage(llmMessages)
 
 		const { messages, separateSystemMessage } = prepareMessages({
 			messages: llmMessages,
@@ -716,7 +709,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 	prepareFIMMessage: IConvertToLLMMessageService['prepareFIMMessage'] = ({ messages }) => {
 		// Get combined AI instructions with the provided aiInstructions as the base
-		const combinedInstructions = this._getCombinedAIInstructions();
+		const combinedInstructions = this._getGlobalAIInstructions();
 
 		let prefix = `\
 ${!combinedInstructions ? '' : `\

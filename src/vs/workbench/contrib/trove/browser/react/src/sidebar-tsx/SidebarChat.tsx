@@ -24,6 +24,7 @@ import { WarningBox } from '../trove-settings-tsx/WarningBox.js';
 import { getModelCapabilities, getIsReasoningEnabledState } from '../../../../common/modelCapabilities.js';
 import { AlertTriangle, File, Ban, Check, ChevronRight, Dot, FileIcon, Pencil, Undo, Undo2, X, Flag, Copy as CopyIcon, Info, CirclePlus, Ellipsis, CircleEllipsis, Folder, ALargeSmall, TypeOutline, Text } from 'lucide-react';
 import { ChatMessage, CheckpointEntry, StagingSelectionItem, ToolMessage } from '../../../../common/chatThreadServiceTypes.js';
+import { InlineContextPills } from './ContextPills.js';
 import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, ToolName, LintErrorItem, ToolApprovalType, toolApprovalTypes } from '../../../../common/toolsServiceTypes.js';
 import { CopyButton, EditToolAcceptRejectButtonsHTML, IconShell1, JumpToFileButton, JumpToTerminalButton, StatusIndicator, StatusIndicatorForApplyButton, useApplyStreamState, useEditToolStreamState } from '../markdown/ApplyBlockHoverButtons.js';
 import { IsRunningType } from '../../../chatThreadService.js';
@@ -36,7 +37,7 @@ import { ToolApprovalTypeSwitch } from '../trove-settings-tsx/Settings.js';
 import { persistentTerminalNameOfId } from '../../../terminalToolService.js';
 import { AnsiTerminalOutput } from '../util/ansiOutput.js';
 import { removeMCPToolNamePrefix } from '../../../../common/mcpServiceTypes.js';
-import { ChatInlineDiffButtons, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveActivityBanner, LiveReasoningBlock } from './ChatActivityUI.js';
+import { BackgroundActivityPanel, ChatInlineDiffButtons, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveReasoningBlock, StreamingEditToolCard, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
 import { ChatInlineDiffView, computeChatDiff } from './ChatInlineDiffView.js';
 import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
 
@@ -303,6 +304,7 @@ interface TroveChatAreaProps {
 	isStreaming: boolean;
 	isDisabled?: boolean;
 	divRef?: React.RefObject<HTMLDivElement | null>;
+	streamingStatusText?: string;
 
 	// UI customization
 	className?: string;
@@ -332,6 +334,7 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 	divRef,
 	isStreaming = false,
 	isDisabled = false,
+	streamingStatusText,
 	className = '',
 	showModelDropdown = true,
 	showSelections = false,
@@ -357,18 +360,6 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 				onClickAnywhere?.()
 			}}
 		>
-			{/* Selections section */}
-			{showSelections && selections && setSelections && (
-				<div className="px-3 pt-2">
-					<SelectedFiles
-						type='staging'
-						selections={selections}
-						setSelections={setSelections}
-						showProspectiveSelections={showProspectiveSelections}
-					/>
-				</div>
-			)}
-
 			{/* Input section */}
 			<div className="relative w-full px-3 pt-2.5 pb-1">
 				{children}
@@ -398,6 +389,12 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 				) : <div />}
 
 				<div className="flex items-center gap-1.5 shrink-0">
+
+					{isStreaming && streamingStatusText ? (
+						<span className="hidden sm:inline text-[10px] text-trove-fg-4 italic max-w-[160px] truncate" title={streamingStatusText}>
+							{streamingStatusText}
+						</span>
+					) : null}
 
 					{isStreaming && loadingIcon}
 
@@ -592,7 +589,6 @@ export const SelectedFiles = (
 ) => {
 
 	const accessor = useAccessor()
-	const commandService = accessor.get('ICommandService')
 	const modelReferenceService = accessor.get('ITroveModelService')
 
 
@@ -645,123 +641,18 @@ export const SelectedFiles = (
 
 	const allSelections = [...selections, ...prospectiveSelections]
 
-	if (allSelections.length === 0) {
+	if (selections.length === 0 && allSelections.length === 0) {
 		return null
 	}
 
 	return (
-		<div className='flex items-center flex-wrap text-left relative gap-x-0.5 gap-y-1 pb-0.5'>
-
-			{allSelections.map((selection, i) => {
-
-				const isThisSelectionProspective = i > selections.length - 1
-
-				const thisKey = selection.type === 'CodeSelection' ? selection.type + selection.language + selection.range + selection.state.wasAddedAsCurrentFile + selection.uri.fsPath
-					: selection.type === 'File' ? selection.type + selection.language + selection.state.wasAddedAsCurrentFile + selection.uri.fsPath
-						: selection.type === 'Folder' ? selection.type + selection.language + selection.state + selection.uri.fsPath
-							: i
-
-				const SelectionIcon = (
-					selection.type === 'File' ? File
-						: selection.type === 'Folder' ? Folder
-							: selection.type === 'CodeSelection' ? Text
-								: (undefined as never)
-				)
-
-				return <div // container for summarybox and code
-					key={thisKey}
-					className={`flex flex-col space-y-[1px]`}
-				>
-					{/* tooltip for file path */}
-					<span className="truncate overflow-hidden text-ellipsis"
-						data-tooltip-id='trove-tooltip'
-						data-tooltip-content={getRelative(selection.uri, accessor)}
-						data-tooltip-place='top'
-						data-tooltip-delay-show={3000}
-					>
-						{/* summarybox */}
-						<div
-							className={`
-								flex items-center gap-1 relative
-								px-1
-								w-fit h-fit
-								select-none
-								text-xs text-nowrap
-								border rounded-sm
-								${isThisSelectionProspective ? 'bg-trove-bg-1 text-trove-fg-3 opacity-80' : 'bg-trove-bg-1 hover:brightness-95 text-trove-fg-1'}
-								${isThisSelectionProspective
-									? 'border-trove-border-2'
-									: 'border-trove-border-1'
-								}
-								hover:border-trove-border-1
-								transition-all duration-150
-							`}
-							onClick={() => {
-								if (type !== 'staging') return; // (never)
-								if (isThisSelectionProspective) { // add prospective selection to selections
-									setSelections([...selections, selection])
-								}
-								else if (selection.type === 'File') { // open files
-									voidOpenFileFn(selection.uri, accessor);
-
-									const wasAddedAsCurrentFile = selection.state.wasAddedAsCurrentFile
-									if (wasAddedAsCurrentFile) {
-										// make it so the file is added permanently, not just as the current file
-										const newSelection: StagingSelectionItem = { ...selection, state: { ...selection.state, wasAddedAsCurrentFile: false } }
-										setSelections([
-											...selections.slice(0, i),
-											newSelection,
-											...selections.slice(i + 1)
-										])
-									}
-								}
-								else if (selection.type === 'CodeSelection') {
-									voidOpenFileFn(selection.uri, accessor, selection.range);
-								}
-								else if (selection.type === 'Folder') {
-									// TODO!!! reveal in tree
-								}
-							}}
-						>
-							{<SelectionIcon size={10} />}
-
-							{ // file name and range
-								getBasename(selection.uri.fsPath)
-								+ (selection.type === 'CodeSelection' ? ` (${selection.range[0]}-${selection.range[1]})` : '')
-							}
-
-							{selection.type === 'File' && selection.state.wasAddedAsCurrentFile && messageIdx === undefined && currentURI?.fsPath === selection.uri.fsPath ?
-								<span className={`text-[8px] 'trove-opacity-60 text-trove-fg-4`}>
-									{`(Current File)`}
-								</span>
-								: null
-							}
-
-							{type === 'staging' && !isThisSelectionProspective ? // X button
-								<div // box for making it easier to click
-									className='cursor-pointer z-1 self-stretch flex items-center justify-center'
-									onClick={(e) => {
-										e.stopPropagation(); // don't open/close selection
-										if (type !== 'staging') return;
-										setSelections([...selections.slice(0, i), ...selections.slice(i + 1)])
-									}}
-								>
-									<IconX
-										className='stroke-[2]'
-										size={10}
-									/>
-								</div>
-								: <></>
-							}
-						</div>
-					</span>
-				</div>
-
-			})}
-
-
+		<div className='context-pills'>
+			<InlineContextPills
+				selections={selections}
+				setSelections={type === 'staging' ? setSelections : undefined}
+				type={type === 'staging' ? 'staging' : 'past'}
+			/>
 		</div>
-
 	)
 }
 
@@ -1124,9 +1015,16 @@ const UserMessageComponent = ({ chatMessage, messageIdx, isCheckpointGhost, curr
 
 	let chatbubbleContents: React.ReactNode
 	if (mode === 'display') {
+		const committedSelections = chatMessage.selections || []
 		chatbubbleContents = <>
-			<SelectedFiles type='past' messageIdx={messageIdx} selections={chatMessage.selections || []} />
-			<span className='px-0.5'>{chatMessage.displayContent}</span>
+			{committedSelections.length > 0 ?
+				<div className='mb-2'>
+					<SelectedFiles type='past' messageIdx={messageIdx} selections={committedSelections} />
+				</div>
+				: null}
+			{chatMessage.displayContent ?
+				<span className='px-0.5 block'>{chatMessage.displayContent}</span>
+				: null}
 		</>
 	}
 	else if (mode === 'edit') {
@@ -1181,13 +1079,11 @@ const UserMessageComponent = ({ chatMessage, messageIdx, isCheckpointGhost, curr
 			onAbort={onAbort}
 			isStreaming={false}
 			isDisabled={isDisabled}
-			showSelections={true}
-			showProspectiveSelections={false}
-			selections={stagingSelections}
-			setSelections={setStagingSelections}
 		>
 			<TroveInputBox2
 				enableAtToMention
+				inlineSelections={stagingSelections}
+				setInlineSelections={setStagingSelections}
 				ref={setTextAreaRef}
 				className='min-h-[81px] max-h-[500px] px-0.5'
 				placeholder="Edit your message..."
@@ -1415,6 +1311,7 @@ const titleOfBuiltinToolName = {
 	'get_dir_tree': { done: 'Inspected folder tree', proposed: 'Inspect folder tree', running: loadingTitleWrapper('Inspecting folder tree') },
 	'search_pathnames_only': { done: 'Searched by file name', proposed: 'Search by file name', running: loadingTitleWrapper('Searching by file name') },
 	'search_for_files': { done: 'Searched', proposed: 'Search', running: loadingTitleWrapper('Searching') },
+	'search_codebase': { done: 'Searched codebase', proposed: 'Search codebase', running: loadingTitleWrapper('Searching codebase') },
 	'create_file_or_folder': { done: `Created`, proposed: `Create`, running: loadingTitleWrapper(`Creating`) },
 	'delete_file_or_folder': { done: `Deleted`, proposed: `Delete`, running: loadingTitleWrapper(`Deleting`) },
 	'edit_file': { done: `Edited file`, proposed: 'Edit file', running: loadingTitleWrapper('Editing file') },
@@ -1494,6 +1391,12 @@ const toolNameToDesc = (toolName: BuiltinToolName, _toolParams: BuiltinToolCallP
 		},
 		'search_for_files': () => {
 			const toolParams = _toolParams as BuiltinToolCallParams['search_for_files']
+			return {
+				desc1: `"${toolParams.query}"`,
+			}
+		},
+		'search_codebase': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['search_codebase']
 			return {
 				desc1: `"${toolParams.query}"`,
 			}
@@ -2192,6 +2095,58 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 			return <ToolHeaderWrapper {...componentParams} />
 		}
 	},
+	'search_codebase': {
+		resultWrapper: ({ toolMessage }) => {
+			const accessor = useAccessor()
+			const workspaceContextService = accessor.get('IWorkspaceContextService')
+			const isError = false
+			const isRejected = toolMessage.type === 'rejected'
+			const title = getTitle(toolMessage)
+			const { desc1, desc1Info } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
+			const icon = null
+
+			if (toolMessage.type === 'tool_request') return null
+			if (toolMessage.type === 'running_now') return <RunningToolActivityRow toolMessage={toolMessage} />
+
+			const { params } = toolMessage
+			const componentParams: ToolHeaderParams = { title, desc1, desc1Info, isError, icon, isRejected, }
+
+			if (toolMessage.type === 'success') {
+				const { result } = toolMessage
+				componentParams.numResults = result.results.length
+				componentParams.children = result.results.length === 0
+					? <ToolChildrenWrapper>
+						<div className='text-trove-fg-3 text-sm px-2 py-1'>No matches found.</div>
+					</ToolChildrenWrapper>
+					: <ToolChildrenWrapper>
+						{result.results.map((match, i) => {
+							const folder = workspaceContextService.getWorkspace().folders[0]
+							const uri = folder ? URI.joinPath(folder.uri, match.filePath) : URI.file(match.filePath)
+							const lineLabel = `${match.startLine}-${match.endLine}`
+							return <div key={i} className='w-full'>
+								<ListableToolItem
+									name={`${getBasename(match.filePath)} (${lineLabel})`}
+									className='w-full overflow-auto'
+									onClick={() => { voidOpenFileFn(uri, accessor, [match.startLine, match.endLine]) }}
+								/>
+								<CodeChildren className='bg-trove-bg-3 mx-2 mb-2'>
+									<pre className='font-mono whitespace-pre-wrap text-xs'>{match.snippet}</pre>
+								</CodeChildren>
+							</div>
+						})}
+					</ToolChildrenWrapper>
+			}
+			else if (toolMessage.type === 'tool_error') {
+				const { result } = toolMessage
+				componentParams.bottomChildren = <BottomChildren title='Error'>
+					<CodeChildren>
+						{result}
+					</CodeChildren>
+				</BottomChildren>
+			}
+			return <ToolHeaderWrapper {...componentParams} />
+		}
+	},
 
 	'search_in_file': {
 		resultWrapper: ({ toolMessage }) => {
@@ -2613,27 +2568,20 @@ const EditToolSoFar = ({ toolCallSoFar, }: { toolCallSoFar: RawToolCallObj }) =>
 
 	const uri = toolCallSoFar.rawParams.uri ? URI.file(toolCallSoFar.rawParams.uri) : undefined
 	const code = toolCallSoFar.rawParams.search_replace_blocks ?? toolCallSoFar.rawParams.new_content ?? ''
-	const streamingDiff = computeChatDiff(code, editToolType)
-
-	if (!uri) {
-		return <CompactActivityRow
-			label={titleOfBuiltinToolName[toolCallSoFar.name].proposed}
-			detail={<span className='flex items-center'>Generating<IconLoading /></span>}
-			isActive
-		/>
-	}
+	const streamingDiff = uri ? computeChatDiff(code, editToolType) : undefined
 
 	return (
-		<EditToolChatBlock
-			fileName={getBasename(uri.fsPath)}
-			filePath={uri.fsPath}
-			addedLines={streamingDiff.added}
-			removedLines={streamingDiff.removed}
-			onFileClick={() => voidOpenFileFn(uri, accessor)}
-			isRunning
+		<StreamingEditToolCard
+			toolCallSoFar={toolCallSoFar}
+			addedLines={streamingDiff?.added}
+			removedLines={streamingDiff?.removed}
+			filePath={uri?.fsPath}
+			onFileClick={uri ? () => voidOpenFileFn(uri, accessor) : undefined}
 		>
-			<ChatInlineDiffView code={code} type={editToolType} />
-		</EditToolChatBlock>
+			{uri ? (
+				<ChatInlineDiffView code={code} type={editToolType} />
+			) : null}
+		</StreamingEditToolCard>
 	)
 
 }
@@ -2666,14 +2614,8 @@ export const SidebarChat = () => {
 	const { displayContentSoFar, toolCallSoFar, reasoningSoFar } = currThreadStreamState?.llmInfo ?? {}
 	const runningToolInfo = currThreadStreamState?.isRunning === 'tool' ? currThreadStreamState.toolInfo : undefined
 
-	const liveActivityStatus = (
-		isRunning === 'awaiting_user' ? 'awaiting' as const
-			: isRunning === 'tool' ? 'tool' as const
-				: isRunning === 'LLM' && reasoningSoFar && !displayContentSoFar ? 'thinking' as const
-					: isRunning === 'LLM' && displayContentSoFar ? 'writing' as const
-						: isRunning === 'LLM' || isRunning === 'idle' ? 'thinking' as const
-							: 'idle' as const
-	)
+	// this is just if it's currently being generated, NOT if it's currently running
+	const toolIsGenerating = toolCallSoFar && !toolCallSoFar.isDone // show loading for slow tools (right now just edit)
 
 	const liveActivityDetail = runningToolInfo
 		? (isABuiltinToolName(runningToolInfo.toolName)
@@ -2681,8 +2623,116 @@ export const SidebarChat = () => {
 			: removeMCPToolNamePrefix(runningToolInfo.toolName))
 		: undefined
 
-	// this is just if it's currently being generated, NOT if it's currently running
-	const toolIsGenerating = toolCallSoFar && !toolCallSoFar.isDone // show loading for slow tools (right now just edit)
+	const turnActivitySummary = useMemo(
+		() => summarizeAgentTurnActivity(previousMessages),
+		[previousMessages],
+	)
+
+	const modelSelection = settingsState.modelSelectionOfFeature['Chat']
+	const modelLabel = modelSelection?.modelName ?? 'model'
+	const chatMode = settingsState.globalSettings.chatMode
+	const chatModeLabel = chatMode === 'agent' ? 'Agent' : chatMode === 'gather' ? 'Gather' : 'Chat'
+
+	const backgroundActivity = useMemo((): { phase: BackgroundActivityPhase; title: string; detail?: string; contextLine?: string } | null => {
+		if (!isRunning) return null
+
+		if (isRunning === 'awaiting_user') {
+			return {
+				phase: 'awaiting',
+				title: 'Waiting for your approval',
+				detail: 'Review the pending tool request before the agent continues.',
+			}
+		}
+
+		if (isRunning === 'tool' && runningToolInfo) {
+			const runningToolTitle = isABuiltinToolName(runningToolInfo.toolName)
+				? ({
+					read_file: 'Reading file',
+					ls_dir: 'Inspecting folder',
+					get_dir_tree: 'Inspecting folder tree',
+					search_pathnames_only: 'Searching by file name',
+					search_for_files: 'Searching files',
+					search_codebase: 'Searching codebase',
+					search_in_file: 'Searching in file',
+					create_file_or_folder: 'Creating path',
+					delete_file_or_folder: 'Deleting path',
+					edit_file: 'Editing file',
+					rewrite_file: 'Writing file',
+					run_command: 'Running terminal command',
+					run_persistent_command: 'Running terminal command',
+					open_persistent_terminal: 'Opening terminal',
+					kill_persistent_terminal: 'Closing terminal',
+					read_lint_errors: 'Reading lint errors',
+				} as Partial<Record<BuiltinToolName, string>>)[runningToolInfo.toolName] ?? 'Running tool'
+				: `Calling ${runningToolInfo.mcpServerName ?? 'MCP tool'}`
+			return {
+				phase: 'tool',
+				title: runningToolTitle,
+				detail: liveActivityDetail ? String(liveActivityDetail) : 'Executing in your workspace',
+				contextLine: turnActivitySummary.summaryLine,
+			}
+		}
+
+		if (isRunning === 'idle') {
+			return {
+				phase: 'preparing',
+				title: 'Preparing next model call',
+				detail: turnActivitySummary.summaryLine
+					? `${chatModeLabel} mode · ${turnActivitySummary.summaryLine}`
+					: `${chatModeLabel} mode · assembling conversation context for ${modelLabel}`,
+				contextLine: turnActivitySummary.recentFilesLine,
+			}
+		}
+
+		if (isRunning === 'LLM') {
+			if (displayContentSoFar?.trim()) {
+				return {
+					phase: 'writing',
+					title: 'Writing response',
+					detail: `${displayContentSoFar.length.toLocaleString()} characters streamed so far`,
+				}
+			}
+
+			if (reasoningSoFar?.trim()) {
+				return {
+					phase: 'reasoning',
+					title: 'Reasoning',
+					detail: `${reasoningSoFar.length.toLocaleString()} characters of internal reasoning received`,
+				}
+			}
+
+			return {
+				phase: 'waiting',
+				title: `Waiting for ${modelLabel}`,
+				detail: turnActivitySummary.fileCount > 0
+					? `Analyzing ${turnActivitySummary.fileCount} file${turnActivitySummary.fileCount === 1 ? '' : 's'} read this turn before replying`
+					: turnActivitySummary.toolCount > 0
+						? `Processing ${turnActivitySummary.summaryLine ?? `${turnActivitySummary.toolCount} tool result${turnActivitySummary.toolCount === 1 ? '' : 's'}`}`
+						: `${chatModeLabel} mode · sending request to the model`,
+				contextLine: turnActivitySummary.recentFilesLine,
+			}
+		}
+
+		return null
+	}, [
+		isRunning,
+		runningToolInfo,
+		liveActivityDetail,
+		turnActivitySummary,
+		modelLabel,
+		chatModeLabel,
+		displayContentSoFar,
+		reasoningSoFar,
+	])
+
+	const showBackgroundActivity = !!backgroundActivity
+		&& !toolIsGenerating
+		&& !(isRunning === 'LLM' && !!displayContentSoFar?.trim())
+		&& !(isRunning === 'LLM' && !!reasoningSoFar?.trim() && !displayContentSoFar?.trim())
+
+	const streamingStatusText = backgroundActivity
+		? [backgroundActivity.title, backgroundActivity.detail].filter(Boolean).join(' · ')
+		: undefined
 
 	// ----- SIDEBAR CHAT state (local) -----
 
@@ -2808,9 +2858,14 @@ export const SidebarChat = () => {
 		{/* Generating tool */}
 		{generatingTool}
 
-		{/* live activity — hide while reasoning stream is visible */}
-		{isRunning && !(isRunning === 'LLM' && reasoningSoFar && !displayContentSoFar) ?
-			<LiveActivityBanner status={liveActivityStatus} detail={liveActivityDetail} /> : null}
+		{/* live activity — hide while reasoning stream or edit tool generation is visible */}
+		{showBackgroundActivity && backgroundActivity ?
+			<BackgroundActivityPanel
+				phase={backgroundActivity.phase}
+				title={backgroundActivity.title}
+				detail={backgroundActivity.detail}
+				contextLine={backgroundActivity.contextLine}
+			/> : null}
 
 
 		{/* error message */}
@@ -2852,15 +2907,14 @@ export const SidebarChat = () => {
 		onSubmit={() => onSubmit()}
 		onAbort={onAbort}
 		isStreaming={!!isRunning}
+		streamingStatusText={streamingStatusText}
 		isDisabled={isDisabled}
-		showSelections={true}
-		// showProspectiveSelections={previousMessagesHTML.length === 0}
-		selections={selections}
-		setSelections={setSelections}
 		onClickAnywhere={() => { textAreaRef.current?.focus() }}
 	>
 		<TroveInputBox2
 			enableAtToMention
+			inlineSelections={selections}
+			setInlineSelections={setSelections}
 			className={`min-h-[72px] px-0 py-0 text-sm`}
 			placeholder={`@ to mention, ${keybindingString ? `${keybindingString} to add a selection. ` : ''}Enter instructions...`}
 			onChangeText={onChangeText}

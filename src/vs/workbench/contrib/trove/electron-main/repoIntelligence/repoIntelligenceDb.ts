@@ -6,7 +6,7 @@
 import { createHash } from 'crypto';
 import { join } from 'path';
 import type { Database } from '@vscode/sqlite3';
-import { CommandEntry, FileMetadataEntry, FrameworkEntry, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { CommandEntry, CodeChunk, CodebaseSearchResult, FileMetadataEntry, FrameworkEntry, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS workspace_profiles (
@@ -39,6 +39,29 @@ CREATE TABLE IF NOT EXISTS file_metadata (
 
 CREATE INDEX IF NOT EXISTS idx_file_metadata_workspace ON file_metadata(workspace_hash);
 CREATE INDEX IF NOT EXISTS idx_file_metadata_language ON file_metadata(workspace_hash, language);
+
+CREATE TABLE IF NOT EXISTS code_chunks (
+  id             TEXT PRIMARY KEY,
+  workspace_hash   TEXT NOT NULL,
+  file_path        TEXT NOT NULL,
+  chunk_text       TEXT NOT NULL,
+  start_line       INTEGER NOT NULL,
+  end_line         INTEGER NOT NULL,
+  chunk_type       TEXT NOT NULL,
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+  chunk_text,
+  file_path UNINDEXED,
+  workspace_hash UNINDEXED,
+  start_line UNINDEXED,
+  end_line UNINDEXED,
+  chunk_type UNINDEXED
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_chunks_workspace ON code_chunks(workspace_hash);
+CREATE INDEX IF NOT EXISTS idx_code_chunks_file ON code_chunks(workspace_hash, file_path);
 `;
 
 type WorkspaceProfileRow = {
@@ -113,6 +136,12 @@ export class RepoIntelligenceDb {
 		});
 	}
 
+	private _all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+		return new Promise((resolve, reject) => {
+			this._getDb().all(sql, params, (error, rows) => error ? reject(error) : resolve(rows as T[]));
+		});
+	}
+
 	private _rowToProfile(row: WorkspaceProfileRow): WorkspaceProfile {
 		return {
 			workspaceRoot: row.workspace_root,
@@ -138,6 +167,25 @@ export class RepoIntelligenceDb {
 			[workspaceHash],
 		);
 		return row ? this._rowToProfile(row) : null;
+	}
+
+	async getFileMetadata(workspaceHash: string): Promise<FileMetadataEntry[]> {
+		type FileMetaRow = {
+			file_path: string;
+			language: string | null;
+			last_modified: number;
+			size_bytes: number | null;
+		};
+		const rows = await this._all<FileMetaRow>(
+			`SELECT file_path, language, last_modified, size_bytes FROM file_metadata WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(row => ({
+			filePath: row.file_path,
+			language: row.language,
+			lastModified: row.last_modified,
+			sizeBytes: row.size_bytes ?? 0,
+		}));
 	}
 
 	async upsertProfile(workspaceHash: string, profile: WorkspaceProfile, fileMeta: FileMetadataEntry[]): Promise<void> {
@@ -200,7 +248,81 @@ export class RepoIntelligenceDb {
 	async markStale(workspaceHash: string): Promise<void> {
 		await this._run(`UPDATE workspace_profiles SET stale = 1 WHERE workspace_hash = ?`, [workspaceHash]);
 	}
+
+	async getChunkCount(workspaceHash: string): Promise<number> {
+		const row = await this._get<{ count: number }>(
+			`SELECT COUNT(*) AS count FROM code_chunks WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return row?.count ?? 0;
+	}
+
+	async replaceChunks(workspaceHash: string, chunks: CodeChunk[]): Promise<void> {
+		await this._run(`DELETE FROM code_chunks WHERE workspace_hash = ?`, [workspaceHash]);
+		await this._run(`DELETE FROM chunks_fts WHERE workspace_hash = ?`, [workspaceHash]);
+
+		for (const chunk of chunks) {
+			await this._run(
+				`INSERT INTO code_chunks (id, workspace_hash, file_path, chunk_text, start_line, end_line, chunk_type)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[chunk.id, workspaceHash, chunk.filePath, chunk.chunkText, chunk.startLine, chunk.endLine, chunk.chunkType],
+			);
+			await this._run(
+				`INSERT INTO chunks_fts (chunk_text, file_path, workspace_hash, start_line, end_line, chunk_type)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[chunk.chunkText, chunk.filePath, workspaceHash, chunk.startLine, chunk.endLine, chunk.chunkType],
+			);
+		}
+	}
+
+	async searchChunks(workspaceHash: string, query: string, limit: number): Promise<CodebaseSearchResult[]> {
+		const ftsQuery = buildFtsQuery(query);
+		if (!ftsQuery) return [];
+
+		type FtsRow = {
+			file_path: string;
+			start_line: number;
+			end_line: number;
+			chunk_text: string;
+			score: number;
+		};
+
+		const rows = await this._all<FtsRow>(
+			`SELECT file_path, start_line, end_line, chunk_text, bm25(chunks_fts) AS score
+			 FROM chunks_fts
+			 WHERE chunks_fts MATCH ? AND workspace_hash = ?
+			 ORDER BY score
+			 LIMIT ?`,
+			[ftsQuery, workspaceHash, limit],
+		);
+
+		return rows.map(row => ({
+			filePath: row.file_path,
+			startLine: row.start_line,
+			endLine: row.end_line,
+			snippet: truncateSnippet(row.chunk_text, 400),
+			score: row.score,
+		}));
+	}
 }
+
+const truncateSnippet = (text: string, maxLen: number): string => {
+	if (text.length <= maxLen) return text;
+	return text.slice(0, maxLen) + '…';
+};
+
+const FTS_SPECIAL_CHARS = /["\-^*():]/g;
+
+const buildFtsQuery = (query: string): string | null => {
+	const tokens = query
+		.toLowerCase()
+		.replace(FTS_SPECIAL_CHARS, ' ')
+		.split(/\s+/)
+		.filter(t => t.length >= 2);
+
+	if (tokens.length === 0) return null;
+	return tokens.map(t => `"${t}"*`).join(' OR ');
+};
 
 export const getRepoIntelligenceDbPath = (userDataPath: string): string => {
 	return join(userDataPath, 'User', 'globalStorage', 'trove-repo-intelligence.db');

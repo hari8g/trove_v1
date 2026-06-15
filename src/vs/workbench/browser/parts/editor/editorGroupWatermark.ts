@@ -101,7 +101,13 @@ export class EditorGroupWatermark extends Disposable {
 		super();
 
 		const elements = h('.editor-group-watermark', [
-			h('.letterpress@icon'),
+			h('.trove-watermark-logo-wrap', [
+				h('.letterpress@icon'),
+			]),
+			h('.trove-watermark-branding@branding', [
+				h('div.trove-watermark-tagline@tagline'),
+				h('div.trove-watermark-ownership@ownership'),
+			]),
 			h('.shortcuts@shortcuts'),
 		]);
 
@@ -109,6 +115,8 @@ export class EditorGroupWatermark extends Disposable {
 		this.shortcuts = elements.shortcuts; // shortcuts div is modified on render()
 
 		elements.icon.classList.add('trove-icon');
+		elements.tagline.textContent = 'Where intelligent development begins.';
+		elements.ownership.textContent = 'Property of Bosch Mobility and Platform Solutions Pvt. Limited';
 
 		this.registerListeners();
 

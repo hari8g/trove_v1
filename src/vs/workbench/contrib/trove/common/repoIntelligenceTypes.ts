@@ -3,6 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
+import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 
 export const REPO_INTEL_CHANNEL = 'trove-channel-repoIntelligence';
@@ -46,16 +47,40 @@ export type FileMetadataEntry = {
 	sizeBytes: number;
 };
 
+export type CodeChunkType = 'function' | 'class' | 'block' | 'file';
+
+export type CodeChunk = {
+	id: string;
+	filePath: string;
+	chunkText: string;
+	startLine: number;
+	endLine: number;
+	chunkType: CodeChunkType;
+};
+
+export type CodebaseSearchResult = {
+	filePath: string;
+	startLine: number;
+	endLine: number;
+	snippet: string;
+	score: number;
+};
+
 export interface IRepoIntelligenceMainService {
 	readonly _serviceBrand: undefined;
 	getProfile(workspaceRoot: string): Promise<WorkspaceProfile | null>;
 	refreshProfile(workspaceRoot: string): Promise<WorkspaceProfile>;
+	searchCodebase(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]>;
+	getChunkCount(workspaceRoot: string): Promise<number>;
 }
 
 export const IRepoIntelligenceMainService = createDecorator<IRepoIntelligenceMainService>('repoIntelligenceMainService');
 
 export interface IRepoIntelligenceService extends IRepoIntelligenceMainService {
 	getProfileSync(): WorkspaceProfile | null;
+	getWorkspaceRules(): string | null;
+	readonly onDidChangeWorkspaceRules: Event<void>;
+	readonly onDidChangeChunkIndex: Event<number>;
 }
 
 export const IRepoIntelligenceService = createDecorator<IRepoIntelligenceService>('repoIntelligenceService');

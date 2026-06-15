@@ -8,12 +8,13 @@ import { IEnvironmentMainService } from '../../../../../platform/environment/ele
 import { IEncryptionMainService } from '../../../../../platform/encryption/common/encryptionService.js';
 import { IApplicationStorageMainService } from '../../../../../platform/storage/electron-main/storageMainService.js';
 import { StorageScope } from '../../../../../platform/storage/common/storage.js';
-import { IRepoIntelligenceMainService, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { CodebaseSearchResult, IRepoIntelligenceMainService, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 import { TROVE_SETTINGS_STORAGE_KEY } from '../../common/storageKeys.js';
 import { TroveSettingsState } from '../../common/troveSettingsService.js';
 import { IMetricsService } from '../../common/metricsService.js';
 import { sendLLMMessage } from '../llmMessage/sendLLMMessage.js';
 import { detectCommands } from './commandDetector.js';
+import { buildChunksForWorkspace } from './codeChunker.js';
 import { getRepoIntelligenceDbPath, hashWorkspaceRoot, RepoIntelligenceDb } from './repoIntelligenceDb.js';
 import { RawScanResult, scanWorkspace } from './workspaceScanner.js';
 
@@ -71,6 +72,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		if (existing) {
 			const isExpired = Date.now() - existing.lastScannedAt > REPO_INTEL_PROFILE_STALE_MS;
 			if (!existing.isStale && !isExpired) {
+				await this._ensureChunksIndexed(workspaceRoot, hash);
 				return existing;
 			}
 		}
@@ -124,6 +126,11 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 
 		await this._db.upsertProfile(hash, profile, scan.fileMeta);
 
+		const chunkStart = Date.now();
+		const chunks = buildChunksForWorkspace(workspaceRoot, hash, scan.fileMeta);
+		await this._db.replaceChunks(hash, chunks);
+		console.log(`[RepoIntelligence] Indexed ${chunks.length} chunks in ${Date.now() - chunkStart}ms`);
+
 		const existing = await this._db.getProfile(hash);
 		if (existing?.projectPurpose && existing?.architectureSummary) {
 			profile = { ...profile, projectPurpose: existing.projectPurpose, architectureSummary: existing.architectureSummary };
@@ -146,6 +153,41 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		}
 
 		return profile;
+	}
+
+	private async _ensureChunksIndexed(workspaceRoot: string, hash: string): Promise<void> {
+		const chunkCount = await this._db.getChunkCount(hash);
+		if (chunkCount > 0) {
+			return;
+		}
+
+		const fileMeta = await this._db.getFileMetadata(hash);
+		if (fileMeta.length > 0) {
+			const chunkStart = Date.now();
+			const chunks = buildChunksForWorkspace(workspaceRoot, hash, fileMeta);
+			await this._db.replaceChunks(hash, chunks);
+			console.log(`[RepoIntelligence] Backfilled ${chunks.length} chunks in ${Date.now() - chunkStart}ms`);
+			return;
+		}
+
+		await this._ensureScan(workspaceRoot);
+	}
+
+	async searchCodebase(workspaceRoot: string, query: string, maxResults = 10): Promise<CodebaseSearchResult[]> {
+		await this._db.init();
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this.getProfile(workspaceRoot);
+
+		const trimmed = query.trim();
+		if (!trimmed) return [];
+
+		return this._db.searchChunks(hash, trimmed, maxResults);
+	}
+
+	async getChunkCount(workspaceRoot: string): Promise<number> {
+		await this._db.init();
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		return this._db.getChunkCount(hash);
 	}
 
 	private async _readVoidSettings(): Promise<TroveSettingsState | null> {

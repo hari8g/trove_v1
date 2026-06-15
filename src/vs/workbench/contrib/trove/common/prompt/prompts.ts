@@ -278,6 +278,15 @@ export const builtinTools: {
 		},
 	},
 
+	search_codebase: {
+		name: 'search_codebase',
+		description: `Semantically search the codebase for code related to a natural-language query. Returns ranked file paths, line ranges, and short snippets. Prefer this over search_for_files when exploring concepts (e.g. "error handling", "thread state", "authentication").`,
+		params: {
+			query: { description: 'Natural language description of what to find.' },
+			max_results: { description: 'Optional. Max results to return (default 10).' },
+		},
+	},
+
 	// add new search_in_file tool
 	search_in_file: {
 		name: 'search_in_file',
@@ -476,6 +485,17 @@ Typecheck: ${profile.typecheckCommands[0]?.command ?? 'none detected'}
 `.trim();
 }
 
+export function buildWorkspaceRulesBlock(workspaceRules: string | null): string {
+	if (!workspaceRules?.trim()) return '';
+	return `
+<workspace_rules>
+${workspaceRules.trim()}
+</workspace_rules>
+
+Follow these project rules when writing code, unless the user explicitly asks otherwise in their message.
+`.trim();
+}
+
 /** Reminder appended to edit tool results so the agent verifies before finishing. */
 export function buildVerificationReminder(profile: WorkspaceProfile | null): string {
 	const build = profile?.buildCommands.find(c => c.purpose === 'build')?.command ?? profile?.buildCommands[0]?.command
@@ -498,7 +518,7 @@ export function buildVerificationReminder(profile: WorkspaceProfile | null): str
 }
 
 
-export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, repoProfile?: WorkspaceProfile | null }) => {
+export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, repoProfile?: WorkspaceProfile | null, workspaceRules?: string | null }) => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -600,6 +620,8 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 	const ansStrs: string[] = []
 	const repoContext = buildRepoContextBlock(repoProfile)
 	if (repoContext) ansStrs.push(repoContext)
+	const rulesBlock = buildWorkspaceRulesBlock(workspaceRules ?? null)
+	if (rulesBlock) ansStrs.push(rulesBlock)
 	ansStrs.push(header)
 	ansStrs.push(sysInfo)
 	if (toolDefinitions) ansStrs.push(toolDefinitions)
@@ -648,6 +670,57 @@ export const readFile = async (fileService: IFileService, uri: URI, fileSizeLimi
 
 
 
+const AT_MENTION_IN_TEXT_RE = /@([\w./-]+\.\w+)/g;
+
+/** Returns the first validation error for staged @ selections, or null if all resolve. */
+export const validateStagingSelections = async (
+	currSelns: StagingSelectionItem[] | null,
+	opts: { fileService: IFileService },
+): Promise<string | null> => {
+	for (const s of currSelns ?? []) {
+		if (s.type === 'File' || s.type === 'CodeSelection' || s.type === 'Folder') {
+			try {
+				await opts.fileService.stat(s.uri);
+			} catch {
+				const label = s.type === 'Folder' ? 'Folder' : 'File';
+				return `${label} not found: ${s.uri.fsPath}`;
+			}
+		}
+	}
+	return null;
+};
+
+/** Detects @filename.ts patterns in message text that do not resolve in the workspace. */
+export const findUnresolvedAtMentionsInText = async (
+	instructions: string,
+	opts: { fileService: IFileService; workspaceFolderUris: URI[] },
+): Promise<string | null> => {
+	const seen = new Set<string>();
+	for (const match of instructions.matchAll(AT_MENTION_IN_TEXT_RE)) {
+		const name = match[1];
+		if (!name || seen.has(name)) {
+			continue;
+		}
+		seen.add(name);
+
+		let found = false;
+		for (const folderUri of opts.workspaceFolderUris) {
+			const uri = URI.joinPath(folderUri, name);
+			try {
+				await opts.fileService.stat(uri);
+				found = true;
+				break;
+			} catch {
+				// try next workspace root
+			}
+		}
+		if (!found) {
+			return `File not found: ${name}`;
+		}
+	}
+	return null;
+};
+
 export const messageOfSelection = async (
 	s: StagingSelectionItem,
 	opts: {
@@ -663,20 +736,24 @@ export const messageOfSelection = async (
 
 	if (s.type === 'CodeSelection') {
 		const { val } = await readFile(opts.fileService, s.uri, DEFAULT_FILE_SIZE_LIMIT)
-		const lines = val?.split('\n')
+		if (val === null) {
+			return `[Error: File not found: ${s.uri.fsPath}]`;
+		}
+		const lines = val.split('\n')
 
-		const innerVal = lines?.slice(s.range[0] - 1, s.range[1]).join('\n')
-		const content = !lines ? ''
-			: `${tripleTick[0]}${s.language}\n${innerVal}\n${tripleTick[1]}`
+		const innerVal = lines.slice(s.range[0] - 1, s.range[1]).join('\n')
+		const content = `${tripleTick[0]}${s.language}\n${innerVal}\n${tripleTick[1]}`
 		const str = `${s.uri.fsPath}${lineNumAddition(s.range)}:\n${content}`
 		return str
 	}
 	else if (s.type === 'File') {
 		const { val } = await readFile(opts.fileService, s.uri, DEFAULT_FILE_SIZE_LIMIT)
 
-		const innerVal = val
-		const content = val === null ? ''
-			: `${tripleTick[0]}${s.language}\n${innerVal}\n${tripleTick[1]}`
+		if (val === null) {
+			return `[Error: File not found: ${s.uri.fsPath}]`;
+		}
+
+		const content = `${tripleTick[0]}${s.language}\n${val}\n${tripleTick[1]}`
 
 		const str = `${s.uri.fsPath}:\n${content}`
 		return str

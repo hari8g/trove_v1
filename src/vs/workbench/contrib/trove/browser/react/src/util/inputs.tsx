@@ -20,6 +20,7 @@ import { URI } from '../../../../../../../base/common/uri.js';
 import { getBasename, getFolderName } from '../sidebar-tsx/SidebarChat.js';
 import { ChevronRight, File, Folder, FolderClosed, LucideProps } from 'lucide-react';
 import { StagingSelectionItem } from '../../../../common/chatThreadServiceTypes.js';
+import { InlineContextPills } from '../sidebar-tsx/ContextPills.js';
 import { DiffEditorWidget } from '../../../../../../../editor/browser/widget/diffEditor/diffEditorWidget.js';
 import { extractSearchReplaceBlocks, ExtractedSearchReplaceBlock } from '../../../../common/helpers/extractCodeFromResult.js';
 import { IAccessibilitySignalService } from '../../../../../../../platform/accessibilitySignal/browser/accessibilitySignalService.js';
@@ -346,6 +347,8 @@ type InputBox2Props = {
 	placeholder: string;
 	multiline: boolean;
 	enableAtToMention?: boolean;
+	inlineSelections?: StagingSelectionItem[];
+	setInlineSelections?: (s: StagingSelectionItem[]) => void;
 	fnsRef?: { current: null | TextAreaFns };
 	className?: string;
 	onChangeText?: (value: string) => void;
@@ -354,7 +357,7 @@ type InputBox2Props = {
 	onBlur?: (e: React.FocusEvent<HTMLTextAreaElement>) => void;
 	onChangeHeight?: (newHeight: number) => void;
 }
-export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText }, ref) {
+export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(function X({ initValue, placeholder, multiline, enableAtToMention, inlineSelections, setInlineSelections, fnsRef, className, onKeyDown, onFocus, onBlur, onChangeText }, ref) {
 
 
 	// mirrors whatever is in ref
@@ -734,7 +737,25 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 
 
 	return <>
-		<textarea
+		<div
+			className={`composer-inline-field w-full ${className ?? ''}`}
+			style={{
+				background: asCssVariable(inputBackground),
+				color: asCssVariable(inputForeground),
+			}}
+			onClick={(e) => {
+				if ((e.target as HTMLElement).closest('.context-pill')) return;
+				textAreaRef.current?.focus();
+			}}
+		>
+			{inlineSelections && inlineSelections.length > 0 && setInlineSelections ?
+				<InlineContextPills
+					type='staging'
+					selections={inlineSelections}
+					setSelections={setInlineSelections}
+				/>
+				: null}
+			<textarea
 			autoFocus={false}
 			ref={useCallback((r: HTMLTextAreaElement | null) => {
 				if (fnsRef)
@@ -753,12 +774,10 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 
 			disabled={!isEnabled}
 
-			className={`w-full resize-none max-h-[500px] overflow-y-auto text-trove-fg-1 placeholder:text-trove-fg-3 ${className}`}
+			className={`composer-inline-textarea flex-1 min-w-[72px] min-h-[22px] resize-none max-h-[500px] overflow-y-auto text-trove-fg-1 placeholder:text-trove-fg-3 bg-transparent border-0 outline-none shadow-none p-0 m-0 text-sm leading-normal`}
 			style={{
-				// defaultInputBoxStyles
-				background: asCssVariable(inputBackground),
+				background: 'transparent',
 				color: asCssVariable(inputForeground)
-				// inputBorder: asCssVariable(inputBorder),
 			}}
 
 			onInput={useCallback((event: React.FormEvent<HTMLTextAreaElement>) => {
@@ -803,8 +822,9 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 			}, [onKeyDown, onMenuKeyDown, multiline])}
 
 			rows={1}
-			placeholder={placeholder}
+			placeholder={inlineSelections?.length ? undefined : placeholder}
 		/>
+		</div>
 		{/* <div>{`idx ${optionIdx}`}</div> */}
 		{isMenuOpen && (
 			<div

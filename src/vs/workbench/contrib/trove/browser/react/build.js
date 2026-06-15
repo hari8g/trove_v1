@@ -77,6 +77,18 @@ function saveStylesFile() {
 	}, 6000);
 }
 
+/** Dev app loads from out/vs/.../react/out, not src/.../react/out — sync after every build. */
+function syncOutToCompiledWorkbench() {
+	const compiledOutDir = path.join(__dirname, '../../../../../../../out/vs/workbench/contrib/trove/browser/react/out');
+	const sourceOutDir = path.join(__dirname, 'out');
+	if (!fs.existsSync(sourceOutDir)) {
+		console.warn('[buildreact] No ./out to sync — skipping copy to workbench out/');
+		return;
+	}
+	fs.cpSync(sourceOutDir, compiledOutDir, { recursive: true });
+	console.log(`[buildreact] Synced react bundle → ${compiledOutDir}`);
+}
+
 const args = process.argv.slice(2);
 const isWatch = args.includes('--watch') || args.includes('-w');
 
@@ -126,6 +138,9 @@ if (isWatch) {
 	// Handle tsup watcher output
 	tsupWatcher.stdout.on('data', (data) => {
 		console.log(`[tsup] ${data}`);
+		if (data.toString().includes('Build success')) {
+			syncOutToCompiledWorkbench();
+		}
 	});
 
 	tsupWatcher.stderr.on('data', (data) => {
@@ -150,5 +165,6 @@ if (isWatch) {
 	// Run tsup once
 	execSync('npx tsup', { stdio: 'inherit' });
 
+	syncOutToCompiledWorkbench();
 	console.log('✅ Build complete!');
 }

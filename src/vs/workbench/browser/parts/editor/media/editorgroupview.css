@@ -50,7 +50,7 @@
 }
 
 /* MPS logo watermark — see trove.css for shared .trove-icon rules */
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .letterpress {
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress {
 	width: 100%;
 	max-height: 100%;
 	aspect-ratio: 1/1;

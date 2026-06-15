@@ -11,7 +11,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { URI } from '../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
-import { chat_userMessageContent, isABuiltinToolName } from '../common/prompt/prompts.js';
+import { chat_userMessageContent, findUnresolvedAtMentionsInText, isABuiltinToolName, validateStagingSelections } from '../common/prompt/prompts.js';
 import { AnthropicReasoning, getErrorMessage, RawToolCallObj, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { FeatureName, ModelSelection, ModelSelectionOptions } from '../common/troveSettingsTypes.js';
@@ -1287,8 +1287,23 @@ We only need to do it for files that were edited since `from`, ie files between 
 		const instructions = userMessage
 		const currSelns: StagingSelectionItem[] = _chatSelections ?? thread.state.stagingSelections
 
+		const selectionError = await validateStagingSelections(currSelns, { fileService: this._fileService })
+		if (selectionError) {
+			this._setStreamState(threadId, { isRunning: undefined, error: { message: selectionError, fullError: null } })
+			return
+		}
+
+		const mentionError = await findUnresolvedAtMentionsInText(instructions, {
+			fileService: this._fileService,
+			workspaceFolderUris: this._workspaceContextService.getWorkspace().folders.map(f => f.uri),
+		})
+		if (mentionError) {
+			this._setStreamState(threadId, { isRunning: undefined, error: { message: mentionError, fullError: null } })
+			return
+		}
+
 		const userMessageContent = await chat_userMessageContent(instructions, currSelns, { directoryStrService: this._directoryStringService, fileService: this._fileService }) // user message + names of files (NOT content)
-		const userHistoryElt: ChatMessage = { role: 'user', content: userMessageContent, displayContent: instructions, selections: currSelns, state: defaultMessageState }
+		const userHistoryElt: ChatMessage = { role: 'user', content: userMessageContent, displayContent: instructions, selections: [...currSelns], state: defaultMessageState }
 		this._addMessageToThread(threadId, userHistoryElt)
 
 		this._setThreadState(threadId, { currCheckpointIdx: null }) // no longer at a checkpoint because started streaming

@@ -96,7 +96,7 @@
 
 /* MPS logo — dark asset on light themes; inverted on dark themes for contrast */
 .trove-icon,
-.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .letterpress {
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress {
 	width: 100%;
 	max-width: 220px;
 	max-height: 100%;
@@ -107,11 +107,126 @@
 	background-repeat: no-repeat;
 }
 
+/* Logo ambient glow — matches ownership shimmer palette */
+.trove-watermark-logo-wrap {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	max-width: 220px;
+	aspect-ratio: 1 / 1;
+	isolation: isolate;
+	flex-shrink: 0;
+}
+
+.trove-watermark-logo-wrap::before {
+	content: '';
+	position: absolute;
+	inset: 4% 2% 8%;
+	z-index: 0;
+	border-radius: 50%;
+	pointer-events: none;
+	background: linear-gradient(
+		115deg,
+		rgba(20, 184, 166, 0.32) 0%,
+		rgba(56, 189, 248, 0.38) 35%,
+		rgba(99, 102, 241, 0.34) 65%,
+		rgba(167, 139, 250, 0.28) 100%
+	);
+	filter: blur(32px);
+	opacity: 0.62;
+	animation: trove-ownership-ambient 5s ease-in-out infinite;
+}
+
+.trove-watermark-logo-wrap::after {
+	content: '';
+	position: absolute;
+	left: 50%;
+	bottom: 2%;
+	width: 52%;
+	height: 2px;
+	transform: translateX(-50%);
+	border-radius: 2px;
+	pointer-events: none;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		rgba(20, 184, 166, 0.2) 15%,
+		rgba(56, 189, 248, 0.75) 40%,
+		rgba(129, 140, 248, 0.8) 60%,
+		rgba(167, 139, 250, 0.2) 85%,
+		transparent 100%
+	);
+	background-size: 200% 100%;
+	animation: trove-ownership-underline 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+	opacity: 0.65;
+	z-index: 0;
+}
+
+.trove-watermark-logo-wrap > .trove-icon,
+.trove-watermark-logo-wrap > .letterpress {
+	position: relative;
+	z-index: 1;
+}
+
 .monaco-workbench.vs-dark .trove-icon,
 .monaco-workbench.hc-black .trove-icon,
-.monaco-workbench.vs-dark .part.editor > .content .editor-group-container > .editor-group-watermark > .letterpress,
-.monaco-workbench.hc-black .part.editor > .content .editor-group-container > .editor-group-watermark > .letterpress {
-	filter: invert(1);
+.monaco-workbench.vs-dark .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress,
+.monaco-workbench.hc-black .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress {
+	filter: invert(1) brightness(1.08);
+}
+
+/* ── Light theme: logo shimmer on icon, visible glow ── */
+.monaco-workbench.vs .trove-watermark-logo-wrap > .trove-icon,
+.monaco-workbench.vs .trove-watermark-logo-wrap > .letterpress {
+	animation: trove-logo-glow-pulse 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* ── Dark / HC: no drop-shadow on logo (prevents black box artifact) ── */
+.monaco-workbench.vs-dark .trove-watermark-logo-wrap > .trove-icon,
+.monaco-workbench.hc-black .trove-watermark-logo-wrap > .trove-icon,
+.monaco-workbench.vs-dark .trove-watermark-logo-wrap > .letterpress,
+.monaco-workbench.hc-black .trove-watermark-logo-wrap > .letterpress {
+	animation: none;
+	filter: invert(1) brightness(1.12);
+}
+
+.monaco-workbench.vs-dark .trove-watermark-logo-wrap::before,
+.monaco-workbench.hc-black .trove-watermark-logo-wrap::before {
+	inset: 14% 10% 16%;
+	background: linear-gradient(
+		115deg,
+		rgba(45, 212, 191, 0.18) 0%,
+		rgba(56, 189, 248, 0.22) 40%,
+		rgba(129, 140, 248, 0.18) 70%,
+		rgba(167, 139, 250, 0.14) 100%
+	);
+	filter: blur(20px);
+	opacity: 0.38;
+	animation: trove-ownership-ambient 6s ease-in-out infinite;
+}
+
+.monaco-workbench.vs-dark .trove-watermark-logo-wrap::after,
+.monaco-workbench.hc-black .trove-watermark-logo-wrap::after {
+	height: 1px;
+	opacity: 0.3;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		rgba(125, 211, 252, 0.35) 50%,
+		transparent 100%
+	);
+	animation: none;
+}
+
+@keyframes trove-logo-glow-pulse {
+	0%, 100% {
+		filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.18)) drop-shadow(0 0 24px rgba(99, 102, 241, 0.1));
+	}
+	50% {
+		filter: drop-shadow(0 0 18px rgba(56, 189, 248, 0.32)) drop-shadow(0 0 32px rgba(167, 139, 250, 0.18));
+	}
 }
 
 /* Small MPS logo marks (banner, welcome pages, release notes, walkthrough) */
@@ -124,6 +239,203 @@
 .monaco-workbench.vs-dark .file-icons-enabled .show-file-icons .vs_code_editor_walkthrough\.md-name-file-icon.md-ext-file-icon.ext-file-icon.markdown-lang-file-icon.file-icon::before,
 .monaco-workbench.hc-black .file-icons-enabled .show-file-icons .vs_code_editor_walkthrough\.md-name-file-icon.md-ext-file-icon.ext-file-icon.markdown-lang-file-icon.file-icon::before {
 	filter: invert(1);
+}
+
+/* Branding below the Trove watermark logo */
+.trove-watermark-branding {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	margin-top: -2px;
+	margin-bottom: 16px;
+	max-width: 320px;
+	padding: 0 14px;
+	text-align: center;
+}
+
+.trove-watermark-tagline {
+	font-size: 13px;
+	font-weight: 300;
+	font-style: italic;
+	letter-spacing: 0.04em;
+	line-height: 1.45;
+	color: var(--vscode-editorWatermark-foreground, var(--vscode-foreground));
+	opacity: 0.88;
+	animation: trove-tagline-fade 6s ease-in-out infinite;
+}
+
+@keyframes trove-tagline-fade {
+	0%, 100% { opacity: 0.78; }
+	50% { opacity: 0.96; }
+}
+
+/* Ownership — gradient shimmer + soft ambient glow */
+.trove-watermark-ownership {
+	position: relative;
+	isolation: isolate;
+	display: inline-block;
+	font-size: 9px;
+	font-weight: 500;
+	letter-spacing: 0.13em;
+	text-transform: uppercase;
+	line-height: 1.5;
+	padding: 5px 2px 10px;
+	max-width: 100%;
+
+	background: linear-gradient(
+		105deg,
+		#64748b 0%,
+		#0f766e 14%,
+		#0891b2 28%,
+		#2563eb 44%,
+		#6366f1 58%,
+		#7c3aed 72%,
+		#64748b 86%,
+		#0f766e 100%
+	);
+	background-size: 240% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+	-webkit-text-fill-color: transparent;
+	animation: trove-ownership-shimmer 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+	filter: drop-shadow(0 0 10px rgba(14, 165, 233, 0.18));
+}
+
+.trove-watermark-ownership::before {
+	content: '';
+	position: absolute;
+	inset: -6px -18px -2px;
+	z-index: -1;
+	border-radius: 999px;
+	pointer-events: none;
+	background: linear-gradient(
+		115deg,
+		rgba(20, 184, 166, 0.22) 0%,
+		rgba(56, 189, 248, 0.28) 35%,
+		rgba(99, 102, 241, 0.24) 65%,
+		rgba(167, 139, 250, 0.2) 100%
+	);
+	filter: blur(16px);
+	opacity: 0.55;
+	animation: trove-ownership-ambient 5s ease-in-out infinite;
+}
+
+.trove-watermark-ownership::after {
+	content: '';
+	position: absolute;
+	left: 50%;
+	bottom: 4px;
+	width: min(92%, 260px);
+	height: 1px;
+	transform: translateX(-50%);
+	border-radius: 1px;
+	pointer-events: none;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		rgba(20, 184, 166, 0.15) 15%,
+		rgba(56, 189, 248, 0.85) 40%,
+		rgba(129, 140, 248, 0.9) 60%,
+		rgba(167, 139, 250, 0.15) 85%,
+		transparent 100%
+	);
+	background-size: 200% 100%;
+	animation: trove-ownership-underline 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+	opacity: 0.75;
+}
+
+@keyframes trove-ownership-shimmer {
+	0%, 100% {
+		background-position: 0% center;
+		filter: drop-shadow(0 0 8px rgba(14, 165, 233, 0.2));
+	}
+	50% {
+		background-position: 100% center;
+		filter: drop-shadow(0 0 16px rgba(99, 102, 241, 0.38));
+	}
+}
+
+@keyframes trove-ownership-ambient {
+	0%, 100% {
+		opacity: 0.42;
+		transform: scale(0.96);
+	}
+	50% {
+		opacity: 0.78;
+		transform: scale(1.04);
+	}
+}
+
+@keyframes trove-ownership-underline {
+	0%, 100% {
+		background-position: 100% center;
+		opacity: 0.5;
+		transform: translateX(-50%) scaleX(0.55);
+	}
+	50% {
+		background-position: 0% center;
+		opacity: 1;
+		transform: translateX(-50%) scaleX(1);
+	}
+}
+
+/* Dark / high-contrast — softer text shimmer, no bloom bar behind copy */
+.monaco-workbench.vs-dark .trove-watermark-tagline,
+.monaco-workbench.hc-black .trove-watermark-tagline {
+	color: rgba(226, 232, 240, 0.7);
+	opacity: 1;
+	animation: trove-tagline-fade-dark 7s ease-in-out infinite;
+}
+
+@keyframes trove-tagline-fade-dark {
+	0%, 100% { color: rgba(203, 213, 225, 0.65); }
+	50% { color: rgba(241, 245, 249, 0.82); }
+}
+
+.monaco-workbench.vs-dark .trove-watermark-ownership,
+.monaco-workbench.hc-black .trove-watermark-ownership {
+	background: linear-gradient(
+		105deg,
+		#64748b 0%,
+		#7dd3fc 20%,
+		#93c5fd 42%,
+		#a5b4fc 64%,
+		#64748b 86%
+	);
+	background-size: 220% 100%;
+	filter: none;
+	animation: trove-ownership-shimmer-dark 7s ease-in-out infinite;
+}
+
+.monaco-workbench.vs-dark .trove-watermark-ownership::before,
+.monaco-workbench.hc-black .trove-watermark-ownership::before {
+	display: none;
+}
+
+.monaco-workbench.vs-dark .trove-watermark-ownership::after,
+.monaco-workbench.hc-black .trove-watermark-ownership::after {
+	height: 1px;
+	width: min(70%, 200px);
+	opacity: 0.35;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		rgba(125, 211, 252, 0.45) 50%,
+		transparent 100%
+	);
+	background-size: 100% 100%;
+	animation: none;
+}
+
+@keyframes trove-ownership-shimmer-dark {
+	0%, 100% {
+		background-position: 0% center;
+	}
+	50% {
+		background-position: 100% center;
+	}
 }
 
 /* styles for all containers used by trove */
@@ -234,3 +546,4 @@
 .trove-scrollable-element *::-webkit-scrollbar-corner {
 	background-color: var(--trove-bg-3) !important;
 }
+

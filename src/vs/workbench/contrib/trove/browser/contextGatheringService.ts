@@ -1,3 +1,4 @@
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Position } from '../../../../editor/common/core/position.js';
 import { DocumentSymbol, SymbolKind } from '../../../../editor/common/languages.js';
@@ -9,13 +10,8 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
+import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { URI } from '../../../../base/common/uri.js';
-
-
-// make sure snippet logic works
-// change logic for `visited` to intervals
-// atomically set new snippets at end
-// throttle cache setting
 
 interface IVisitedInterval {
 	uri: string;
@@ -34,10 +30,12 @@ export const IContextGatheringService = createDecorator<IContextGatheringService
 class ContextGatheringService extends Disposable implements IContextGatheringService {
 	_serviceBrand: undefined;
 	private readonly _NUM_LINES = 3;
-	private readonly _MAX_SNIPPET_LINES = 7;  // Reasonable size for context
-	// Cache holds the most recent list of snippets.
+	private readonly _MAX_SNIPPET_LINES = 7;
 	private _cache: string[] = [];
 	private _snippetIntervals: IVisitedInterval[] = [];
+	private _pendingModel: ITextModel | null = null;
+	private _pendingPos: Position | null = null;
+	private readonly _updateCacheScheduler: RunOnceScheduler;
 
 	constructor(
 		@ILanguageFeaturesService private readonly _langFeaturesService: ILanguageFeaturesService,
@@ -45,34 +43,88 @@ class ContextGatheringService extends Disposable implements IContextGatheringSer
 		@ICodeEditorService private readonly _codeEditorService: ICodeEditorService
 	) {
 		super();
+
+		this._updateCacheScheduler = this._register(new RunOnceScheduler(() => {
+			if (this._pendingModel && this._pendingPos) {
+				void this.updateCache(this._pendingModel, this._pendingPos);
+			}
+		}, 150));
+
 		this._modelService.getModels().forEach(model => this._subscribeToModel(model));
 		this._register(this._modelService.onModelAdded(model => this._subscribeToModel(model)));
+
+		for (const editor of this._codeEditorService.listCodeEditors()) {
+			this._registerEditorCursorListeners(editor);
+		}
+		this._register(this._codeEditorService.onCodeEditorAdd(editor => {
+			this._registerEditorCursorListeners(editor);
+		}));
+
+		setTimeout(() => this._updateCacheFromFocusedEditor(), 0);
 	}
 
-	private _subscribeToModel(model: ITextModel): void {
-		console.log('Subscribing to model:', model.uri.toString());
-		this._register(model.onDidChangeContent(() => {
-			const editor = this._codeEditorService.getFocusedCodeEditor();
-			if (editor && editor.getModel() === model) {
-				const pos = editor.getPosition();
-				console.log('updateCache called at position:', pos);
-				if (pos) {
-					this.updateCache(model, pos);
-				}
+	private _registerEditorCursorListeners(editor: ICodeEditor): void {
+		this._register(editor.onDidChangeCursorPosition(e => {
+			if (this._codeEditorService.getFocusedCodeEditor() !== editor) {
+				return;
+			}
+			const model = editor.getModel();
+			if (model) {
+				this._scheduleUpdateCache(model, e.position);
+			}
+		}));
+		this._register(editor.onDidFocusEditorWidget(() => {
+			const model = editor.getModel();
+			const pos = editor.getPosition();
+			if (model && pos) {
+				this._scheduleUpdateCache(model, pos);
 			}
 		}));
 	}
 
+	private _updateCacheFromFocusedEditor(): void {
+		const editor = this._codeEditorService.getFocusedCodeEditor();
+		const model = editor?.getModel();
+		const pos = editor?.getPosition();
+		if (model && pos) {
+			this._scheduleUpdateCache(model, pos);
+		}
+	}
+
+	private _scheduleUpdateCache(model: ITextModel, pos: Position): void {
+		this._pendingModel = model;
+		this._pendingPos = pos;
+		this._updateCacheScheduler.schedule();
+	}
+
+	private _subscribeToModel(model: ITextModel): void {
+		this._register(model.onDidChangeContent(() => {
+			const editor = this._codeEditorService.getFocusedCodeEditor();
+			if (editor && editor.getModel() === model) {
+				const pos = editor.getPosition();
+				if (pos) {
+					this._scheduleUpdateCache(model, pos);
+				}
+			}
+		}));
+
+		const editor = this._codeEditorService.getFocusedCodeEditor();
+		if (editor?.getModel() === model) {
+			const pos = editor.getPosition();
+			if (pos) {
+				this._scheduleUpdateCache(model, pos);
+			}
+		}
+	}
+
 	public async updateCache(model: ITextModel, pos: Position): Promise<void> {
 		const snippets = new Set<string>();
-		this._snippetIntervals = []; // Reset intervals for new cache update
+		this._snippetIntervals = [];
 
 		await this._gatherNearbySnippets(model, pos, this._NUM_LINES, 3, snippets, this._snippetIntervals);
 		await this._gatherParentSnippets(model, pos, this._NUM_LINES, 3, snippets, this._snippetIntervals);
 
-		// Convert to array and filter overlapping snippets
 		this._cache = Array.from(snippets);
-		console.log('Cache updated:', this._cache);
 	}
 
 	public getCachedSnippets(): string[] {
@@ -315,7 +367,7 @@ class ContextGatheringService extends Disposable implements IContextGatheringSer
 						selectionRange: link.range,
 						children: [],
 						tags: symbol.tags || [],
-						uri: link.uri  // Now keeping it as URI instead of converting to string
+						uri: link.uri
 					})));
 				}
 			} catch (e) {

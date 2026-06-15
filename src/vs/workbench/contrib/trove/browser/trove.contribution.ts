@@ -19,7 +19,7 @@ import './quickEditActions.js'
 import './autocompleteService.js'
 
 // register Context services
-// import './contextGatheringService.js'
+import './contextGatheringService.js'
 // import './contextUserChangesService.js'
 
 // settings pane
@@ -30,8 +30,6 @@ import './media/trove.css'
 
 // update (frontend part, also see platform/)
 import './troveUpdateActions.js'
-
-import './convertToLLMMessageWorkbenchContrib.js'
 
 // tools
 import './toolsService.js'
@@ -67,6 +65,7 @@ import './troveSCMService.js'
 
 // register repository intelligence
 import './repoIntelligenceService.js'
+import './repoIntelligenceStatusContribution.js'
 
 // ---------- common (unclear if these actually need to be imported, because they're already imported wherever they're used) ----------
 

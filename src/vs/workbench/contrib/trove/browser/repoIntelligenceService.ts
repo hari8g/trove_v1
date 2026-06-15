@@ -3,22 +3,34 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
+import { Emitter } from '../../../../base/common/event.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { URI } from '../../../../base/common/uri.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { IRepoIntelligenceService, REPO_INTEL_CHANNEL, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
+import { CodebaseSearchResult, IRepoIntelligenceService, REPO_INTEL_CHANNEL, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
 
 class RepoIntelligenceService extends Disposable implements IRepoIntelligenceService {
 	readonly _serviceBrand: undefined;
 
 	private _cachedProfile: WorkspaceProfile | null = null;
-	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile'>;
+	private _cachedWorkspaceRules: string | null = null;
+	private _troverulesUris: URI[] = [];
+	private readonly _rulesWatchers = this._register(new DisposableStore());
+	private readonly _onDidChangeWorkspaceRules = this._register(new Emitter<void>());
+	readonly onDidChangeWorkspaceRules = this._onDidChangeWorkspaceRules.event;
+	private readonly _onDidChangeChunkIndex = this._register(new Emitter<number>());
+	readonly onDidChangeChunkIndex = this._onDidChangeChunkIndex.event;
+
+	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile' | 'searchCodebase' | 'getChunkCount'>;
 
 	constructor(
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IFileService private readonly _fileService: IFileService,
 	) {
 		super();
 		this._mainProxy = ProxyChannel.toService<IRepoIntelligenceService>(
@@ -27,16 +39,24 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 
 		// Eager init may run before workspace folders are restored — retry after restore.
 		this._initProfile();
-		setTimeout(() => this._initProfile(), 0);
-		setTimeout(() => this._initProfile(), 2000);
+		this._loadWorkspaceRules();
+		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); }, 0);
+		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); }, 2000);
 
 		this._register(
 			this._workspaceContextService.onDidChangeWorkspaceFolders(async (e) => {
-				if (e.added.length > 0 || e.changed.length > 0) {
+				if (e.added.length > 0 || e.changed.length > 0 || e.removed.length > 0) {
 					await this._initProfile();
+					await this._loadWorkspaceRules();
 				}
 			}),
 		);
+
+		this._register(this._fileService.onDidFilesChange(e => {
+			if (this._troverulesUris.some(uri => e.contains(uri))) {
+				this._loadWorkspaceRules();
+			}
+		}));
 	}
 
 	private _getWorkspaceRoot(): string | null {
@@ -48,22 +68,74 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		const root = this._getWorkspaceRoot();
 		if (!root) {
 			this._cachedProfile = null;
+			this._onDidChangeChunkIndex.fire(0);
 			return;
 		}
 
 		if (this._cachedProfile) {
 			const isExpired = Date.now() - this._cachedProfile.lastScannedAt > REPO_INTEL_PROFILE_STALE_MS;
 			if (!this._cachedProfile.isStale && !isExpired && this._cachedProfile.workspaceRoot === root) {
-				return;
+				const count = await this._mainProxy.getChunkCount(root);
+				if (count > 0) {
+					this._onDidChangeChunkIndex.fire(count);
+					return;
+				}
 			}
 		}
 
 		try {
+			this._onDidChangeChunkIndex.fire(-1);
 			this._cachedProfile = await this._mainProxy.getProfile(root);
 			console.log('[RepoIntelligence] Profile loaded for', root);
+			await this._refreshChunkCount();
 		} catch (err) {
 			console.error('[RepoIntelligence] Failed to load profile:', err);
 			this._cachedProfile = null;
+			this._onDidChangeChunkIndex.fire(0);
+		}
+	}
+
+	private async _refreshChunkCount(): Promise<void> {
+		const root = this._getWorkspaceRoot();
+		if (!root) {
+			this._onDidChangeChunkIndex.fire(0);
+			return;
+		}
+		try {
+			const count = await this._mainProxy.getChunkCount(root);
+			this._onDidChangeChunkIndex.fire(count);
+		} catch {
+			this._onDidChangeChunkIndex.fire(0);
+		}
+	}
+
+	private async _loadWorkspaceRules(): Promise<void> {
+		this._rulesWatchers.clear();
+		const troverulesUris: URI[] = [];
+		const parts: string[] = [];
+
+		for (const folder of this._workspaceContextService.getWorkspace().folders) {
+			const uri = URI.joinPath(folder.uri, '.troverules');
+			try {
+				await this._fileService.stat(uri);
+				const fileContent = await this._fileService.readFile(uri);
+				const text = fileContent.value.toString().trim();
+				if (text) {
+					parts.push(text);
+				}
+				troverulesUris.push(uri);
+				this._rulesWatchers.add(this._fileService.watch(uri));
+			} catch {
+				// missing or unreadable .troverules is normal
+			}
+		}
+
+		this._troverulesUris = troverulesUris;
+		const newRules = parts.length > 0 ? parts.join('\n\n') : null;
+		const changed = newRules !== this._cachedWorkspaceRules;
+		this._cachedWorkspaceRules = newRules;
+		if (changed) {
+			this._onDidChangeWorkspaceRules.fire();
 		}
 	}
 
@@ -71,20 +143,41 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		return this._cachedProfile;
 	}
 
+	getWorkspaceRules(): string | null {
+		return this._cachedWorkspaceRules;
+	}
+
 	async getProfile(workspaceRoot: string): Promise<WorkspaceProfile | null> {
 		const profile = await this._mainProxy.getProfile(workspaceRoot);
 		if (workspaceRoot === this._getWorkspaceRoot()) {
 			this._cachedProfile = profile;
+			await this._refreshChunkCount();
 		}
 		return profile;
 	}
 
 	async refreshProfile(workspaceRoot: string): Promise<WorkspaceProfile> {
+		if (workspaceRoot === this._getWorkspaceRoot()) {
+			this._onDidChangeChunkIndex.fire(-1);
+		}
 		const profile = await this._mainProxy.refreshProfile(workspaceRoot);
 		if (workspaceRoot === this._getWorkspaceRoot()) {
 			this._cachedProfile = profile;
+			await this._refreshChunkCount();
 		}
 		return profile;
+	}
+
+	async searchCodebase(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]> {
+		const results = await this._mainProxy.searchCodebase(workspaceRoot, query, maxResults);
+		if (workspaceRoot === this._getWorkspaceRoot()) {
+			await this._refreshChunkCount();
+		}
+		return results;
+	}
+
+	async getChunkCount(workspaceRoot: string): Promise<number> {
+		return this._mainProxy.getChunkCount(workspaceRoot);
 	}
 }
 

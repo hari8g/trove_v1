@@ -3,9 +3,185 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useRef, useState } from 'react';
-import { AnthropicReasoning } from '../../../../common/sendLLMMessageTypes.js';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AnthropicReasoning, RawToolCallObj } from '../../../../common/sendLLMMessageTypes.js';
+import { ChatMessage } from '../../../../common/chatThreadServiceTypes.js';
+import { BuiltinToolName } from '../../../../common/toolsServiceTypes.js';
+import { builtinToolNames, isABuiltinToolName } from '../../../../common/prompt/prompts.js';
 import { ChevronRight } from 'lucide-react';
+
+export type EditToolStreamStep = {
+	id: string;
+	label: string;
+	detail?: string;
+	status: 'pending' | 'active' | 'done';
+};
+
+const formatStreamingCharCount = (n: number): string => {
+	if (n < 1000) return `${n} chars`;
+	return `${(n / 1000).toFixed(1)}k chars`;
+};
+
+const basenameFromPath = (path: string): string => {
+	const normalized = path.replace(/\\/g, '/');
+	return normalized.split('/').pop() ?? path;
+};
+
+export const getEditToolStreamingSteps = (toolCallSoFar: RawToolCallObj): EditToolStreamStep[] => {
+	const isEditFile = toolCallSoFar.name === 'edit_file';
+	const contentParam = isEditFile ? 'search_replace_blocks' : 'new_content';
+	const { rawParams, doneParams, isDone } = toolCallSoFar;
+
+	const uri = rawParams.uri?.trim() ?? '';
+	const uriDone = doneParams.includes('uri');
+	const content = rawParams[contentParam] ?? '';
+	const contentDone = doneParams.includes(contentParam);
+
+	const blockCount = isEditFile ? (content.match(/<<<<<<<\s/g) ?? []).length : 0;
+	const contentDetail = content.length > 0
+		? (blockCount > 0
+			? `${blockCount} block${blockCount === 1 ? '' : 's'} · ${formatStreamingCharCount(content.length)}`
+			: formatStreamingCharCount(content.length))
+		: undefined;
+
+	const steps: EditToolStreamStep[] = [
+		{
+			id: 'invoke',
+			label: 'Preparing edit',
+			status: uri || toolCallSoFar.name ? 'done' : 'active',
+		},
+		{
+			id: 'uri',
+			label: uriDone ? 'Target file' : 'Reading target file',
+			detail: uri ? basenameFromPath(uri) : undefined,
+			status: !uri ? 'pending' : uriDone ? 'done' : 'active',
+		},
+		{
+			id: 'content',
+			label: isEditFile ? 'Generating search/replace blocks' : 'Generating file content',
+			detail: contentDetail,
+			status: !uriDone && !uri
+				? 'pending'
+				: isDone || contentDone
+					? 'done'
+					: 'active',
+		},
+		{
+			id: 'preview',
+			label: 'Building diff preview',
+			status: isDone
+				? 'done'
+				: uri && content.length > 0
+					? contentDone ? 'active' : 'pending'
+					: 'pending',
+		},
+	];
+
+	return steps;
+};
+
+const StreamingStepRow = ({ step }: { step: EditToolStreamStep }) => (
+	<div className={`flex items-center gap-1.5 py-0.5 text-[11px] leading-[1.35] min-h-[18px] ${step.status === 'pending' ? 'opacity-50' : ''}`}>
+		{step.status === 'done' ? (
+			<span className="inline-block w-1 h-1 shrink-0 rounded-full bg-green-500/70" />
+		) : step.status === 'active' ? (
+			<span className="inline-block w-1 h-1 shrink-0 rounded-full bg-trove-fg-3/70 animate-pulse" />
+		) : (
+			<span className="inline-block w-1 h-1 shrink-0 rounded-full bg-trove-fg-4/30" />
+		)}
+		<span className={`shrink-0 ${step.status === 'active' ? 'text-trove-fg-3 italic' : 'text-trove-fg-4'}`}>
+			{step.label}
+		</span>
+		{step.detail ? (
+			<span className="text-trove-fg-3 truncate font-mono text-[11px]">{step.detail}</span>
+		) : null}
+	</div>
+);
+
+export const StreamingEditToolCard = ({
+	toolCallSoFar,
+	addedLines,
+	removedLines,
+	onFileClick,
+	filePath,
+	children,
+}: {
+	toolCallSoFar: RawToolCallObj;
+	addedLines?: number;
+	removedLines?: number;
+	onFileClick?: () => void;
+	filePath?: string;
+	children?: React.ReactNode;
+}) => {
+	const steps = useMemo(() => getEditToolStreamingSteps(toolCallSoFar), [toolCallSoFar]);
+	const [isExpanded, setIsExpanded] = useState(true);
+	const stepsRef = useRef<HTMLDivElement>(null);
+	const activeStep = steps.find(s => s.status === 'active');
+
+	const toolTitle = toolCallSoFar.name === 'edit_file' ? 'Edit file' : 'Write file';
+	const uri = toolCallSoFar.rawParams.uri?.trim();
+	const fileName = uri ? basenameFromPath(uri) : undefined;
+
+	useEffect(() => {
+		if (stepsRef.current) {
+			stepsRef.current.scrollTop = stepsRef.current.scrollHeight;
+		}
+	}, [steps]);
+
+	return (
+		<div className="w-full rounded-md px-1.5 py-0.5 bg-trove-bg-2/30 overflow-hidden my-0.5 select-none">
+			<div
+				className="flex items-center min-h-[18px] cursor-pointer hover:brightness-125 transition-all duration-150"
+				onClick={() => setIsExpanded(v => !v)}
+			>
+				<ChevronRight
+					className={`text-trove-fg-3 mr-0.5 h-4 w-4 flex-shrink-0 transition-transform duration-100 ease-[cubic-bezier(0.4,0,0.2,1)] ${isExpanded ? 'rotate-90' : ''}`}
+				/>
+				<span className="text-trove-fg-3 flex-shrink-0">{toolTitle}</span>
+				{fileName ? (
+					<span
+						className={`text-trove-fg-4 text-xs italic truncate ml-2 font-mono ${onFileClick ? 'cursor-pointer hover:underline' : ''}`}
+						onClick={(e) => { if (onFileClick) { e.stopPropagation(); onFileClick(); } }}
+						title={filePath}
+					>
+						{fileName}
+					</span>
+				) : (
+					<span className="text-trove-fg-4 text-xs italic truncate ml-2">
+						{activeStep?.label ?? 'Generating…'}
+					</span>
+				)}
+				{(addedLines !== undefined && addedLines > 0) || (removedLines !== undefined && removedLines > 0) ? (
+					<span className="flex items-center gap-1.5 shrink-0 font-mono text-[10px] ml-auto mr-1">
+						{addedLines !== undefined && addedLines > 0 ? (
+							<span className="text-green-600 dark:text-green-400">+{addedLines}</span>
+						) : null}
+						{removedLines !== undefined && removedLines > 0 ? (
+							<span className="text-red-600 dark:text-red-400">−{removedLines}</span>
+						) : null}
+					</span>
+				) : null}
+			</div>
+			{isExpanded ? (
+				<div className="pl-5 pr-1 pb-1 pt-0.5">
+					<div
+						ref={stepsRef}
+						className="max-h-28 overflow-y-auto mb-1"
+					>
+						{steps.map(step => (
+							<StreamingStepRow key={step.id} step={step} />
+						))}
+					</div>
+					{children ? (
+						<div className="rounded border border-trove-border-3/40 overflow-hidden">
+							{children}
+						</div>
+					) : null}
+				</div>
+			) : null}
+		</div>
+	);
+};
 
 export const formatAnthropicReasoning = (blocks: AnthropicReasoning[] | null | undefined): string => {
 	if (!blocks?.length) return '';
@@ -60,6 +236,163 @@ export const CompactCompletedToolRow = ({
 	</div>
 );
 
+export type AgentTurnActivitySummary = {
+	fileCount: number;
+	toolCount: number;
+	recentFilesLine?: string;
+	summaryLine?: string;
+};
+
+const basenameFromFsPath = (fsPath: string): string => {
+	const normalized = fsPath.replace(/\\/g, '/');
+	return normalized.split('/').pop() ?? fsPath;
+};
+
+const toolActivityLabel = (toolName: BuiltinToolName, count: number): string => {
+	const labels: Partial<Record<BuiltinToolName, [string, string]>> = {
+		read_file: ['file read', 'files read'],
+		search_codebase: ['codebase search', 'codebase searches'],
+		search_for_files: ['file search', 'file searches'],
+		search_pathnames_only: ['path search', 'path searches'],
+		search_in_file: ['in-file search', 'in-file searches'],
+		ls_dir: ['folder listed', 'folders listed'],
+		get_dir_tree: ['tree listed', 'trees listed'],
+		run_command: ['command run', 'commands run'],
+		run_persistent_command: ['command run', 'commands run'],
+		edit_file: ['edit', 'edits'],
+		rewrite_file: ['write', 'writes'],
+	};
+	const pair = labels[toolName];
+	if (pair) {
+		return `${count} ${count === 1 ? pair[0] : pair[1]}`;
+	}
+	return `${count} tool call${count === 1 ? '' : 's'}`;
+};
+
+export const summarizeAgentTurnActivity = (messages: ChatMessage[]): AgentTurnActivitySummary => {
+	let lastUserIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === 'user') {
+			lastUserIdx = i;
+			break;
+		}
+	}
+
+	const turnMessages = lastUserIdx >= 0 ? messages.slice(lastUserIdx + 1) : messages;
+	const toolCounts = new Map<string, number>();
+	const readFiles: string[] = [];
+
+	for (const message of turnMessages) {
+		if (message.role !== 'tool') continue;
+		if (message.type !== 'success' && message.type !== 'running_now') continue;
+
+		toolCounts.set(message.name, (toolCounts.get(message.name) ?? 0) + 1);
+
+		if (message.name === 'read_file' && 'params' in message && message.params && 'uri' in message.params) {
+			readFiles.push(basenameFromFsPath(message.params.uri.fsPath));
+		}
+	}
+
+	const toolCount = [...toolCounts.values()].reduce((sum, n) => sum + n, 0);
+	const fileCount = toolCounts.get('read_file') ?? 0;
+
+	const summaryParts: string[] = [];
+	for (const toolName of builtinToolNames) {
+		const count = toolCounts.get(toolName);
+		if (count && isABuiltinToolName(toolName)) {
+			summaryParts.push(toolActivityLabel(toolName, count));
+		}
+	}
+	for (const [toolName, count] of toolCounts) {
+		if (!isABuiltinToolName(toolName)) {
+			summaryParts.push(`${count} MCP call${count === 1 ? '' : 's'}`);
+		}
+	}
+
+	let recentFilesLine: string | undefined;
+	if (readFiles.length > 0) {
+		const unique = [...new Set(readFiles)];
+		if (unique.length <= 3) {
+			recentFilesLine = unique.join(', ');
+		} else {
+			recentFilesLine = `${unique.slice(0, 3).join(', ')} +${unique.length - 3} more`;
+		}
+	}
+
+	return {
+		fileCount,
+		toolCount,
+		recentFilesLine,
+		summaryLine: summaryParts.length > 0 ? summaryParts.join(' · ') : undefined,
+	};
+};
+
+export type BackgroundActivityPhase =
+	| 'preparing'
+	| 'waiting'
+	| 'reasoning'
+	| 'writing'
+	| 'tool'
+	| 'awaiting';
+
+export const BackgroundActivityPanel = ({
+	phase,
+	title,
+	detail,
+	contextLine,
+}: {
+	phase: BackgroundActivityPhase;
+	title: string;
+	detail?: string;
+	contextLine?: string;
+}) => {
+	const [elapsedSeconds, setElapsedSeconds] = useState(0);
+	const startedAtRef = useRef(Date.now());
+
+	useEffect(() => {
+		startedAtRef.current = Date.now();
+		setElapsedSeconds(0);
+	}, [phase, title, detail, contextLine]);
+
+	useEffect(() => {
+		const interval = setInterval(() => {
+			setElapsedSeconds(Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000)));
+		}, 500);
+		return () => clearInterval(interval);
+	}, [phase, title, detail, contextLine]);
+
+	const phaseHint =
+		phase === 'preparing' ? 'Assembling context'
+			: phase === 'waiting' ? 'Model request in flight'
+				: phase === 'reasoning' ? 'Internal reasoning'
+					: phase === 'writing' ? 'Streaming reply'
+						: phase === 'tool' ? 'Tool execution'
+							: 'Needs your input';
+
+	return (
+		<div className="rounded-md border border-trove-border-3/40 bg-trove-bg-2/35 px-2.5 py-2 my-1 select-none">
+			<div className="flex items-start gap-2">
+				<span className={`inline-block w-1.5 h-1.5 shrink-0 rounded-full mt-1 animate-pulse ${phase === 'awaiting' ? 'bg-yellow-400/80' : 'bg-violet-400/80'}`} />
+				<div className="min-w-0 flex-1 flex flex-col gap-1">
+					<div className="flex items-baseline justify-between gap-2">
+						<span className="text-[11px] text-trove-fg-2 font-medium truncate">{title}</span>
+						<span className="text-[10px] text-trove-fg-4 shrink-0 tabular-nums">{elapsedSeconds}s</span>
+					</div>
+					{detail ? (
+						<div className="text-[11px] leading-snug text-trove-fg-3">{detail}</div>
+					) : null}
+					{contextLine ? (
+						<div className="text-[10px] leading-snug text-trove-fg-4 truncate" title={contextLine}>
+							Recent: {contextLine}
+						</div>
+					) : null}
+					<div className="text-[10px] text-trove-fg-4 italic">{phaseHint}</div>
+				</div>
+			</div>
+		</div>
+	);
+};
+
 export const LiveActivityBanner = ({
 	status,
 	detail,
@@ -99,9 +432,9 @@ export const LiveReasoningBlock = ({
 }) => {
 	const anthropicText = formatAnthropicReasoning(anthropicReasoning);
 	const hasContent = !!(reasoning?.trim() || anthropicText);
-	if (!hasContent) return null;
-
 	const isLiveThinking = isStreaming && !hasDisplayContent;
+
+	if (!hasContent && !isLiveThinking) return null;
 	const thinkingStartRef = useRef(Date.now());
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const [thoughtSeconds, setThoughtSeconds] = useState<number | null>(null);
@@ -147,7 +480,9 @@ export const LiveReasoningBlock = ({
 						className="mt-0.5 pl-2 ml-1 border-l border-trove-border-3/40 max-h-40 overflow-y-auto"
 					>
 						<div className="text-[11px] leading-[1.45] text-trove-fg-4 italic opacity-90 !select-text cursor-auto whitespace-pre-wrap">
-							{children}
+							{hasContent ? children : (
+								<span className="opacity-80">Reasoning stream starting…</span>
+							)}
 						</div>
 					</div>
 				) : null}

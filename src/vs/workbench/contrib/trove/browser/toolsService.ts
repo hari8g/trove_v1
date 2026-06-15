@@ -218,6 +218,12 @@ export class ToolsService implements IToolsService {
 					pageNumber
 				}
 			},
+			search_codebase: (params: RawToolParamsObj) => {
+				const { query: queryUnknown, max_results: maxResultsUnknown } = params
+				const query = validateStr('query', queryUnknown)
+				const maxResults = validateNumber(maxResultsUnknown, { default: 10 }) ?? 10
+				return { query, maxResults: Math.min(Math.max(maxResults, 1), 50) }
+			},
 			search_in_file: (params: RawToolParamsObj) => {
 				const { uri: uriStr, query: queryUnknown, is_regex: isRegexUnknown } = params;
 				const uri = validateURI(uriStr);
@@ -373,6 +379,21 @@ export class ToolsService implements IToolsService {
 				const hasNextPage = (data.results.length - 1) - toIdx >= 1
 				return { result: { queryStr, uris, hasNextPage } }
 			},
+			search_codebase: async ({ query, maxResults }) => {
+				const folders = workspaceContextService.getWorkspace().folders
+				if (folders.length === 0) {
+					throw new Error('No workspace folder open.')
+				}
+				const workspaceRoot = folders[0].uri.fsPath
+				const searchResults = await this.repoIntelligenceService.searchCodebase(workspaceRoot, query, maxResults)
+				const results = searchResults.map(r => ({
+					filePath: r.filePath,
+					startLine: r.startLine,
+					endLine: r.endLine,
+					snippet: r.snippet,
+				}))
+				return { result: { results, query } }
+			},
 			search_in_file: async ({ uri, query, isRegex }) => {
 				await troveModelService.initializeModel(uri);
 				const { model } = await troveModelService.getModelSafe(uri);
@@ -509,6 +530,15 @@ export class ToolsService implements IToolsService {
 			},
 			search_for_files: (params, result) => {
 				return result.uris.map(uri => uri.fsPath).join('\n') + nextPageStr(result.hasNextPage)
+			},
+			search_codebase: (params, result) => {
+				if (result.results.length === 0) {
+					return `No codebase matches found for query: "${result.query}".`
+				}
+				const lines = result.results.map((r, i) => {
+					return `${i + 1}. ${r.filePath}:${r.startLine}-${r.endLine}\n\`\`\`\n${r.snippet}\n\`\`\``
+				})
+				return `Codebase search results for "${result.query}" (${result.results.length} matches):\n\n${lines.join('\n\n')}`
 			},
 			search_in_file: (params, result) => {
 				const { model } = troveModelService.getModel(params.uri)
