@@ -18,14 +18,17 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 
 	private _cachedProfile: WorkspaceProfile | null = null;
 	private _cachedWorkspaceRules: string | null = null;
+	private _cachedUserMemory: string | null = null;
 	private _troverulesUris: URI[] = [];
 	private readonly _rulesWatchers = this._register(new DisposableStore());
 	private readonly _onDidChangeWorkspaceRules = this._register(new Emitter<void>());
 	readonly onDidChangeWorkspaceRules = this._onDidChangeWorkspaceRules.event;
 	private readonly _onDidChangeChunkIndex = this._register(new Emitter<number>());
 	readonly onDidChangeChunkIndex = this._onDidChangeChunkIndex.event;
+	private readonly _onDidChangeUserMemory = this._register(new Emitter<void>());
+	readonly onDidChangeUserMemory = this._onDidChangeUserMemory.event;
 
-	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile' | 'searchCodebase' | 'getChunkCount'>;
+	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile' | 'searchCodebase' | 'getChunkCount' | 'getUserMemory' | 'appendToUserMemory'>;
 
 	constructor(
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
@@ -40,8 +43,9 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		// Eager init may run before workspace folders are restored — retry after restore.
 		this._initProfile();
 		this._loadWorkspaceRules();
-		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); }, 0);
-		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); }, 2000);
+		this._loadUserMemory();
+		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); this._loadUserMemory(); }, 0);
+		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); this._loadUserMemory(); }, 2000);
 
 		this._register(
 			this._workspaceContextService.onDidChangeWorkspaceFolders(async (e) => {
@@ -145,6 +149,28 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 
 	getWorkspaceRules(): string | null {
 		return this._cachedWorkspaceRules;
+	}
+
+	private async _loadUserMemory(): Promise<void> {
+		try {
+			const memory = await this._mainProxy.getUserMemory();
+			const changed = memory !== this._cachedUserMemory;
+			this._cachedUserMemory = memory;
+			if (changed) {
+				this._onDidChangeUserMemory.fire();
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	getUserMemory(): string | null {
+		return this._cachedUserMemory;
+	}
+
+	async appendToUserMemory(text: string): Promise<void> {
+		await this._mainProxy.appendToUserMemory(text);
+		await this._loadUserMemory();
 	}
 
 	async getProfile(workspaceRoot: string): Promise<WorkspaceProfile | null> {

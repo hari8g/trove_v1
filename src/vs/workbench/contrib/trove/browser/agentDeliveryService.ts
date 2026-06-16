@@ -16,6 +16,8 @@ import {
 	DEV_SERVER_COMMAND_PATTERN,
 	isDevServerCommand,
 	isLongRunningTerminalCommand,
+	isPackageInstallCommand,
+	terminalCommandLooksSuccessful,
 } from '../common/prompt/prompts.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { BuiltinToolCallParams, TerminalResolveReason } from '../common/toolsServiceTypes.js';
@@ -39,6 +41,7 @@ export interface IAgentDeliveryService {
 	): Promise<void>;
 
 	finalizeDelivery(threadId: string): void;
+	setPendingDiffs(threadId: string, pendingDiffCount: number, filesChanged: string[]): void;
 }
 
 export const IAgentDeliveryService = createDecorator<IAgentDeliveryService>('AgentDeliveryService');
@@ -73,10 +76,14 @@ const extractLocalhostUrl = (text: string, command?: string): string | undefined
 	return undefined;
 };
 
-const commandSucceeded = (resolveReason: TerminalResolveReason): boolean =>
-	resolveReason.type === 'server_ready'
-	|| (resolveReason.type === 'done' && resolveReason.exitCode === 0)
-	|| resolveReason.type === 'timeout' && resolveReason.reason === 'snapshot';
+const commandSucceeded = (command: string, output: string, resolveReason: TerminalResolveReason): boolean => {
+	if (resolveReason.type === 'server_ready') return true
+	if (resolveReason.type === 'timeout' && resolveReason.reason === 'snapshot') return true
+	if (resolveReason.type === 'done' && resolveReason.exitCode === 0) {
+		return terminalCommandLooksSuccessful(command, output, resolveReason.exitCode)
+	}
+	return false
+}
 
 const shortCommandLabel = (command: string): string => {
 	const trimmed = command.trim();
@@ -164,9 +171,8 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 	): Promise<void> {
 		const command = 'command' in params ? params.command : '';
 		const { resolveReason, result: rawOutput } = result;
-		if (!commandSucceeded(resolveReason)) return;
-
 		const plainOutput = removeAnsiEscapeCodes(rawOutput);
+		if (!commandSucceeded(command, plainOutput, resolveReason)) return;
 		const url = extractLocalhostUrl(plainOutput, command);
 
 		// Localhost curl / HTTP check succeeded
@@ -204,8 +210,21 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 			return;
 		}
 
-		// Build / compile / test / install succeeded in sandbox (terminal auto-closed)
-		if (isBuildOrCompileCommand(command) && resolveReason.type === 'done' && resolveReason.exitCode === 0) {
+		// Package install succeeded in sandbox (writes to real workspace)
+		if (isPackageInstallCommand(command) && resolveReason.type === 'done') {
+			const serverCommand = this._suggestedServerCommand();
+			this._mergeDelivery(threadId, {
+				status: 'build_succeeded',
+				buildCommand: command,
+				buildLabel: shortCommandLabel(command),
+				serverCommand,
+				serverLabel: serverCommand ? shortCommandLabel(serverCommand) : undefined,
+			});
+			return;
+		}
+
+		// Build / compile / test succeeded in sandbox (terminal auto-closed)
+		if (isBuildOrCompileCommand(command) && resolveReason.type === 'done') {
 			const serverCommand = this._suggestedServerCommand();
 			this._mergeDelivery(threadId, {
 				status: 'build_succeeded',
@@ -225,6 +244,24 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 		if (delivery.status === 'server_running' && delivery.previewUrl && !delivery.previewOpenedInEditor) {
 			this._onDidChangeDelivery.fire({ threadId });
 		}
+	}
+
+	setPendingDiffs(threadId: string, pendingDiffCount: number, filesChanged: string[]): void {
+		const prev = this._deliveryByThread.get(threadId);
+		const next: AgentDeliverySummary = {
+			status: prev?.status ?? 'build_succeeded',
+			buildCommand: prev?.buildCommand,
+			serverCommand: prev?.serverCommand,
+			previewUrl: prev?.previewUrl,
+			buildLabel: prev?.buildLabel,
+			serverLabel: prev?.serverLabel,
+			previewOpenedInEditor: prev?.previewOpenedInEditor ?? false,
+			updatedAt: new Date().toISOString(),
+			pendingDiffCount,
+			filesChanged,
+		};
+		this._deliveryByThread.set(threadId, next);
+		this._onDidChangeDelivery.fire({ threadId });
 	}
 }
 

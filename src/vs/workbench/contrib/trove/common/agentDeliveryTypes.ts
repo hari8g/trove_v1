@@ -17,4 +17,6 @@ export type AgentDeliverySummary = {
 	serverLabel?: string;
 	previewOpenedInEditor: boolean;
 	updatedAt: string;
+	pendingDiffCount?: number;
+	filesChanged?: string[];
 };

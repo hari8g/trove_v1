@@ -24,3 +24,5 @@ export const TROVE_REJECT_FILE_ACTION_ID = 'trove.rejectFile'
 export const TROVE_ACCEPT_ALL_DIFFS_ACTION_ID = 'trove.acceptAllDiffs'
 
 export const TROVE_REJECT_ALL_DIFFS_ACTION_ID = 'trove.rejectAllDiffs'
+
+export const TROVE_REMEMBER_THIS_ACTION_ID = 'trove.rememberThis'

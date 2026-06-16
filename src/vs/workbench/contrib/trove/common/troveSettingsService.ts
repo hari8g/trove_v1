@@ -299,6 +299,9 @@ class TroveSettingsService extends Disposable implements ITroveSettingsService {
 			
 			// add autoAcceptLLMChanges feature
 			if (readS.globalSettings.autoAcceptLLMChanges === undefined) readS.globalSettings.autoAcceptLLMChanges = false;
+
+			// add enableAgentPlan feature
+			if (readS.globalSettings.enableAgentPlan === undefined) readS.globalSettings.enableAgentPlan = true;
 		}
 		catch (e) {
 			readS = defaultState()

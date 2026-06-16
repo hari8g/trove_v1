@@ -7,6 +7,7 @@ import React, { useCallback } from 'react';
 import { AgentDeliverySummary } from '../../../../common/agentDeliveryTypes.js';
 import { URI } from '../../../../../../../base/common/uri.js';
 import { useAccessor } from '../util/services.js';
+import { IAgentDeliveryService } from '../../../agentDeliveryService.js';
 
 const StatusIcon = ({ status }: { status: AgentDeliverySummary['status'] }) => {
 	const color = status === 'verified'
@@ -46,9 +47,33 @@ const CommandPill = ({ command }: { command: string }) => (
 	<code className="trove-delivery-command">{command}</code>
 );
 
-export const AgentDeliverySummaryCard = ({ delivery }: { delivery: AgentDeliverySummary }) => {
+export const AgentDeliverySummaryCard = ({ delivery, threadId }: { delivery: AgentDeliverySummary; threadId: string }) => {
 	const accessor = useAccessor();
 	const commandService = accessor.get('ICommandService');
+	const commandBarService = accessor.get('ITroveCommandBarService');
+	const agentDeliveryService = accessor.get('IAgentDeliveryService');
+
+	const pendingDiffCount = delivery.pendingDiffCount ?? 0;
+	const showDiffActions = pendingDiffCount > 1;
+	const hasDeliveryInfo = delivery.status === 'verified'
+		|| delivery.status === 'server_running'
+		|| !!delivery.buildLabel
+		|| !!delivery.serverLabel
+		|| !!delivery.previewUrl;
+
+	const clearPendingDiffs = useCallback(() => {
+		agentDeliveryService.setPendingDiffs(threadId, 0, []);
+	}, [agentDeliveryService, threadId]);
+
+	const onAcceptAll = useCallback(() => {
+		commandBarService.acceptOrRejectAllFiles({ behavior: 'accept' });
+		clearPendingDiffs();
+	}, [commandBarService, clearPendingDiffs]);
+
+	const onRejectAll = useCallback(() => {
+		commandBarService.acceptOrRejectAllFiles({ behavior: 'reject' });
+		clearPendingDiffs();
+	}, [commandBarService, clearPendingDiffs]);
 
 	const openPreview = useCallback(async () => {
 		if (!delivery.previewUrl) return;
@@ -62,19 +87,25 @@ export const AgentDeliverySummaryCard = ({ delivery }: { delivery: AgentDelivery
 		}
 	}, [commandService, delivery.previewUrl]);
 
-	const headline = delivery.status === 'verified'
+	const headline = !hasDeliveryInfo && showDiffActions
+		? `${pendingDiffCount} files changed`
+		: delivery.status === 'verified'
 		? 'Verified and ready'
 		: delivery.status === 'server_running'
 			? 'Dev server is running'
 			: 'Build completed successfully';
 
-	const subhead = delivery.status === 'verified'
+	const subhead = !hasDeliveryInfo && showDiffActions
+		? 'Review pending edits across your workspace.'
+		: delivery.status === 'verified'
 		? delivery.previewOpenedInEditor
-			? 'Preview opened in the editor. The sandbox terminal was closed after checks passed.'
-			: 'Checks passed. Open the preview below to test in the editor.'
+			? 'Install, build, and server checks passed. Preview is open — use the app in the editor.'
+			: 'All background setup completed. Open the preview below.'
 		: delivery.status === 'server_running'
-			? 'Server is up in the background. Test the preview in the editor when ready.'
-			: 'Sandbox terminal closed after a successful build. Start the app and test locally.';
+			? 'Dev server is running in the Trove Agent terminal (background). Open the preview — no need to run start in your terminal.'
+			: delivery.serverLabel
+				? 'Dependencies and build finished in the sandbox. The agent should start the dev server next — you should only need to preview the app.'
+				: 'Sandbox setup step completed on disk (shared with your workspace).';
 
 	return (
 		<div className="trove-delivery-summary my-3">
@@ -88,24 +119,30 @@ export const AgentDeliverySummaryCard = ({ delivery }: { delivery: AgentDelivery
 
 			<div className="trove-delivery-summary-grid">
 				{delivery.buildLabel && (
-					<Section title="Build">
+					<Section title={/\b(install|ci|add)\b/i.test(delivery.buildLabel) ? 'Dependencies' : 'Build'}>
 						<CommandPill command={delivery.buildLabel} />
-						<p className="trove-delivery-hint mt-1.5">Completed in the chat sandbox — no manual rebuild needed.</p>
+						<p className="trove-delivery-hint mt-1.5">
+							{/\b(install|ci|add)\b/i.test(delivery.buildLabel)
+								? 'Installed to your project folder on disk — your terminal will see the same node_modules.'
+								: 'Completed in the chat sandbox — no manual rebuild needed.'}
+						</p>
 					</Section>
 				)}
 
-				{(delivery.serverLabel || delivery.status !== 'build_succeeded') && delivery.serverLabel && (
-					<Section title="Server">
+				{delivery.serverLabel && delivery.status !== 'verified' && (
+					<Section title="Dev server">
 						<CommandPill command={delivery.serverLabel} />
-						{delivery.status === 'build_succeeded' && (
-							<p className="trove-delivery-hint mt-1.5">Run this in your terminal, then test in the browser.</p>
-						)}
+						<p className="trove-delivery-hint mt-1.5">
+							{delivery.status === 'server_running'
+								? 'Already running in the Trove Agent background terminal.'
+								: 'Agent should run this automatically in the background — you should not need to type it in your terminal.'}
+						</p>
 					</Section>
 				)}
 
-				{delivery.status === 'build_succeeded' && !delivery.serverLabel && (
+				{delivery.status === 'build_succeeded' && !delivery.serverLabel && hasDeliveryInfo && (
 					<Section title="Next step">
-						<p className="trove-delivery-hint">Start your dev server, then open the local URL in the editor to preview.</p>
+						<p className="trove-delivery-hint">Agent should start the dev server and verify with curl before finishing.</p>
 					</Section>
 				)}
 
@@ -129,6 +166,19 @@ export const AgentDeliverySummaryCard = ({ delivery }: { delivery: AgentDelivery
 						</div>
 					</Section>
 				)}
+
+				{showDiffActions ? (
+					<Section title="Pending edits">
+						<div className="flex flex-wrap gap-2">
+							<button type="button" className="trove-delivery-action" onClick={onAcceptAll}>
+								Accept all {pendingDiffCount} changes
+							</button>
+							<button type="button" className="trove-delivery-action trove-delivery-action-secondary" onClick={onRejectAll}>
+								Reject all
+							</button>
+						</div>
+					</Section>
+				) : null}
 			</div>
 		</div>
 	);

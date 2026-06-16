@@ -94,17 +94,45 @@
 	opacity: 80%;
 }
 
-/* MPS logo — dark asset on light themes; inverted on dark themes for contrast */
+/* MPS logo — dark asset on light themes; blend modes remove baked-in JPEG black on dark themes */
 .trove-icon,
 .monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress {
 	width: 100%;
 	max-width: 220px;
 	max-height: 100%;
 	aspect-ratio: 1 / 1;
+	background-color: transparent;
 	background-image: url('../../../../browser/parts/editor/media/trove-logo-dark.png');
 	background-size: contain;
 	background-position: center;
 	background-repeat: no-repeat;
+}
+
+/* Cursor-style ambient fade behind the whole watermark block — all themes */
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark {
+	position: relative;
+	isolation: isolate;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark::before {
+	content: '';
+	position: absolute;
+	inset: -8% -12%;
+	z-index: 0;
+	pointer-events: none;
+	background: radial-gradient(
+		ellipse 72% 58% at 50% 36%,
+		color-mix(in srgb, var(--vscode-editor-foreground) 7%, var(--vscode-editor-background)) 0%,
+		color-mix(in srgb, var(--vscode-editor-foreground) 2.5%, var(--vscode-editor-background)) 42%,
+		transparent 78%
+	);
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap,
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-branding,
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark > .shortcuts {
+	position: relative;
+	z-index: 1;
 }
 
 /* Logo ambient glow — matches ownership shimmer palette */
@@ -118,24 +146,30 @@
 	aspect-ratio: 1 / 1;
 	isolation: isolate;
 	flex-shrink: 0;
+	border-radius: 20px;
+	background: radial-gradient(
+		ellipse 85% 75% at 50% 48%,
+		color-mix(in srgb, var(--vscode-editor-foreground) 5%, var(--vscode-editor-background)) 0%,
+		transparent 72%
+	);
 }
 
 .trove-watermark-logo-wrap::before {
 	content: '';
 	position: absolute;
-	inset: 4% 2% 8%;
+	inset: 6% 4% 8%;
 	z-index: 0;
 	border-radius: 50%;
 	pointer-events: none;
-	background: linear-gradient(
-		115deg,
-		rgba(20, 184, 166, 0.32) 0%,
-		rgba(56, 189, 248, 0.38) 35%,
-		rgba(99, 102, 241, 0.34) 65%,
-		rgba(167, 139, 250, 0.28) 100%
+	background: radial-gradient(
+		ellipse 90% 80% at 50% 50%,
+		color-mix(in srgb, #14b8a6 18%, transparent) 0%,
+		color-mix(in srgb, #38bdf8 16%, transparent) 40%,
+		color-mix(in srgb, #818cf8 12%, transparent) 68%,
+		transparent 100%
 	);
 	filter: blur(32px);
-	opacity: 0.62;
+	opacity: 0.55;
 	animation: trove-ownership-ambient 5s ease-in-out infinite;
 }
 
@@ -174,36 +208,47 @@
 .monaco-workbench.hc-black .trove-icon,
 .monaco-workbench.vs-dark .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress,
 .monaco-workbench.hc-black .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress {
-	filter: invert(1) brightness(1.08);
+	/* JPEG has no alpha — lighten drops the black box on dark editor backgrounds */
+	filter: none;
+	mix-blend-mode: lighten;
+	opacity: 0.9;
 }
 
-/* ── Light theme: logo shimmer on icon, visible glow ── */
+.monaco-workbench.vs .trove-icon,
+.monaco-workbench.hc-light .trove-icon,
+.monaco-workbench.vs .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress,
+.monaco-workbench.hc-light .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress {
+	mix-blend-mode: multiply;
+	opacity: 0.88;
+}
+
 .monaco-workbench.vs .trove-watermark-logo-wrap > .trove-icon,
-.monaco-workbench.vs .trove-watermark-logo-wrap > .letterpress {
+.monaco-workbench.hc-light .trove-watermark-logo-wrap > .trove-icon,
+.monaco-workbench.vs .trove-watermark-logo-wrap > .letterpress,
+.monaco-workbench.hc-light .trove-watermark-logo-wrap > .letterpress {
 	animation: trove-logo-glow-pulse 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
-/* ── Dark / HC: no drop-shadow on logo (prevents black box artifact) ── */
+/* ── Dark / HC: no pulse filter on logo (glow comes from wrap + watermark fade) ── */
 .monaco-workbench.vs-dark .trove-watermark-logo-wrap > .trove-icon,
 .monaco-workbench.hc-black .trove-watermark-logo-wrap > .trove-icon,
 .monaco-workbench.vs-dark .trove-watermark-logo-wrap > .letterpress,
 .monaco-workbench.hc-black .trove-watermark-logo-wrap > .letterpress {
 	animation: none;
-	filter: invert(1) brightness(1.12);
 }
 
 .monaco-workbench.vs-dark .trove-watermark-logo-wrap::before,
 .monaco-workbench.hc-black .trove-watermark-logo-wrap::before {
-	inset: 14% 10% 16%;
-	background: linear-gradient(
-		115deg,
-		rgba(45, 212, 191, 0.18) 0%,
-		rgba(56, 189, 248, 0.22) 40%,
-		rgba(129, 140, 248, 0.18) 70%,
-		rgba(167, 139, 250, 0.14) 100%
+	inset: 8% 6% 10%;
+	background: radial-gradient(
+		ellipse 90% 80% at 50% 50%,
+		color-mix(in srgb, var(--vscode-editor-foreground) 9%, transparent) 0%,
+		color-mix(in srgb, #38bdf8 12%, transparent) 38%,
+		color-mix(in srgb, #818cf8 10%, transparent) 62%,
+		transparent 100%
 	);
-	filter: blur(20px);
-	opacity: 0.38;
+	filter: blur(28px);
+	opacity: 0.5;
 	animation: trove-ownership-ambient 6s ease-in-out infinite;
 }
 
@@ -222,10 +267,10 @@
 
 @keyframes trove-logo-glow-pulse {
 	0%, 100% {
-		filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.18)) drop-shadow(0 0 24px rgba(99, 102, 241, 0.1));
+		opacity: 0.84;
 	}
 	50% {
-		filter: drop-shadow(0 0 18px rgba(56, 189, 248, 0.32)) drop-shadow(0 0 32px rgba(167, 139, 250, 0.18));
+		opacity: 0.96;
 	}
 }
 

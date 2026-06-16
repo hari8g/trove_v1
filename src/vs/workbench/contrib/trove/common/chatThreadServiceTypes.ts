@@ -45,6 +45,13 @@ export type CheckpointEntry = {
 	};
 }
 
+export type PlanItemStatus = 'pending' | 'done' | 'skipped';
+
+export type PlanMessage = {
+	role: 'plan';
+	items: { text: string; status: PlanItemStatus }[];
+};
+
 
 // WARNING: changing this format is a big deal!!!!!! need to migrate old format to new format on users' computers so people don't get errors.
 export type ChatMessage =
@@ -67,6 +74,7 @@ export type ChatMessage =
 	| ToolMessage<ToolName>
 	| DecorativeCanceledTool
 	| CheckpointEntry
+	| PlanMessage
 
 
 // one of the square items that indicates a selection in a chat bubble

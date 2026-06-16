@@ -12,7 +12,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ITerminalService, ITerminalInstance, ICreateTerminalOptions } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_CHARS, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, SERVER_READY_OUTPUT_PATTERN, stripBackgroundShellSuffix } from '../common/prompt/prompts.js';
+import { MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_CHARS, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, isLongRunningTerminalCommand, isPackageInstallCommand, SERVER_READY_OUTPUT_PATTERN, stripBackgroundShellSuffix, terminalCommandLooksSuccessful } from '../common/prompt/prompts.js';
 import { TerminalResolveReason } from '../common/toolsServiceTypes.js';
 import { timeout } from '../../../../base/common/async.js';
 
@@ -38,6 +38,10 @@ export interface ITerminalToolService {
 
 	getPersistentTerminal(terminalId: string): ITerminalInstance | undefined
 	getTemporaryTerminal(terminalId: string): ITerminalInstance | undefined
+	/** Subscribe to polled terminal scrollback while a command is running (keyed by terminalId). */
+	registerLiveOutputListener(terminalId: string, listener: (output: string) => void): IDisposable
+	/** Tear down the reused chat sandbox shell (call when an agent turn finishes). */
+	disposeSandboxSession(): void
 }
 export const ITerminalToolService = createDecorator<ITerminalToolService>('TerminalToolService');
 
@@ -77,6 +81,9 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 	private persistentTerminalInstanceOfId: Record<string, ITerminalInstance> = {}
 	private temporaryTerminalInstanceOfId: Record<string, ITerminalInstance> = {}
+	private liveOutputListenerOfTerminalId: Record<string, (output: string) => void> = {}
+	private sandboxMountOfTerminalId: Record<string, IDisposable> = {}
+	private sandboxSession: { instance: ITerminalInstance; cwd: string | null; mountDispose: IDisposable } | undefined
 
 	constructor(
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -197,6 +204,19 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		return terminal
 	}
 
+	registerLiveOutputListener(terminalId: string, listener: (output: string) => void): IDisposable {
+		this.liveOutputListenerOfTerminalId[terminalId] = listener
+		return toDisposable(() => {
+			if (this.liveOutputListenerOfTerminalId[terminalId] === listener) {
+				delete this.liveOutputListenerOfTerminalId[terminalId]
+			}
+		})
+	}
+
+	private _emitLiveOutput(terminalId: string, output: string): void {
+		this.liveOutputListenerOfTerminalId[terminalId]?.(output)
+	}
+
 	getPersistentTerminal(terminalId: string): ITerminalInstance | undefined {
 		if (!terminalId) return
 		const terminal = this.persistentTerminalInstanceOfId[terminalId]
@@ -265,6 +285,83 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		return capability ?? undefined
 	}
 
+	/** Hidden sandbox terminals must be attached with real dimensions before sendText — otherwise xterm never acks PTY data and commands hang with no output. */
+	private async _mountHiddenSandboxHost(terminal: ITerminalInstance, terminalId: string): Promise<void> {
+		const el = document.createElement('div')
+		el.style.cssText = 'position:fixed;visibility:hidden;left:0;top:0;width:800px;height:400px;overflow:hidden;pointer-events:none;'
+		document.body.appendChild(el)
+		terminal.attachToElement(el)
+		terminal.setVisible(true)
+		terminal.layout({ width: 800, height: 400 })
+		await Promise.race([
+			terminal.focusWhenReady().catch(() => { /* xterm open is enough */ }),
+			timeout(8_000),
+		])
+		this.sandboxMountOfTerminalId[terminalId] = toDisposable(() => {
+			try { terminal.detachFromElement() } catch { /* ignore */ }
+			el.remove()
+			delete this.sandboxMountOfTerminalId[terminalId]
+		})
+	}
+
+	disposeSandboxSession(): void {
+		if (this.sandboxSession) {
+			try { this.sandboxSession.mountDispose.dispose() } catch { /* ignore */ }
+			try { this.sandboxSession.instance.dispose() } catch { /* ignore */ }
+			const inst = this.sandboxSession.instance
+			for (const id of Object.keys(this.temporaryTerminalInstanceOfId)) {
+				if (this.temporaryTerminalInstanceOfId[id] === inst) {
+					delete this.temporaryTerminalInstanceOfId[id]
+				}
+			}
+			this.sandboxSession = undefined
+		}
+	}
+
+	private _resolveSandboxCwd(cwd: string | null): string | null {
+		return cwd ?? this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? null
+	}
+
+	private _bestOutputSnapshot(accumulator: string, scrollback: string | undefined, command: string): string {
+		const acc = removeAnsiEscapeCodes(accumulator).trim()
+		const plain = removeAnsiEscapeCodes(scrollback ?? '').trim()
+		if (acc.length >= plain.length && acc.length > 0) return acc
+		const cmd = command.trim()
+		const idx = plain.lastIndexOf(cmd)
+		if (idx >= 0) {
+			const after = plain.slice(idx + cmd.length).replace(/^[\s\r\n$#%>]+/, '').trim()
+			if (after.length > acc.length) return after
+		}
+		return acc || plain
+	}
+
+	private async _captureFinalOutput(
+		terminal: ITerminalInstance,
+		terminalId: string,
+		accumulator: string,
+		command: string,
+	): Promise<string> {
+		let scrollback: string | undefined
+		try { scrollback = await this.readTerminal(terminalId) } catch { /* use accumulator */ }
+		return this._bestOutputSnapshot(accumulator, scrollback, command)
+	}
+
+	private async _getOrCreateSandboxTerminal(cwd: string | null, terminalId: string): Promise<ITerminalInstance> {
+		const resolvedCwd = this._resolveSandboxCwd(cwd)
+		if (this.sandboxSession && !this.sandboxSession.instance.isDisposed && this.sandboxSession.cwd === resolvedCwd) {
+			this.temporaryTerminalInstanceOfId[terminalId] = this.sandboxSession.instance
+			return this.sandboxSession.instance
+		}
+		this.disposeSandboxSession()
+		const terminal = await this._createTerminal({ cwd, config: { name: 'Trove Sandbox' }, hidden: true })
+		await terminal.processReady
+		await this._mountHiddenSandboxHost(terminal, terminalId)
+		const mountDispose = this.sandboxMountOfTerminalId[terminalId]
+		this.sandboxSession = { instance: terminal, cwd: resolvedCwd, mountDispose }
+		this.temporaryTerminalInstanceOfId[terminalId] = terminal
+		return terminal
+	}
+
 	runCommand: ITerminalToolService['runCommand'] = async (command, params) => {
 		await this.terminalService.whenConnected;
 
@@ -281,24 +378,23 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 		}
 		else {
 			const { cwd } = params
-			terminal = await this._createTerminal({ cwd: cwd, config: undefined, hidden: true })
-			this.temporaryTerminalInstanceOfId[params.terminalId] = terminal
+			terminal = await this._getOrCreateSandboxTerminal(cwd, params.terminalId)
 		}
 
 		const interrupt = () => {
-			terminal.dispose()
-			if (!isPersistent)
-				delete this.temporaryTerminalInstanceOfId[params.terminalId]
-			else
+			if (!isPersistent) {
+				this.disposeSandboxSession()
+			} else {
+				terminal.dispose()
 				delete this.persistentTerminalInstanceOfId[params.persistentTerminalId]
+			}
 		}
 
 		const waitForResult = async () => {
-			if (isPersistent) {
-				// focus the terminal about to run
-				this.terminalService.setActiveInstance(terminal)
-				await this.terminalService.focusActiveInstance()
+			if (!isPersistent) {
+				// sandbox already mounted in _getOrCreateSandboxTerminal
 			}
+
 			let result: string = ''
 			let resolveReason: TerminalResolveReason | undefined
 			const inactiveTimeoutSeconds = getTerminalInactiveTimeoutSeconds(command)
@@ -306,11 +402,14 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 			const cmdCap = await this._waitForCommandDetectionCapability(terminal)
 			// if (!cmdCap) throw new Error(`There was an error using the terminal: CommandDetection capability did not mount yet. Please try again in a few seconds or report this to the Trove team.`)
 
-			const markDone = (exitCode: number, output?: string) => {
-				if (resolveReason) return
-				resolveReason = { type: 'done', exitCode }
-				if (output !== undefined) result = output
-			}
+			let resolveDone: (() => void) | null = null
+			const waitUntilDone = new Promise<void>(resolve => { resolveDone = resolve })
+
+			const commandToRun = isPersistent ? stripBackgroundShellSuffix(command) : command
+			const terminalIdForPoll = isPersistent ? params.persistentTerminalId : params.terminalId
+
+			// Accumulate raw output for live UI before xterm scrollback is available
+			let liveOutputAccumulator = ''
 
 			const markServerReady = (output?: string) => {
 				if (resolveReason) return
@@ -318,35 +417,94 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 				if (output !== undefined) result = output
 			}
 
-			// Prefer the structured command-detection capability when available
-			const waitUntilDone = new Promise<void>(resolve => {
-				if (cmdCap) {
-					const l = cmdCap.onCommandFinished(cmd => {
-						markDone(cmd.exitCode ?? 0, cmd.getOutput() ?? '')
-						l.dispose()
-						resolve()
-					})
-					disposables.push(l)
-					return
+			const markDone = (exitCode: number, output?: string): boolean => {
+				if (resolveReason) return true
+				const snapshot = output?.trim()
+					? removeAnsiEscapeCodes(output).trim()
+					: this._bestOutputSnapshot(liveOutputAccumulator, undefined, commandToRun)
+				if (!terminalCommandLooksSuccessful(commandToRun, snapshot, exitCode)) {
+					return false
 				}
+				resolveReason = { type: 'done', exitCode }
+				result = snapshot
+				resolveDone?.()
+				resolveDone = null
+				return true
+			}
 
-				// Fallback when shell integration is slow or unavailable: watch for OSC 633 completion sequences
-				let dataBuffer = ''
-				const l = terminal.onData(data => {
-					dataBuffer += data
-					const finished = parseShellIntegrationCommandFinished(dataBuffer)
-					if (finished) {
-						markDone(finished.exitCode)
-						l.dispose()
-						resolve()
-					}
+			const tryCompleteFromSnapshot = async (exitCode: number): Promise<boolean> => {
+				if (resolveReason) return true
+				const snapshot = await this._captureFinalOutput(terminal, terminalIdForPoll, liveOutputAccumulator, commandToRun)
+				return markDone(exitCode, snapshot)
+			}
+
+			const dataForLiveListener = terminal.onWillData(data => {
+				liveOutputAccumulator += data
+				const cleaned = removeAnsiEscapeCodes(liveOutputAccumulator)
+				const preview = cleaned.length > MAX_TERMINAL_CHARS
+					? cleaned.slice(0, MAX_TERMINAL_CHARS / 2) + '\n...\n' + cleaned.slice(cleaned.length - MAX_TERMINAL_CHARS / 2)
+					: cleaned
+				if (preview.trim()) {
+					this._emitLiveOutput(terminalIdForPoll, preview)
+				}
+			})
+			disposables.push(dataForLiveListener)
+
+			// Stream scrollback to chat UI while the command runs (supplements onData once buffer exists)
+			const pollLiveOutput = setInterval(() => {
+				if (resolveReason) return
+				void this.readTerminal(terminalIdForPoll)
+					.then(snapshot => {
+						if (snapshot.trim()) {
+							this._emitLiveOutput(terminalIdForPoll, snapshot)
+						}
+					})
+					.catch(() => { /* terminal buffer not ready yet — onData accumulator covers this */ })
+			}, 400)
+			disposables.push(toDisposable(() => clearInterval(pollLiveOutput)))
+
+			// OSC 633 completion fallback — debounced for long commands to avoid false positives
+			let oscDataBuffer = ''
+			let oscSettleTimer: ReturnType<typeof setTimeout> | undefined
+			const tryOscDone = (exitCode: number) => {
+				if (resolveReason) return
+				const finalize = () => { void tryCompleteFromSnapshot(exitCode) }
+				if (isLongRunningTerminalCommand(commandToRun) || isPackageInstallCommand(commandToRun)) {
+					if (oscSettleTimer) clearTimeout(oscSettleTimer)
+					oscSettleTimer = setTimeout(finalize, 1500)
+				} else {
+					finalize()
+				}
+			}
+			const oscListener = terminal.onWillData(data => {
+				oscDataBuffer += data
+				const finished = parseShellIntegrationCommandFinished(oscDataBuffer)
+				if (!finished || resolveReason) return
+				tryOscDone(finished.exitCode)
+			})
+			disposables.push(oscListener, toDisposable(() => { if (oscSettleTimer) clearTimeout(oscSettleTimer) }))
+
+			if (cmdCap) {
+				const l = cmdCap.onCommandFinished(cmd => {
+					void (async () => {
+						const cmdOut = cmd.getOutput() ?? ''
+						const snapshot = await this._captureFinalOutput(terminal, terminalIdForPoll, cmdOut || liveOutputAccumulator, commandToRun)
+						const ok = markDone(cmd.exitCode ?? 0, snapshot)
+						if (ok) { l.dispose() }
+					})()
 				})
 				disposables.push(l)
-			})
+			}
 
+			// Poll scrollback — catches fast npm install when cmdCap/OSC fire too early with empty output
+			const pollForCompletion = setInterval(() => {
+				if (resolveReason) return
+				void tryCompleteFromSnapshot(0)
+			}, 1500)
+			disposables.push(toDisposable(() => clearInterval(pollForCompletion)))
 
 			// send the command now that listeners are attached
-			const commandToRun = isPersistent ? stripBackgroundShellSuffix(command) : command
+			this._emitLiveOutput(terminalIdForPoll, `$ ${commandToRun}\n`)
 			await terminal.sendText(commandToRun, true)
 
 			const waitUntilServerReady = isPersistent ? new Promise<void>(resolve => {
@@ -382,13 +540,18 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 						clearTimeout(globalTimeoutId);
 						globalTimeoutId = setTimeout(() => {
 							if (resolveReason) return
-
-							resolveReason = { type: 'timeout', inactiveTimeoutSeconds, reason: 'inactivity' };
-							res();
+							void tryCompleteFromSnapshot(0).then(succeeded => {
+								if (succeeded || resolveReason) {
+									res()
+									return
+								}
+								resolveReason = { type: 'timeout', inactiveTimeoutSeconds, reason: 'inactivity' };
+								res();
+							})
 						}, inactiveTimeoutSeconds * 1000);
 					};
 
-					const dTimeout = terminal.onData(() => { resetTimer(); });
+					const dTimeout = terminal.onWillData(() => { resetTimer(); });
 					disposables.push(dTimeout, toDisposable(() => clearTimeout(globalTimeoutId)));
 					resetTimer();
 				})
@@ -416,12 +579,12 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 			// read result if timed out or server snapshot, since we didn't get full output via cmdCap
 			if (resolveReason?.type === 'timeout' || resolveReason?.type === 'server_ready') {
 				const terminalId = isPersistent ? params.persistentTerminalId : params.terminalId
-				result = await this.readTerminal(terminalId)
+				result = await this._captureFinalOutput(terminal, terminalId, liveOutputAccumulator, commandToRun)
+			} else if (resolveReason?.type === 'done') {
+				result = await this._captureFinalOutput(terminal, terminalIdForPoll, liveOutputAccumulator, commandToRun)
 			}
 
-			if (!isPersistent) {
-				interrupt()
-			}
+			// Keep sandbox session alive between run_command calls — do not dispose here
 
 			if (!resolveReason) throw new Error('Unexpected internal error: Promise.any should have resolved with a reason.')
 

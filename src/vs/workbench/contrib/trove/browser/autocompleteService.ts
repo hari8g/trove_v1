@@ -21,7 +21,9 @@ import { isWindows } from '../../../../base/common/platform.js';
 import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { FeatureName } from '../common/troveSettingsTypes.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
-// import { IContextGatheringService } from './contextGatheringService.js';
+import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { fetchCodebaseContextForAutocomplete } from './autocompleteCodebaseContext.js';
 
 
 
@@ -550,8 +552,10 @@ const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantCont
 	const isLinePrefixEmpty = removeAllWhitespace(prefixToTheLeftOfCursor).length === 0
 	const isLineSuffixEmpty = removeAllWhitespace(suffixToTheRightOfCursor).length === 0
 
-	// TODO add context to prefix
-	// llmPrefix = '\n\n/* Relevant context:\n' + relevantContext + '\n*/\n' + llmPrefix
+	// prepend codebase / editor context to the FIM prefix when available
+	const withContext = (llmPrefix: string) => relevantContext.trim()
+		? `${relevantContext}\n${llmPrefix}`
+		: llmPrefix
 
 	// if we just accepted an autocompletion, predict a multiline completion starting on the next line
 	if (justAcceptedAutocompletion && isLineSuffixEmpty) {
@@ -559,7 +563,7 @@ const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantCont
 		completionOptions = {
 			predictionType: 'multi-line-start-on-next-line',
 			shouldGenerate: true,
-			llmPrefix: prefixWithNewline,
+			llmPrefix: withContext(prefixWithNewline),
 			llmSuffix: suffix,
 			stopTokens: [`${_ln}${_ln}`] // double newlines
 		}
@@ -569,7 +573,7 @@ const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantCont
 		completionOptions = {
 			predictionType: 'single-line-fill-middle',
 			shouldGenerate: true,
-			llmPrefix: prefix,
+			llmPrefix: withContext(prefix),
 			llmSuffix: suffix,
 			stopTokens: allLinebreakSymbols
 		}
@@ -581,7 +585,7 @@ const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantCont
 		completionOptions = {
 			predictionType: 'single-line-redo-suffix',
 			shouldGenerate: true,
-			llmPrefix: prefix,
+			llmPrefix: withContext(prefix),
 			llmSuffix: suffixStringIgnoringThisLine,
 			stopTokens: allLinebreakSymbols
 		}
@@ -591,7 +595,7 @@ const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantCont
 		completionOptions = {
 			predictionType: 'single-line-fill-middle',
 			shouldGenerate: true,
-			llmPrefix: prefix,
+			llmPrefix: withContext(prefix),
 			llmSuffix: suffix,
 			stopTokens: allLinebreakSymbols
 		}
@@ -599,7 +603,7 @@ const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantCont
 		completionOptions = {
 			predictionType: 'do-not-predict',
 			shouldGenerate: false,
-			llmPrefix: prefix,
+			llmPrefix: withContext(prefix),
 			llmSuffix: suffix,
 			stopTokens: []
 		}
@@ -753,12 +757,15 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		}
 
 
-		// gather relevant context from the code around the user's selection and definitions
-		// const relevantSnippetsList = await this._contextGatheringService.readCachedSnippets(model, position, 3);
-		// const relevantSnippetsList = this._contextGatheringService.getCachedSnippets();
-		// const relevantSnippets = relevantSnippetsList.map((text) => `${text}`).join('\n-------------------------------\n')
-		// console.log('@@---------------------\n' + relevantSnippets)
-		const relevantContext = ''
+		// Phase 4: prepend related codebase chunks (imports + symbol under cursor → FTS search)
+		const workspaceRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? null
+		const relevantContext = await fetchCodebaseContextForAutocomplete({
+			model,
+			position,
+			workspaceRoot,
+			searchCodebase: (root, query, maxResults) => this._repoIntelligenceService.searchCodebase(root, query, maxResults),
+			getChunkCount: (root) => this._repoIntelligenceService.getChunkCount(root),
+		})
 
 		const { shouldGenerate, predictionType, llmPrefix, llmSuffix, stopTokens } = getCompletionOptions(prefixAndSuffix, relevantContext, justAcceptedAutocompletion)
 
@@ -894,8 +901,9 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		@IEditorService private readonly _editorService: IEditorService,
 		@IModelService private readonly _modelService: IModelService,
 		@ITroveSettingsService private readonly _settingsService: ITroveSettingsService,
-		@IConvertToLLMMessageService private readonly _convertToLLMMessageService: IConvertToLLMMessageService
-		// @IContextGatheringService private readonly _contextGatheringService: IContextGatheringService,
+		@IConvertToLLMMessageService private readonly _convertToLLMMessageService: IConvertToLLMMessageService,
+		@IRepoIntelligenceService private readonly _repoIntelligenceService: IRepoIntelligenceService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super()
 

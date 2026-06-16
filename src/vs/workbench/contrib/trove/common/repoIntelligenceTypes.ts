@@ -72,6 +72,8 @@ export interface IRepoIntelligenceMainService {
 	refreshProfile(workspaceRoot: string): Promise<WorkspaceProfile>;
 	searchCodebase(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]>;
 	getChunkCount(workspaceRoot: string): Promise<number>;
+	getUserMemory(): string | null;
+	appendToUserMemory(text: string): Promise<void>;
 }
 
 export const IRepoIntelligenceMainService = createDecorator<IRepoIntelligenceMainService>('repoIntelligenceMainService');
@@ -81,6 +83,7 @@ export interface IRepoIntelligenceService extends IRepoIntelligenceMainService {
 	getWorkspaceRules(): string | null;
 	readonly onDidChangeWorkspaceRules: Event<void>;
 	readonly onDidChangeChunkIndex: Event<number>;
+	readonly onDidChangeUserMemory: Event<void>;
 }
 
 export const IRepoIntelligenceService = createDecorator<IRepoIntelligenceService>('repoIntelligenceService');

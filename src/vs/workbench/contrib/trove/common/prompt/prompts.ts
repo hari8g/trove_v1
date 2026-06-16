@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../../base/common/uri.js';
+import { removeAnsiEscapeCodes } from '../../../../../base/common/strings.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IDirectoryStrService } from '../directoryStrService.js';
 import { StagingSelectionItem } from '../chatThreadServiceTypes.js';
@@ -57,9 +58,38 @@ export const isDevServerCommand = (command: string): boolean => {
 export const stripBackgroundShellSuffix = (command: string): string =>
 	command.trim().replace(/\s&\s*$/, '')
 
-export const getTerminalInactiveTimeoutSeconds = (command: string): number =>
-	isLongRunningTerminalCommand(command) ? MAX_TERMINAL_INACTIVE_TIME_LONG : MAX_TERMINAL_INACTIVE_TIME
+export const getTerminalInactiveTimeoutSeconds = (command: string): number => {
+	// Fast npm/pnpm install often finishes in seconds then goes silent — don't wait 10 minutes
+	if (isPackageInstallCommand(command)) return 20
+	if (isLongRunningTerminalCommand(command)) return MAX_TERMINAL_INACTIVE_TIME_LONG
+	return MAX_TERMINAL_INACTIVE_TIME
+}
 
+/** Package manager install/ci/add commands — must verify output, not just exit code. */
+export const isPackageInstallCommand = (command: string): boolean =>
+	/\b(npm|pnpm|yarn|bun)\s+(install|ci|add)\b|\bpnpm\s+i\b|\byarn\s+install\b/i.test(command.trim())
+
+/** Heuristic: npm/pnpm/yarn install output indicates packages were actually installed. */
+export const packageInstallLooksSuccessful = (output: string): boolean => {
+	const plain = removeAnsiEscapeCodes(output)
+	if (!plain.trim()) return false
+	if (/\bnpm ERR!|\bERR! code |\bcommand failed\b|\bELIFECYCLE\b|\bE404\b|\bgyp ERR!/i.test(plain)) return false
+	return /\badded \d+ packages\b/i.test(plain)
+		|| /\bup to date,?\s+audited\b/i.test(plain)
+		|| /\bup to date in \d+/i.test(plain)
+		|| /\baudited \d+ packages?\b/i.test(plain)
+		|| /\bfound 0 vulnerabilities\b/i.test(plain)
+		|| (/\bnpm\s+install\b/i.test(plain) && /\bpackages?\b/i.test(plain) && !/\berror\b/i.test(plain))
+}
+
+/** Whether terminal output + exit code indicate the command truly succeeded (guards false OSC/cmdCap positives). */
+export const terminalCommandLooksSuccessful = (command: string, output: string, exitCode: number): boolean => {
+	if (exitCode !== 0) return false
+	if (isPackageInstallCommand(command)) return packageInstallLooksSuccessful(output)
+	const plain = removeAnsiEscapeCodes(output)
+	if (/\bnpm ERR!|\bERR! code |\bcommand failed\b|\bELIFECYCLE\b|\berror TS\d+/i.test(plain)) return false
+	return true
+}
 
 // Maximum character limits for prefix and suffix context
 export const MAX_PREFIX_SUFFIX_CHARS = 20_000
@@ -193,7 +223,7 @@ const paginationParam = {
 
 
 
-const terminalDescHelper = `Runs in a real workspace terminal embedded in chat (same filesystem as the user's project — npm install and file changes persist). Use run_command for one-shot commands (install, build, test, curl). For dev servers and other long-running processes, use open_persistent_terminal + run_persistent_command WITHOUT trailing &. NEVER append & to run_command — background jobs are killed when the temporary terminal closes. When working with git and other tools that open an editor (e.g. git diff), pipe to cat to avoid getting stuck in vim.`
+const terminalDescHelper = `Runs in a real workspace shell (same cwd and filesystem as your project — npm install, node_modules, and file changes persist across run_command calls in one agent turn). Each run_command reuses the same sandbox shell until the agent finishes. Use run_command for one-shot commands (install, build, test, curl). For dev servers, use run_command with npm run dev/start — it auto-routes to a persistent Trove Agent terminal. NEVER append & to run_command. When working with git and tools that open an editor (e.g. git diff), pipe to cat.`
 
 const cwdHelper = 'Optional. The directory in which to run the command. Defaults to the first workspace folder.'
 
@@ -496,6 +526,17 @@ Follow these project rules when writing code, unless the user explicitly asks ot
 `.trim();
 }
 
+export function buildUserMemoryBlock(userMemory: string | null): string {
+	if (!userMemory?.trim()) return '';
+	return `
+<user_memory>
+${userMemory.trim()}
+</user_memory>
+
+Use these persistent notes about the user and project when relevant. Do not contradict explicit user instructions in the current message.
+`.trim();
+}
+
 /** Reminder appended to edit tool results so the agent verifies before finishing. */
 export function buildVerificationReminder(profile: WorkspaceProfile | null): string {
 	const build = profile?.buildCommands.find(c => c.purpose === 'build')?.command ?? profile?.buildCommands[0]?.command
@@ -512,13 +553,13 @@ export function buildVerificationReminder(profile: WorkspaceProfile | null): str
 	} else {
 		steps.push('run one compile/test command via run_command if this project has one')
 	}
-	steps.push('STOP after curl succeeds — Trove opens localhost in the editor automatically. Do NOT run tsc/lint/test again or open extra terminals.')
+	steps.push('STOP after curl succeeds — Trove opens localhost in the editor. Server runs in Trove Agent terminal (background). User should only preview the app — never ask them to run install/build/start.')
 
 	return `\n\nVERIFICATION (minimal path): ${steps.join('; ')}. Skip only for comment/doc-only edits.`
 }
 
 
-export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, repoProfile?: WorkspaceProfile | null, workspaceRules?: string | null }) => {
+export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, repoProfile?: WorkspaceProfile | null, workspaceRules?: string | null, userMemory?: string | null }) => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -573,10 +614,10 @@ ${directoryStr}
 		details.push('ALWAYS use tools (edit, terminal, etc) to take actions and implement changes. For example, if you would like to edit a file, you MUST use a tool.')
 		details.push('Terminal commands use the real project directory — npm install and other file writes persist. Never tell the user to run commands manually unless a command truly failed.')
 		details.push(`WEB APP VERIFICATION PLAYBOOK (follow exactly, ~3–4 terminal calls max):
-  1. Optional: run_command \`npm install\` only if package.json changed.
-  2. Optional: run_command build/test from repository_context (one command, not all of them).
-  3. run_command the Start (dev server) script from repository_context — dev servers auto-route to a persistent terminal; do NOT use trailing &.
-  4. run_command a single \`curl\` against localhost to verify. Trove then opens the preview in the editor automatically.`)
+  1. run_command \`npm install\` when package.json or lockfile changed (writes to the real workspace — user's terminal will see node_modules).
+  2. run_command build/test from repository_context when needed (one command).
+  3. run_command the Start (dev server) script — auto-routes to a persistent Trove Agent terminal (NOT the user's panel terminal); do NOT use trailing &.
+  4. run_command a single \`curl\` against localhost. Trove opens the preview in the editor. STOP — do not ask the user to run install, build, or start manually.`)
 		details.push('NEVER open_persistent_terminal if a persistent terminal ID is already listed in system info — reuse it via run_command or run_persistent_command.')
 		details.push('NEVER kill_persistent_terminal during verification. Do NOT chain \`cmd & sleep && curl\` — use separate tool calls (server via run_command, curl via run_command).')
 		details.push('NEVER use trailing & on run_command. Do NOT run lsof/port-debug loops — if the server command fails, read the error output once and fix the code.')
@@ -622,6 +663,8 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 	if (repoContext) ansStrs.push(repoContext)
 	const rulesBlock = buildWorkspaceRulesBlock(workspaceRules ?? null)
 	if (rulesBlock) ansStrs.push(rulesBlock)
+	const memoryBlock = buildUserMemoryBlock(userMemory ?? null)
+	if (memoryBlock) ansStrs.push(memoryBlock)
 	ansStrs.push(header)
 	ansStrs.push(sysInfo)
 	if (toolDefinitions) ansStrs.push(toolDefinitions)

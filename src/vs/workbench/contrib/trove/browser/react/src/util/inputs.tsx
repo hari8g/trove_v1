@@ -738,7 +738,7 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 
 	return <>
 		<div
-			className={`composer-inline-field w-full ${className ?? ''}`}
+			className={`trove-composer-inline-field w-full ${className ?? ''}`}
 			style={{
 				background: asCssVariable(inputBackground),
 				color: asCssVariable(inputForeground),
@@ -774,7 +774,7 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 
 			disabled={!isEnabled}
 
-			className={`composer-inline-textarea flex-1 min-w-[72px] min-h-[22px] resize-none max-h-[500px] overflow-y-auto text-trove-fg-1 placeholder:text-trove-fg-3 bg-transparent border-0 outline-none shadow-none p-0 m-0 text-sm leading-normal`}
+			className={`trove-composer-inline-textarea flex-1 min-w-[72px] min-h-[22px] resize-none max-h-[500px] overflow-y-auto text-trove-fg-1 placeholder:text-trove-fg-3 bg-transparent border-0 outline-none shadow-none p-0 m-0 text-[13px] leading-[1.45]`}
 			style={{
 				background: 'transparent',
 				color: asCssVariable(inputForeground)

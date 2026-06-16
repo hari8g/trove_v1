@@ -34,10 +34,11 @@ import { RawToolCallObj } from '../../../../common/sendLLMMessageTypes.js';
 import ErrorBoundary from './ErrorBoundary.js';
 import { ToolApprovalTypeSwitch } from '../trove-settings-tsx/Settings.js';
 
-import { persistentTerminalNameOfId } from '../../../terminalToolService.js';
+import { persistentTerminalNameOfId, ITerminalToolService } from '../../../terminalToolService.js';
 import { AnsiTerminalOutput } from '../util/ansiOutput.js';
 import { removeMCPToolNamePrefix } from '../../../../common/mcpServiceTypes.js';
 import { BackgroundActivityPanel, ChatInlineDiffButtons, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveReasoningBlock, StreamingEditToolCard, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
+import { PlanView } from './PlanView.js';
 import { ChatInlineDiffView, computeChatDiff } from './ChatInlineDiffView.js';
 import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
 
@@ -1633,6 +1634,8 @@ const TerminalSuccessCard = ({
 	defaultExpanded?: boolean;
 }) => {
 	const [expanded, setExpanded] = useState(defaultExpanded)
+	const preview = output.trim().split('\n').filter(l => l.trim()).slice(0, 5).join('\n')
+	const hasOutput = preview.length > 0
 	return (
 		<div className="trove-terminal-success-card">
 			<div className="trove-terminal-success-card-header">
@@ -1640,16 +1643,21 @@ const TerminalSuccessCard = ({
 				<div className="min-w-0 flex-1">
 					<div className="text-[13px] font-medium text-trove-fg-1">{label}</div>
 					{command && <div className="text-[11px] text-trove-fg-4 truncate font-mono mt-0.5">{command}</div>}
+					{!expanded && hasOutput && (
+						<pre className="text-[11px] text-trove-fg-3 mt-1.5 whitespace-pre-wrap font-mono line-clamp-4 max-h-20 overflow-hidden">{preview}</pre>
+					)}
 				</div>
-				<button
-					type="button"
-					className="trove-terminal-success-toggle"
-					onClick={() => setExpanded(v => !v)}
-				>
-					{expanded ? 'Hide output' : 'Show output'}
-				</button>
+				{hasOutput && (
+					<button
+						type="button"
+						className="trove-terminal-success-toggle"
+						onClick={() => setExpanded(v => !v)}
+					>
+						{expanded ? 'Hide output' : 'Show output'}
+					</button>
+				)}
 			</div>
-			{expanded && (
+			{expanded && hasOutput && (
 				<div className="trove-terminal-success-card-body trove-chat-terminal-output">
 					<AnsiTerminalOutput text={output} />
 				</div>
@@ -1662,19 +1670,77 @@ const terminalSuccessLabel = (
 	command: string,
 	resolveReason: { type: string; exitCode?: number; reason?: string },
 ): string => {
-	if (resolveReason.type === 'server_ready') return 'Dev server ready — sandbox closed'
+	if (resolveReason.type === 'server_ready') return 'Dev server ready'
 	if (resolveReason.type === 'timeout' && resolveReason.reason === 'snapshot') return 'Dev server running in background'
 	if (/\b(curl|wget|httpie|httpx)\b/i.test(command) && /\b(localhost|127\.0\.0\.1)\b/i.test(command)) {
 		return resolveReason.type === 'done' && resolveReason.exitCode === 0
-			? 'Localhost check passed — sandbox closed'
+			? 'Localhost check passed'
 			: 'Ran localhost check'
 	}
-	if (/\b(npm|pnpm|yarn)\s+(install|ci|add)\b/i.test(command)) return 'Dependencies installed — sandbox closed'
-	if (/\b(compile|build|test|tsc|webpack|vite)\b/i.test(command)) return 'Build completed — sandbox closed'
-	if (resolveReason.type === 'done' && resolveReason.exitCode === 0) return 'Command succeeded — sandbox closed'
+	if (/\b(npm|pnpm|yarn)\s+(install|ci|add)\b/i.test(command)) return 'Dependencies installed'
+	if (/\b(compile|build|test|tsc|webpack|vite)\b/i.test(command)) return 'Build completed'
+	if (resolveReason.type === 'done' && resolveReason.exitCode === 0) return 'Command succeeded'
 	return 'Command finished'
 }
 
+const formatElapsed = (seconds: number): string => {
+	if (seconds < 60) return `${seconds}s`
+	const m = Math.floor(seconds / 60)
+	const s = seconds % 60
+	return s > 0 ? `${m}m ${s}s` : `${m}m`
+}
+
+const RunningTerminalOutput = ({
+	type,
+	toolMessage,
+	liveContent,
+}: {
+	type: 'run_command' | 'run_persistent_command'
+	toolMessage: Exclude<ToolMessage<'run_command' | 'run_persistent_command'>, { type: 'invalid_params' }> & { type: 'running_now' }
+	liveContent?: string
+}) => {
+	const [elapsedSec, setElapsedSec] = useState(0)
+	const startedAtRef = useRef(Date.now())
+
+	useEffect(() => {
+		startedAtRef.current = Date.now()
+		setElapsedSec(0)
+		const id = setInterval(() => {
+			setElapsedSec(Math.floor((Date.now() - startedAtRef.current) / 1000))
+		}, 1000)
+		return () => clearInterval(id)
+	}, [toolMessage.id])
+
+	const command = toolMessage.params.command
+	const outputText = liveContent?.trim()
+	const isInstall = /\b(npm|pnpm|yarn|bun)\s+(install|ci|add)\b/i.test(command)
+	const onlyCommandEcho = !outputText || outputText === `$ ${command}` || outputText === `$ ${command}\n`
+	const waitingForOutput = onlyCommandEcho
+
+	return (
+		<ToolChildrenWrapper className='overflow-hidden text-sm'>
+			<div className='flex items-center justify-between gap-2 px-2 py-1.5 text-[11px] text-trove-fg-4 border-b border-trove-border-3 bg-trove-bg-2'>
+				<span className='truncate font-mono'>{command}</span>
+				<span className='shrink-0 tabular-nums'>{formatElapsed(elapsedSec)}</span>
+			</div>
+			<div className='relative min-h-[200px] max-h-[320px] overflow-auto trove-chat-terminal-output px-2 py-2 bg-[var(--vscode-terminal-background,#1e1e1e)]'>
+				{waitingForOutput ? (
+					<div className='flex flex-col gap-2 text-trove-fg-4 text-[12px] py-4'>
+						<div className='flex items-center gap-2'>
+							<span className='inline-block w-1.5 h-1.5 rounded-full bg-trove-fg-4 animate-pulse' />
+							{isInstall ? 'Installing dependencies…' : 'Running command…'}
+						</div>
+						{isInstall && elapsedSec > 15 ? (
+							<p className='text-[11px] opacity-80 pl-3.5'>Large projects can take 1–3 minutes. Output will stream here as npm runs.</p>
+						) : null}
+					</div>
+				) : (
+					<AnsiTerminalOutput text={outputText!} />
+				)}
+			</div>
+		</ToolChildrenWrapper>
+	)
+}
 
 const CommandTool = ({ toolMessage, type, threadId }: { threadId: string } & ({
 	toolMessage: Exclude<ToolMessage<'run_command'>, { type: 'invalid_params' }>
@@ -1686,55 +1752,14 @@ const CommandTool = ({ toolMessage, type, threadId }: { threadId: string } & ({
 	const accessor = useAccessor()
 
 	const commandService = accessor.get('ICommandService')
-	const terminalToolsService = accessor.get('ITerminalToolService')
 	const isError = false
 	const title = getTitle(toolMessage)
 	const { desc1, desc1Info } = toolNameToDesc(toolMessage.name, toolMessage.params, accessor)
 	const icon = null
 
-	const divRef = useRef<HTMLDivElement | null>(null)
-
 	const isRejected = toolMessage.type === 'rejected'
 	const { rawParams, params } = toolMessage
 	const componentParams: ToolHeaderParams = { title, desc1, desc1Info, isError, icon, isRejected, }
-
-
-	const effect = async () => {
-		if (type !== 'run_command' || toolMessage.type !== 'running_now') return;
-
-		const container = divRef.current;
-		if (!container) return;
-
-		let terminal = terminalToolsService.getTemporaryTerminal(toolMessage.params.terminalId);
-		// Poll until the sandbox terminal is created (don't wait for interrupt — command may start immediately)
-		for (let attempt = 0; attempt < 100 && !terminal; attempt++) {
-			await new Promise(r => setTimeout(r, 50));
-			terminal = terminalToolsService.getTemporaryTerminal(toolMessage.params.terminalId);
-		}
-		if (!terminal) return;
-
-		try {
-			terminal.attachToElement(container);
-			terminal.setVisible(true)
-		} catch {
-		}
-
-		// Listen for size changes of the container and keep the terminal layout in sync.
-		const resizeObserver = new ResizeObserver((entries) => {
-			const height = entries[0].borderBoxSize[0].blockSize;
-			const width = entries[0].borderBoxSize[0].inlineSize;
-			if (typeof terminal.layout === 'function') {
-				terminal.layout({ width, height });
-			}
-		});
-
-		resizeObserver.observe(container);
-		return () => { terminal.detachFromElement(); resizeObserver?.disconnect(); }
-	}
-
-	useEffect(() => {
-		effect()
-	}, [terminalToolsService, toolMessage, toolMessage.type, type]);
 
 	if (toolMessage.type === 'success') {
 		const { result } = toolMessage
@@ -1776,14 +1801,18 @@ const CommandTool = ({ toolMessage, type, threadId }: { threadId: string } & ({
 		</BottomChildren>
 	}
 	else if (toolMessage.type === 'running_now') {
-		if (type === 'run_command')
-			componentParams.children = <div ref={divRef} className='trove-chat-terminal relative h-[300px] text-sm rounded border border-trove-border-3 overflow-hidden' />
+		const liveContent = toolMessage.content?.trim() ?? ''
+		componentParams.children = <RunningTerminalOutput
+			type={type}
+			toolMessage={toolMessage}
+			liveContent={liveContent.startsWith('(starting terminal sandbox') ? undefined : liveContent || undefined}
+		/>
 	}
 	else if (toolMessage.type === 'rejected' || toolMessage.type === 'tool_request') {
 	}
 
 	return <>
-		<ToolHeaderWrapper {...componentParams} isOpen={type === 'run_command' && toolMessage.type === 'running_now' ? true : undefined} />
+		<ToolHeaderWrapper {...componentParams} isOpen={(type === 'run_command' || type === 'run_persistent_command') && toolMessage.type === 'running_now' ? true : undefined} />
 	</>
 }
 
@@ -2555,6 +2584,9 @@ const _ChatBubble = ({ threadId, chatMessage, currCheckpointIdx, isCommitted, me
 			threadIsRunning={!!chatIsRunning}
 		/>
 	}
+	else if (role === 'plan') {
+		return <PlanView plan={chatMessage} isCheckpointGhost={isCheckpointGhost} />
+	}
 
 }
 
@@ -2613,6 +2645,7 @@ export const SidebarChat = () => {
 	const latestError = currThreadStreamState?.error
 	const { displayContentSoFar, toolCallSoFar, reasoningSoFar } = currThreadStreamState?.llmInfo ?? {}
 	const runningToolInfo = currThreadStreamState?.isRunning === 'tool' ? currThreadStreamState.toolInfo : undefined
+	const contextWasTrimmed = !!(currThreadStreamState?.contextWasTrimmed && (isRunning === 'LLM' || isRunning === 'idle'))
 
 	// this is just if it's currently being generated, NOT if it's currently running
 	const toolIsGenerating = toolCallSoFar && !toolCallSoFar.isDone // show loading for slow tools (right now just edit)
@@ -2665,10 +2698,24 @@ export const SidebarChat = () => {
 					read_lint_errors: 'Reading lint errors',
 				} as Partial<Record<BuiltinToolName, string>>)[runningToolInfo.toolName] ?? 'Running tool'
 				: `Calling ${runningToolInfo.mcpServerName ?? 'MCP tool'}`
+
+			const isTerminalTool = runningToolInfo.toolName === 'run_command' || runningToolInfo.toolName === 'run_persistent_command'
+			const terminalLive = runningToolInfo.content?.trim() ?? ''
+			const terminalHasOutput = isTerminalTool && terminalLive.length > 0
+				&& !terminalLive.startsWith('(starting terminal sandbox')
+				&& terminalLive !== '(waiting for terminal output…)'
+				&& terminalLive !== '(value not received yet...)'
+				&& terminalLive !== 'interrupted...'
+			const terminalPreview = terminalHasOutput
+				? (terminalLive.split('\n').filter(l => l.trim()).pop()?.trim().slice(0, 120) ?? undefined)
+				: undefined
+
 			return {
 				phase: 'tool',
 				title: runningToolTitle,
-				detail: liveActivityDetail ? String(liveActivityDetail) : 'Executing in your workspace',
+				detail: terminalPreview
+					? terminalPreview
+					: (liveActivityDetail ? String(liveActivityDetail) : (isTerminalTool ? 'Starting sandbox…' : 'Executing in your workspace')),
 				contextLine: turnActivitySummary.summaryLine,
 			}
 		}
@@ -2858,6 +2905,13 @@ export const SidebarChat = () => {
 		{/* Generating tool */}
 		{generatingTool}
 
+		{/* context window trim notice */}
+		{contextWasTrimmed ?
+			<div className='px-2 py-1 text-xs text-trove-fg-4 italic'>
+				Older context was trimmed to fit the model&apos;s window.
+			</div>
+			: null}
+
 		{/* live activity — hide while reasoning stream or edit tool generation is visible */}
 		{showBackgroundActivity && backgroundActivity ?
 			<BackgroundActivityPanel
@@ -2885,7 +2939,7 @@ export const SidebarChat = () => {
 		{/* delivery summary — shown after agent verifies build/server/preview */}
 		{!isRunning && agentDelivery ?
 			<div className="px-1 pb-2">
-				<AgentDeliverySummaryCard delivery={agentDelivery} />
+				<AgentDeliverySummaryCard delivery={agentDelivery} threadId={currentThread.id} />
 			</div>
 			: null}
 	</ScrollToBottomContainer>
@@ -2915,7 +2969,7 @@ export const SidebarChat = () => {
 			enableAtToMention
 			inlineSelections={selections}
 			setInlineSelections={setSelections}
-			className={`min-h-[72px] px-0 py-0 text-sm`}
+			className={`min-h-[72px] px-0 py-0 text-[13px] leading-[1.45]`}
 			placeholder={`@ to mention, ${keybindingString ? `${keybindingString} to add a selection. ` : ''}Enter instructions...`}
 			onChangeText={onChangeText}
 			onKeyDown={onKeyDown}

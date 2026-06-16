@@ -179,6 +179,9 @@
 	display: inline-block;
 	vertical-align: middle;
 	background: transparent !important;
+	font-family: var(--vscode-font-family);
+	font-size: 13px;
+	line-height: 1.45;
 }
 
 .trove-context-pill--inline {

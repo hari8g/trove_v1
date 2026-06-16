@@ -16,7 +16,7 @@ import { computeDirectoryTree1Deep, IDirectoryStrService, stringifyDirectoryTree
 import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js'
 import { timeout } from '../../../../base/common/async.js'
 import { RawToolParamsObj } from '../common/sendLLMMessageTypes.js'
-import { MAX_CHILDREN_URIs_PAGE, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, isDevServerCommand, isBackgroundShellCommand, stripBackgroundShellSuffix } from '../common/prompt/prompts.js'
+import { MAX_CHILDREN_URIs_PAGE, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, isDevServerCommand, isBackgroundShellCommand, isPackageInstallCommand, packageInstallLooksSuccessful, stripBackgroundShellSuffix } from '../common/prompt/prompts.js'
 import { ITroveSettingsService } from '../common/troveSettingsService.js'
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js'
 import { buildVerificationReminder } from '../common/prompt/prompts.js'
@@ -470,18 +470,20 @@ export class ToolsService implements IToolsService {
 			},
 			// ---
 			run_command: async ({ command, cwd, terminalId }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? null
+				const resolvedCwd = cwd ?? workspaceRoot
 				// Dev servers and `cmd &` must not use a temporary terminal — it is disposed after the tool returns and kills background jobs.
 				if (isDevServerCommand(command) || isBackgroundShellCommand(command)) {
 					const cleaned = stripBackgroundShellSuffix(command)
 					const existingIds = this.terminalToolService.listPersistentTerminalIds()
-					const persistentTerminalId = existingIds[0] ?? await this.terminalToolService.createPersistentTerminal({ cwd })
+					const persistentTerminalId = existingIds[0] ?? await this.terminalToolService.createPersistentTerminal({ cwd: resolvedCwd })
 					const { resPromise, interrupt } = await this.terminalToolService.runCommand(cleaned, { type: 'persistent', persistentTerminalId })
 					return {
 						result: resPromise.then(r => ({ ...r, autoPersistentTerminalId: persistentTerminalId })),
 						interruptTool: interrupt,
 					}
 				}
-				const { resPromise, interrupt } = await this.terminalToolService.runCommand(command, { type: 'temporary', cwd, terminalId })
+				const { resPromise, interrupt } = await this.terminalToolService.runCommand(command, { type: 'temporary', cwd: resolvedCwd, terminalId })
 				return { result: resPromise, interruptTool: interrupt }
 			},
 			run_persistent_command: async ({ command, persistentTerminalId }) => {
@@ -591,12 +593,18 @@ export class ToolsService implements IToolsService {
 				// success
 				if (resolveReason.type === 'done') {
 					const persistNote = /\b(npm|pnpm|yarn)\s+(install|ci|add)\b/i.test(params.command)
-						? '\n(package changes are written to the real workspace — no manual install needed unless this failed)'
+						? '\n(package changes are on disk in the real workspace — node_modules is shared with your terminal)'
+						: ''
+					const emptyOutputNote = !plain.trim() || plain.trim() === `$ ${params.command.trim()}`
+						? '\n\nWARNING: No command output was captured. If you need stdout, retry the command once — do NOT run more than 2 diagnostic loops.'
+						: ''
+					const installFailedNote = isPackageInstallCommand(params.command) && resolveReason.exitCode === 0 && !packageInstallLooksSuccessful(plain)
+						? '\n\nINSTALL NOT VERIFIED — output does not confirm packages were installed. Retry run_command with the same install command and read errors above. Do NOT tell the user setup is complete.'
 						: ''
 					const curlNote = /\b(curl|wget|httpie|httpx)\b/i.test(params.command) && /\b(localhost|127\.0\.0\.1)\b/i.test(params.command) && resolveReason.exitCode === 0
-						? '\n\nVERIFICATION COMPLETE — localhost responded successfully. Trove opened the preview in the editor. Give a concise summary to the user. Do NOT run more terminal commands.'
+						? '\n\nVERIFICATION COMPLETE — localhost responded successfully. Trove opened the preview in the editor. Give a concise summary to the user. Do NOT run more terminal commands or ask the user to run install/build/start.'
 						: ''
-					return `${plain}\n(exit code ${resolveReason.exitCode})${persistNote}${curlNote}${autoNote}`
+					return `${plain}\n(exit code ${resolveReason.exitCode})${persistNote}${installFailedNote}${emptyOutputNote}${curlNote}${autoNote}`
 				}
 				if (resolveReason.type === 'server_ready') {
 					return `${plain}\nDev server appears ready in persistent terminal ${autoPersistentTerminalId ?? 'unknown'}. Run ONE run_command curl against the URL shown above — then stop.${autoNote}`

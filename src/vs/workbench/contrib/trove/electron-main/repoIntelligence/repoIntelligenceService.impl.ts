@@ -4,11 +4,13 @@
  *--------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { promises as fs } from 'fs';
 import { IEnvironmentMainService } from '../../../../../platform/environment/electron-main/environmentMainService.js';
 import { IEncryptionMainService } from '../../../../../platform/encryption/common/encryptionService.js';
 import { IApplicationStorageMainService } from '../../../../../platform/storage/electron-main/storageMainService.js';
 import { StorageScope } from '../../../../../platform/storage/common/storage.js';
 import { CodebaseSearchResult, IRepoIntelligenceMainService, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { getTroveMemoryFilePath } from '../../common/troveMemoryPaths.js';
 import { TROVE_SETTINGS_STORAGE_KEY } from '../../common/storageKeys.js';
 import { TroveSettingsState } from '../../common/troveSettingsService.js';
 import { IMetricsService } from '../../common/metricsService.js';
@@ -46,6 +48,8 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 
 	private readonly _db: RepoIntelligenceDb;
 	private readonly _scanInProgress = new Map<string, Promise<WorkspaceProfile>>();
+	private readonly _memoryFilePath: string;
+	private _cachedUserMemory: string | null = null;
 
 	constructor(
 		@IEnvironmentMainService private readonly _environmentService: IEnvironmentMainService,
@@ -57,6 +61,8 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		const dbPath = getRepoIntelligenceDbPath(this._environmentService.userDataPath);
 		this._db = new RepoIntelligenceDb(dbPath);
 		this._db.init().catch(err => console.error('[RepoIntelligence] DB init failed:', err));
+		this._memoryFilePath = getTroveMemoryFilePath(this._environmentService.userDataPath);
+		this._loadUserMemory().catch(err => console.error('[RepoIntelligence] Memory load failed:', err));
 	}
 
 	override dispose(): void {
@@ -243,5 +249,35 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 				resolve(null);
 			});
 		});
+	}
+
+	private async _loadUserMemory(): Promise<void> {
+		try {
+			const content = await fs.readFile(this._memoryFilePath, 'utf8');
+			this._cachedUserMemory = content.trim() || null;
+		} catch {
+			this._cachedUserMemory = null;
+		}
+	}
+
+	getUserMemory(): string | null {
+		return this._cachedUserMemory;
+	}
+
+	async appendToUserMemory(text: string): Promise<void> {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		const entry = `- ${trimmed}\n`;
+		try {
+			await fs.appendFile(this._memoryFilePath, entry, 'utf8');
+		} catch (err: unknown) {
+			if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+				await fs.writeFile(this._memoryFilePath, entry, 'utf8');
+			} else {
+				throw err;
+			}
+		}
+		const existing = this._cachedUserMemory ?? '';
+		this._cachedUserMemory = (existing ? `${existing}\n` : '') + entry.trim();
 	}
 }
