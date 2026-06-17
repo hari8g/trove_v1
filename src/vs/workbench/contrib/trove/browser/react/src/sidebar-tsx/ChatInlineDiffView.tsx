@@ -11,6 +11,8 @@ export type ChatDiffLine = { type: 'remove' | 'add'; text: string };
 
 export type ChatDiffStats = { lines: ChatDiffLine[]; added: number; removed: number };
 
+export const MAX_FILE_PREVIEW_LINES = 4;
+
 const splitLines = (text: string): string[] => {
 	if (!text) return [];
 	return text.split('\n');
@@ -66,10 +68,15 @@ export const ChatInlineDiffView = ({
 	code,
 	type,
 	originalContent,
+	maxVisibleLines = MAX_FILE_PREVIEW_LINES,
+	limitLines = true,
 }: {
 	code: string;
 	type: 'diff' | 'rewrite';
 	originalContent?: string;
+	/** When limitLines is true, show at most this many diff lines. */
+	maxVisibleLines?: number;
+	limitLines?: boolean;
 }) => {
 	const { lines } = useMemo(
 		() => computeChatDiff(code, type, originalContent),
@@ -77,24 +84,32 @@ export const ChatInlineDiffView = ({
 	);
 
 	if (lines.length === 0) {
-		return <div className="px-2 py-2 text-[11px] text-trove-fg-4 italic">No changes yet</div>;
+		return <div className="px-2.5 py-2 text-[11px] text-trove-fg-4 italic">No changes yet</div>;
 	}
+
+	const visibleLines = limitLines ? lines.slice(0, maxVisibleLines) : lines;
+	const hiddenCount = limitLines ? Math.max(0, lines.length - maxVisibleLines) : 0;
 
 	return (
 		<div className="font-mono text-[11px] leading-[1.45] overflow-x-auto">
-			{lines.map((line, i) => (
+			{visibleLines.map((line, i) => (
 				<div
 					key={i}
-					className={`px-2 py-px whitespace-pre ${
+					className={`px-2.5 py-px whitespace-pre ${
 						line.type === 'remove'
-							? 'bg-red-500/15 text-red-700 dark:text-red-300'
-							: 'bg-green-500/15 text-green-800 dark:text-green-300'
+							? 'bg-red-500/12 text-red-700 dark:text-red-300'
+							: 'bg-green-500/12 text-green-800 dark:text-green-300'
 					}`}
 				>
 					<span className="select-none opacity-60 w-3 inline-block">{line.type === 'remove' ? '-' : '+'}</span>
 					{line.text || ' '}
 				</div>
 			))}
+			{hiddenCount > 0 ? (
+				<div className="px-2.5 py-1 text-[10px] text-trove-fg-4 italic border-t border-trove-border-3/30">
+					+{hiddenCount} more line{hiddenCount === 1 ? '' : 's'} — expand to view
+				</div>
+			) : null}
 		</div>
 	);
 };

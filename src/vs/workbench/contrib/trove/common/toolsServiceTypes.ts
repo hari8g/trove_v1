@@ -52,6 +52,7 @@ export type BuiltinToolCallParams = {
 	'search_pathnames_only': { query: string, includePattern: string | null, pageNumber: number },
 	'search_for_files': { query: string, isRegex: boolean, searchInFolder: URI | null, pageNumber: number },
 	'search_codebase': { query: string, maxResults: number },
+	'search_web': { query: string, maxResults: number },
 	'search_in_file': { uri: URI, query: string, isRegex: boolean },
 	'read_lint_errors': { uri: URI },
 	// ---
@@ -74,6 +75,7 @@ export type BuiltinToolResultType = {
 	'search_pathnames_only': { uris: URI[], hasNextPage: boolean },
 	'search_for_files': { uris: URI[], hasNextPage: boolean },
 	'search_codebase': { results: { filePath: string, startLine: number, endLine: number, snippet: string }[], query: string },
+	'search_web': { results: { title: string, url: string, snippet: string }[], query: string },
 	'search_in_file': { lines: number[]; },
 	'read_lint_errors': { lintErrors: LintErrorItem[] | null },
 	// ---

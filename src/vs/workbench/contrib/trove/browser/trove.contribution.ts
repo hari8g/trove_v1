@@ -36,6 +36,7 @@ import './troveUpdateActions.js'
 import './toolsService.js'
 import './terminalToolService.js'
 import './agentDeliveryService.js'
+import './openWorkspacePreviewAction.js'
 
 // register Thread History
 import './chatThreadService.js'
@@ -66,6 +67,7 @@ import './troveSCMService.js'
 
 // register repository intelligence
 import './repoIntelligenceService.js'
+import './webSearchService.js'
 import './repoIntelligenceStatusContribution.js'
 
 // ---------- common (unclear if these actually need to be imported, because they're already imported wherever they're used) ----------

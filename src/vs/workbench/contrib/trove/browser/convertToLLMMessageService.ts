@@ -18,6 +18,8 @@ import { ToolName } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
 import { IContextGatheringService } from './contextGatheringService.js';
 import { trimChatMessagesForContextWindow } from './contextWindowTrim.js';
+import { compactStaleToolResults } from './toolResultCompaction.js';
+import { CHARS_PER_TOKEN, computeEffectiveOutputReserve, elideOldestToolResultsFirst } from './wireMessageTrim.js';
 
 export const EMPTY_MESSAGE = '(empty message)'
 
@@ -37,12 +39,6 @@ type SimpleLLMMessage = {
 	content: string;
 	anthropicReasoning: AnthropicReasoning[] | null;
 }
-
-
-
-const CHARS_PER_TOKEN = 4 // assume abysmal chars per token
-const TRIM_TO_LEN = 120
-
 
 
 
@@ -353,10 +349,7 @@ const prepareOpenAIOrAnthropicMessages = ({
 	reservedOutputTokenSpace: number | null | undefined,
 }): { messages: AnthropicOrOpenAILLMMessage[], separateSystemMessage: string | undefined } => {
 
-	reservedOutputTokenSpace = Math.max(
-		contextWindow * 1 / 2, // reserve at least 1/4 of the token window length
-		reservedOutputTokenSpace ?? 4_096 // defaults to 4096
-	)
+	const effectiveOutputReserve = computeEffectiveOutputReserve(reservedOutputTokenSpace)
 	let messages: (SimpleLLMMessage | { role: 'system', content: string })[] = deepClone(messages_)
 
 	// ================ system message ================
@@ -375,87 +368,11 @@ const prepareOpenAIOrAnthropicMessages = ({
 		content: m.role !== 'tool' ? toPlainText(m.content).trim() : toPlainText(m.content),
 	}))
 
-	type MesType = (typeof messages)[0]
-
-	// ================ fit into context ================
-
-	// the higher the weight, the higher the desire to truncate - TRIM HIGHEST WEIGHT MESSAGES
-	const alreadyTrimmedIdxes = new Set<number>()
-	const weight = (message: MesType, messages: MesType[], idx: number) => {
-		const base = message.content.length
-
-		let multiplier: number
-		multiplier = 1 + (messages.length - 1 - idx) / messages.length // slow rampdown from 2 to 1 as index increases
-		if (message.role === 'user') {
-			multiplier *= 1
-		}
-		else if (message.role === 'system') {
-			multiplier *= .01 // very low weight
-		}
-		else {
-			multiplier *= 10 // llm tokens are far less valuable than user tokens
-		}
-
-		// any already modified message should not be trimmed again
-		if (alreadyTrimmedIdxes.has(idx)) {
-			multiplier = 0
-		}
-		// 1st and last messages should be very low weight
-		if (idx <= 1 || idx >= messages.length - 1 - 3) {
-			multiplier *= .05
-		}
-		return base * multiplier
-	}
-
-	const _findLargestByWeight = (messages_: MesType[]) => {
-		let largestIndex = -1
-		let largestWeight = -Infinity
-		for (let i = 0; i < messages.length; i += 1) {
-			const m = messages[i]
-			const w = weight(m, messages_, i)
-			if (w > largestWeight) {
-				largestWeight = w
-				largestIndex = i
-			}
-		}
-		return largestIndex
-	}
-
-	let totalLen = 0
-	for (const m of messages) { totalLen += m.content.length }
-	const charsNeedToTrim = totalLen - Math.max(
-		(contextWindow - reservedOutputTokenSpace) * CHARS_PER_TOKEN, // can be 0, in which case charsNeedToTrim=everything, bad
-		5_000 // ensure we don't trim at least 5k chars (just a random small value)
+	const charBudget = Math.max(
+		(contextWindow - effectiveOutputReserve) * CHARS_PER_TOKEN,
+		5_000,
 	)
-
-
-	// <----------------------------------------->
-	// 0                      |    |             |
-	//                        |    contextWindow |
-	//                     contextWindow - maxOut|putTokens
-	//                                          totalLen
-	let remainingCharsToTrim = charsNeedToTrim
-	let i = 0
-
-	while (remainingCharsToTrim > 0) {
-		i += 1
-		if (i > 100) break
-
-		const trimIdx = _findLargestByWeight(messages)
-		const m = messages[trimIdx]
-
-		// if can finish here, do
-		const numCharsWillTrim = m.content.length - TRIM_TO_LEN
-		if (numCharsWillTrim > remainingCharsToTrim) {
-			// trim remainingCharsToTrim + '...'.length chars
-			m.content = m.content.slice(0, m.content.length - remainingCharsToTrim - '...'.length).trim() + '...'
-			break
-		}
-
-		remainingCharsToTrim -= numCharsWillTrim
-		m.content = m.content.substring(0, TRIM_TO_LEN - '...'.length) + '...'
-		alreadyTrimmedIdxes.add(trimIdx)
-	}
+	elideOldestToolResultsFirst(messages, charBudget)
 
 	// ================ system message hack ================
 	const newSysMsg = messages.shift()!.content
@@ -616,8 +533,9 @@ const prepareMessages = (params: {
 
 export interface IConvertToLLMMessageService {
 	readonly _serviceBrand: undefined;
+	buildRunContext: (opts: { chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<string>
 	prepareLLMSimpleMessages: (opts: { simpleMessages: SimpleLLMMessage[], systemMessage: string, modelSelection: ModelSelection | null, featureName: FeatureName }) => { messages: LLMChatMessage[], separateSystemMessage: string | undefined }
-	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, contextWasTrimmed: boolean }>
+	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedSystemMessage?: string }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, contextWasTrimmed: boolean }>
 	prepareFIMMessage(opts: { messages: LLMFIMMessage, }): { prefix: string, suffix: string, stopTokens: string[] }
 }
 
@@ -655,6 +573,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const activeURI = this.editorService.activeEditor?.resource?.fsPath;
 
 		const directoryStr = await this.directoryStrService.getAllDirectoriesStr({
+			openedURIs,
 			cutOffMessage: chatMode === 'agent' || chatMode === 'gather' ?
 				`...Directories string cut off, use tools to read more...`
 				: `...Directories string cut off, ask user for more if necessary...`
@@ -673,6 +592,17 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const userMemory = this._repoIntelligenceService.getUserMemory()
 		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory })
 		return systemMessage
+	}
+
+	buildRunContext: IConvertToLLMMessageService['buildRunContext'] = async ({ chatMode, modelSelection }) => {
+		if (modelSelection === null) {
+			return '';
+		}
+		const { overridesOfModel } = this.troveSettingsService.state
+		const { specialToolFormat } = getModelCapabilities(modelSelection.providerName, modelSelection.modelName, overridesOfModel)
+		const fullSystemMessage = await this._generateChatMessagesSystemMessage(chatMode, specialToolFormat)
+		const { disableSystemMessage } = this.troveSettingsService.state.globalSettings
+		return disableSystemMessage ? '' : fullSystemMessage
 	}
 
 
@@ -763,7 +693,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		})
 		return { messages, separateSystemMessage };
 	}
-	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection }) => {
+	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedSystemMessage }) => {
 		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined, contextWasTrimmed: false }
 
 		const { overridesOfModel } = this.troveSettingsService.state
@@ -775,9 +705,10 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			supportsSystemMessage,
 		} = getModelCapabilities(providerName, modelName, overridesOfModel)
 
-		const { disableSystemMessage } = this.troveSettingsService.state.globalSettings;
-		const fullSystemMessage = await this._generateChatMessagesSystemMessage(chatMode, specialToolFormat)
-		const systemMessage = disableSystemMessage ? '' : fullSystemMessage;
+		const fullSystemMessage = precomputedSystemMessage !== undefined
+			? precomputedSystemMessage
+			: await this.buildRunContext({ chatMode, modelSelection })
+		const systemMessage = fullSystemMessage;
 
 		const aiInstructions = this._getGlobalAIInstructions();
 
@@ -792,7 +723,8 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 		const isReasoningEnabled = getIsReasoningEnabledState('Chat', providerName, modelName, modelSelectionOptions, overridesOfModel)
 		const reservedOutputTokenSpace = getReservedOutputTokenSpace(providerName, modelName, { isReasoningEnabled, overridesOfModel })
-		const llmMessages = this._chatMessagesToSimpleMessages(trimmedChatMessages)
+		const compactedChatMessages = compactStaleToolResults(trimmedChatMessages)
+		const llmMessages = this._chatMessagesToSimpleMessages(compactedChatMessages)
 		this._prependRecentlyViewedCodeToLatestUserMessage(llmMessages)
 
 		const { messages, separateSystemMessage } = prepareMessages({

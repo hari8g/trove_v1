@@ -302,6 +302,11 @@ class TroveSettingsService extends Disposable implements ITroveSettingsService {
 
 			// add enableAgentPlan feature
 			if (readS.globalSettings.enableAgentPlan === undefined) readS.globalSettings.enableAgentPlan = true;
+
+			if (readS.globalSettings.enablePromptCache === undefined) readS.globalSettings.enablePromptCache = true;
+			if (readS.globalSettings.enableParallelReadBatching === undefined) readS.globalSettings.enableParallelReadBatching = true;
+			if (readS.globalSettings.enableWebSearch === undefined) readS.globalSettings.enableWebSearch = true;
+			if (readS.globalSettings.webSearchApiKey === undefined) readS.globalSettings.webSearchApiKey = '';
 		}
 		catch (e) {
 			readS = defaultState()

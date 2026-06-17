@@ -7,7 +7,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
+import { FileChangeType, IFileService, IFileStat } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ShallowDirectoryItem, BuiltinToolCallParams, BuiltinToolResultType } from './toolsServiceTypes.js';
 import { MAX_CHILDREN_URIs_PAGE, MAX_DIRSTR_CHARS_TOTAL_BEGINNING, MAX_DIRSTR_CHARS_TOTAL_TOOL } from './prompt/prompts.js';
@@ -26,7 +26,9 @@ export interface IDirectoryStrService {
 	readonly _serviceBrand: undefined;
 
 	getDirectoryStrTool(uri: URI): Promise<string>
-	getAllDirectoriesStr(opts: { cutOffMessage: string }): Promise<string>
+	getAllDirectoriesStr(opts: { cutOffMessage: string; openedURIs?: string[] }): Promise<string>
+
+	invalidateCache(): void
 
 	getAllURIsInDirectory(uri: URI, opts: { maxResults: number }): Promise<URI[]>
 
@@ -384,11 +386,51 @@ export async function getAllUrisInDirectory(
 class DirectoryStrService extends Disposable implements IDirectoryStrService {
 	_serviceBrand: undefined;
 
+	private _cachedDirectoryStr: string | null = null;
+	private _cachedDirectoryStrWasCutOff = false;
+	private _cachedWorkspaceKey: string | null = null;
+
 	constructor(
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
+
+		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
+			this.invalidateCache();
+		}));
+
+		this._register(this.fileService.onDidFilesChange(e => {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			for (const folder of folders) {
+				if (e.affects(folder.uri, FileChangeType.ADDED) || e.affects(folder.uri, FileChangeType.DELETED)) {
+					this.invalidateCache();
+					return;
+				}
+			}
+		}));
+	}
+
+	invalidateCache(): void {
+		this._cachedDirectoryStr = null;
+		this._cachedDirectoryStrWasCutOff = false;
+		this._cachedWorkspaceKey = null;
+	}
+
+	private async _getWorkspaceCacheKey(openedURIs: string[] | undefined): Promise<string> {
+		const folders = this.workspaceContextService.getWorkspace().folders;
+		const folderPaths = folders.map(f => f.uri.fsPath).sort().join('|');
+		const mtimeParts: string[] = [];
+		for (const folder of folders) {
+			try {
+				const stat = await this.fileService.stat(folder.uri);
+				mtimeParts.push(String(stat.mtime));
+			} catch {
+				mtimeParts.push('0');
+			}
+		}
+		const openedPart = openedURIs ? [...openedURIs].sort().join('|') : '';
+		return `${folderPaths}::${mtimeParts.join(',')}::${openedPart}`;
 	}
 
 	async getAllURIsInDirectory(uri: URI, opts: { maxResults: number }): Promise<URI[]> {
@@ -434,7 +476,14 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 		return c
 	}
 
-	async getAllDirectoriesStr({ cutOffMessage, }: { cutOffMessage: string, }) {
+	async getAllDirectoriesStr({ cutOffMessage, openedURIs }: { cutOffMessage: string; openedURIs?: string[] }) {
+		const workspaceKey = await this._getWorkspaceCacheKey(openedURIs);
+		if (this._cachedDirectoryStr !== null && this._cachedWorkspaceKey === workspaceKey) {
+			return this._cachedDirectoryStrWasCutOff
+				? `${this._cachedDirectoryStr.trimEnd()}\n${cutOffMessage}`
+				: this._cachedDirectoryStr;
+		}
+
 		let str: string = '';
 		let cutOff = false;
 		const folders = this.workspaceContextService.getWorkspace().folders;
@@ -488,8 +537,10 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 			}
 		}
 
-		const ans = cutOff ? `${str.trimEnd()}\n${cutOffMessage}` : str
-		return ans
+		this._cachedDirectoryStr = str;
+		this._cachedDirectoryStrWasCutOff = cutOff;
+		this._cachedWorkspaceKey = workspaceKey;
+		return cutOff ? `${str.trimEnd()}\n${cutOffMessage}` : str
 	}
 }
 

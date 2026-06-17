@@ -5,12 +5,12 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { URI } from '../../../../base/common/uri.js';
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { AgentDeliverySummary, AgentDeliveryStatus } from '../common/agentDeliveryTypes.js';
 import {
 	DEV_SERVER_COMMAND_PATTERN,
@@ -21,6 +21,7 @@ import {
 } from '../common/prompt/prompts.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { BuiltinToolCallParams, TerminalResolveReason } from '../common/toolsServiceTypes.js';
+import { openWorkspaceSimpleBrowser } from './simpleBrowserOpen.js';
 
 const LOCALHOST_URL_PATTERN = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:\/[^\s"'<>]*)?/gi;
 const LOCALHOST_HOST_PORT_PATTERN = /(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0):(\d{2,5})/gi;
@@ -103,6 +104,7 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 		@ICommandService private readonly commandService: ICommandService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IRepoIntelligenceService private readonly repoIntelligenceService: IRepoIntelligenceService,
+		@IExtensionService private readonly extensionService: IExtensionService,
 	) {
 		super();
 	}
@@ -147,20 +149,12 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 	}
 
 	private async _openPreviewInEditor(url: string): Promise<boolean> {
-		try {
-			await this.commandService.executeCommand('simpleBrowser.api.open', URI.parse(url), {
-				viewColumn: -1, // ViewColumn.Active — editor middle pane
-				preserveFocus: false,
-			});
+		const opened = await openWorkspaceSimpleBrowser(this.commandService, this.extensionService, url);
+		if (opened) {
 			return true;
-		} catch {
-			try {
-				await this.commandService.executeCommand('simpleBrowser.show', url);
-				return true;
-			} catch {
-				return false;
-			}
 		}
+		this.notificationService.warn(`Could not open ${url} in the workspace browser. Use "Open in editor" from the delivery card.`);
+		return false;
 	}
 
 	async handleTerminalToolResult(
@@ -240,7 +234,21 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 	finalizeDelivery(threadId: string): void {
 		const delivery = this._deliveryByThread.get(threadId);
 		if (!delivery) return;
-		// Promote server_running → build_succeeded presentation if we never got curl but have URL
+
+		if (delivery.previewUrl && !delivery.previewOpenedInEditor
+			&& (delivery.status === 'server_running' || delivery.status === 'verified' || delivery.status === 'build_succeeded')) {
+			void this._openPreviewInEditor(delivery.previewUrl).then(opened => {
+				if (opened) {
+					this._mergeDelivery(threadId, {
+						status: delivery.status,
+						previewOpenedInEditor: true,
+						previewUrl: delivery.previewUrl,
+					});
+				}
+			});
+			return;
+		}
+
 		if (delivery.status === 'server_running' && delivery.previewUrl && !delivery.previewOpenedInEditor) {
 			this._onDidChangeDelivery.fire({ threadId });
 		}

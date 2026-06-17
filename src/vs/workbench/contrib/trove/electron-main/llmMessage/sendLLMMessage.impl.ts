@@ -14,7 +14,9 @@ import { Tool as GeminiTool, FunctionDeclaration, GoogleGenAI, ThinkingConfig, S
 import { GoogleAuth } from 'google-auth-library'
 /* eslint-enable */
 
-import { AnthropicLLMChatMessage, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, ModelListParams, OllamaModelResponse, OnError, OnFinalMessage, OnText, RawToolCallObj, RawToolParamsObj } from '../../common/sendLLMMessageTypes.js';
+import { AnthropicLLMChatMessage, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, LLMMessageUsage, ModelListParams, OllamaModelResponse, OnError, OnFinalMessage, OnText, RawToolCallObj, RawToolParamsObj } from '../../common/sendLLMMessageTypes.js';
+import { usageFromAnthropicResponse, usageFromGeminiMetadata, usageFromOpenAIResponse } from '../../common/llmMessageUsage.js';
+import { applyRoutedAnthropicPromptCache } from '../../common/promptCache.js';
 import { ChatMode, displayInfoOfProviderName, ModelSelectionOptions, OverridesOfModel, ProviderName, SettingsOfProvider } from '../../common/troveSettingsTypes.js';
 import { getSendableReasoningInfo, getModelCapabilities, getProviderCapabilities, defaultProviderSettings, getReservedOutputTokenSpace } from '../../common/modelCapabilities.js';
 import { extractReasoningWrapper, extractXMLToolsWrapper } from './extractGrammar.js';
@@ -49,6 +51,7 @@ type SendChatParams_Internal = InternalCommonMessageParams & {
 	separateSystemMessage: string | undefined;
 	chatMode: ChatMode | null;
 	mcpTools: InternalToolInfo[] | undefined;
+	enablePromptCache?: boolean;
 }
 type SendFIMParams_Internal = InternalCommonMessageParams & { messages: LLMFIMMessage; separateSystemMessage: string | undefined; }
 export type ListParams_Internal<ModelResponse> = ModelListParams<ModelResponse>
@@ -232,11 +235,11 @@ const toOpenAICompatibleTool = (toolInfo: InternalToolInfo) => {
 
 const openAITools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined) => {
 	const allowedTools = availableTools(chatMode, mcpTools)
-	if (!allowedTools || Object.keys(allowedTools).length === 0) return null
+	if (!allowedTools || allowedTools.length === 0) return null
 
 	const openAITools: OpenAI.Chat.Completions.ChatCompletionTool[] = []
-	for (const t in allowedTools ?? {}) {
-		openAITools.push(toOpenAICompatibleTool(allowedTools[t]))
+	for (const toolInfo of allowedTools) {
+		openAITools.push(toOpenAICompatibleTool(toolInfo))
 	}
 	return openAITools
 }
@@ -270,7 +273,7 @@ const rawToolCallObjOfAnthropicParams = (toolBlock: Anthropic.Messages.ToolUseBl
 // ------------ OPENAI-COMPATIBLE ------------
 
 
-const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, overridesOfModel, mcpTools }: SendChatParams_Internal) => {
+const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, overridesOfModel, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
 	const {
 		modelName,
 		specialToolFormat,
@@ -303,8 +306,15 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 	}
 	const options: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 		model: modelName,
-		messages: messages as any,
+		messages: applyRoutedAnthropicPromptCache(
+			messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+			separateSystemMessage,
+			enablePromptCache,
+			providerName,
+			modelName,
+		) as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
 		stream: true,
+		stream_options: { include_usage: true },
 		...nativeToolsObj,
 		...additionalOpenAIPayload
 		// max_completion_tokens: maxTokens,
@@ -332,6 +342,7 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 	let toolName = ''
 	let toolId = ''
 	let toolParamsStr = ''
+	let latestUsage: LLMMessageUsage | undefined
 
 	openai.chat.completions
 		.create(options)
@@ -339,6 +350,9 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 			_setAborter(() => response.controller.abort())
 			// when receive text
 			for await (const chunk of response) {
+				if (chunk.usage) {
+					latestUsage = usageFromOpenAIResponse(chunk.usage)
+				}
 				// message
 				const newText = chunk.choices[0]?.delta?.content ?? ''
 				fullTextSoFar += newText
@@ -377,7 +391,7 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 			else {
 				const toolCall = rawToolCallObjOfParamsStr(toolName, toolParamsStr, toolId)
 				const toolCallObj = toolCall ? { toolCall } : {}
-				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, ...toolCallObj });
+				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, usage: latestUsage, ...toolCallObj });
 			}
 		})
 		// when error/fail - this catches errors of both .create() and .then(for await)
@@ -441,13 +455,20 @@ const toAnthropicTool = (toolInfo: InternalToolInfo) => {
 	} satisfies Anthropic.Messages.Tool
 }
 
-const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined) => {
+const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined, enablePromptCache: boolean) => {
 	const allowedTools = availableTools(chatMode, mcpTools)
-	if (!allowedTools || Object.keys(allowedTools).length === 0) return null
+	if (!allowedTools || allowedTools.length === 0) return null
 
 	const anthropicTools: Anthropic.Messages.ToolUnion[] = []
-	for (const t in allowedTools ?? {}) {
-		anthropicTools.push(toAnthropicTool(allowedTools[t]))
+	for (const toolInfo of allowedTools) {
+		anthropicTools.push(toAnthropicTool(toolInfo))
+	}
+	if (enablePromptCache && anthropicTools.length > 0) {
+		const lastIdx = anthropicTools.length - 1
+		anthropicTools[lastIdx] = {
+			...anthropicTools[lastIdx],
+			cache_control: { type: 'ephemeral' },
+		}
 	}
 	return anthropicTools
 }
@@ -455,7 +476,7 @@ const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] 
 
 
 // ------------ ANTHROPIC ------------
-const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName: modelName_, _setAborter, separateSystemMessage, chatMode, mcpTools }: SendChatParams_Internal) => {
+const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName: modelName_, _setAborter, separateSystemMessage, chatMode, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
 	const {
 		modelName,
 		specialToolFormat,
@@ -472,7 +493,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	const maxTokens = getReservedOutputTokenSpace(providerName, modelName_, { isReasoningEnabled: !!reasoningInfo?.isReasoningEnabled, overridesOfModel })
 
 	// tools
-	const potentialTools = anthropicTools(chatMode, mcpTools)
+	const potentialTools = anthropicTools(chatMode, mcpTools, enablePromptCache)
 	const nativeToolsObj = potentialTools && specialToolFormat === 'anthropic-style' ?
 		{ tools: potentialTools, tool_choice: { type: 'auto' } } as const
 		: {}
@@ -481,11 +502,16 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	// instance
 	const anthropic = new Anthropic({
 		apiKey: thisConfig.apiKey,
-		dangerouslyAllowBrowser: true
+		dangerouslyAllowBrowser: true,
+		...(enablePromptCache ? { defaultHeaders: { 'anthropic-beta': 'prompt-caching-2024-07-31' } } : {}),
 	});
 
 	const stream = anthropic.messages.stream({
-		system: separateSystemMessage ?? undefined,
+		system: separateSystemMessage
+			? (enablePromptCache
+				? [{ type: 'text', text: separateSystemMessage, cache_control: { type: 'ephemeral' } }]
+				: separateSystemMessage)
+			: undefined,
 		messages: messages as AnthropicLLMChatMessage[],
 		model: modelName,
 		max_tokens: maxTokens ?? 4_096, // anthropic requires this
@@ -567,8 +593,9 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		// console.log('TOOLS!!!!!!', JSON.stringify(response, null, 2))
 		const toolCall = tools[0] && rawToolCallObjOfAnthropicParams(tools[0])
 		const toolCallObj = toolCall ? { toolCall } : {}
+		const usage = usageFromAnthropicResponse(response.usage)
 
-		onFinalMessage({ fullText, fullReasoning, anthropicReasoning, ...toolCallObj })
+		onFinalMessage({ fullText, fullReasoning, anthropicReasoning, usage, ...toolCallObj })
 	})
 	// on error
 	stream.on('error', (error) => {
@@ -702,10 +729,10 @@ const toGeminiFunctionDecl = (toolInfo: InternalToolInfo) => {
 
 const geminiTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined): GeminiTool[] | null => {
 	const allowedTools = availableTools(chatMode, mcpTools)
-	if (!allowedTools || Object.keys(allowedTools).length === 0) return null
+	if (!allowedTools || allowedTools.length === 0) return null
 	const functionDecls: FunctionDeclaration[] = []
-	for (const t in allowedTools ?? {}) {
-		functionDecls.push(toGeminiFunctionDecl(allowedTools[t]))
+	for (const toolInfo of allowedTools) {
+		functionDecls.push(toGeminiFunctionDecl(toolInfo))
 	}
 	const tools: GeminiTool = { functionDeclarations: functionDecls, }
 	return [tools]
@@ -776,6 +803,7 @@ const sendGeminiChat = async ({
 	let toolName = ''
 	let toolParamsStr = ''
 	let toolId = ''
+	let latestUsage: LLMMessageUsage | undefined
 
 
 	genAI.models.generateContentStream({
@@ -792,6 +820,9 @@ const sendGeminiChat = async ({
 
 			// Process the stream
 			for await (const chunk of stream) {
+				if (chunk.usageMetadata) {
+					latestUsage = usageFromGeminiMetadata(chunk.usageMetadata)
+				}
 				// message
 				const newText = chunk.text ?? ''
 				fullTextSoFar += newText
@@ -822,7 +853,7 @@ const sendGeminiChat = async ({
 				if (!toolId) toolId = generateUuid() // ids are empty, but other providers might expect an id
 				const toolCall = rawToolCallObjOfParamsStr(toolName, toolParamsStr, toolId)
 				const toolCallObj = toolCall ? { toolCall } : {}
-				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, ...toolCallObj });
+				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, usage: latestUsage, ...toolCallObj });
 			}
 		})
 		.catch(error => {

@@ -453,6 +453,10 @@ export type GlobalSettings = {
 	disableSystemMessage: boolean;
 	autoAcceptLLMChanges: boolean;
 	enableAgentPlan: boolean;
+	enablePromptCache: boolean;
+	enableParallelReadBatching: boolean;
+	enableWebSearch: boolean;
+	webSearchApiKey: string;
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
@@ -470,6 +474,10 @@ export const defaultGlobalSettings: GlobalSettings = {
 	disableSystemMessage: false,
 	autoAcceptLLMChanges: false,
 	enableAgentPlan: true,
+	enablePromptCache: true,
+	enableParallelReadBatching: true,
+	enableWebSearch: true,
+	webSearchApiKey: '',
 }
 
 export type GlobalSettingName = keyof GlobalSettings

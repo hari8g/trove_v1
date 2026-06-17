@@ -16,7 +16,6 @@ import { ErrorDisplay } from './ErrorDisplay.js';
 import { BlockCode, TextAreaFns, TroveCustomDropdownBox, TroveInputBox2, TroveSlider, TroveSwitch } from '../util/inputs.js';
 import { ModelDropdown, } from '../trove-settings-tsx/ModelDropdown.js';
 import { PastThreadsList } from './SidebarThreadSelector.js';
-import { TROVE_CTRL_L_ACTION_ID } from '../../../actionIDs.js';
 import { TROVE_OPEN_SETTINGS_ACTION_ID } from '../../../troveSettingsPane.js';
 import { ChatMode, displayInfoOfProviderName, FeatureName, isFeatureNameDisabled } from '../../../../../../../workbench/contrib/trove/common/troveSettingsTypes.js';
 import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
@@ -37,7 +36,7 @@ import { ToolApprovalTypeSwitch } from '../trove-settings-tsx/Settings.js';
 import { persistentTerminalNameOfId, ITerminalToolService } from '../../../terminalToolService.js';
 import { AnsiTerminalOutput } from '../util/ansiOutput.js';
 import { removeMCPToolNamePrefix } from '../../../../common/mcpServiceTypes.js';
-import { BackgroundActivityPanel, ChatInlineDiffButtons, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveReasoningBlock, StreamingEditToolCard, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
+import { BackgroundActivityPanel, ChatInlineDiffButtons, CollapsibleCodeSnippet, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveReasoningBlock, StreamingEditToolCard, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
 import { PlanView } from './PlanView.js';
 import { ChatInlineDiffView, computeChatDiff } from './ChatInlineDiffView.js';
 import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
@@ -351,9 +350,8 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 			className={`
                 flex flex-col relative shrink-0 mx-2 mb-2
                 rounded-xl
-                bg-trove-bg-2/70
+                glass-panel
 				transition-all duration-200
-				border border-trove-border-3/50 focus-within:border-trove-border-2/90
 				shadow-sm
                 ${className}
             `}
@@ -391,9 +389,9 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 
 				<div className="flex items-center gap-1.5 shrink-0">
 
-					{isStreaming && streamingStatusText ? (
-						<span className="hidden sm:inline text-[10px] text-trove-fg-4 italic max-w-[160px] truncate" title={streamingStatusText}>
-							{streamingStatusText}
+					{isStreaming ? (
+						<span className="text-[10px] text-trove-fg-4 italic max-w-[220px] truncate" title={streamingStatusText ?? 'Working…'}>
+							{streamingStatusText ?? 'Working…'}
 						</span>
 					) : null}
 
@@ -735,7 +733,7 @@ const ToolHeaderWrapper = ({
 	}
 
 	return (<div className=''>
-		<div className={`w-full rounded-md px-1.5 py-0.5 bg-trove-bg-2/30 overflow-hidden ${className}`}>
+		<div className={`w-full glass-card overflow-hidden px-1.5 py-0.5 ${className}`}>
 			{/* header */}
 			<div className={`select-none flex items-center min-h-[18px]`}>
 				<div className={`flex items-center w-full gap-x-2 overflow-hidden justify-between ${isRejected ? 'line-through' : ''}`}>
@@ -1123,7 +1121,7 @@ const UserMessageComponent = ({ chatMessage, messageIdx, isCheckpointGhost, curr
 			className={`
             text-left rounded-xl max-w-full
             ${mode === 'edit' ? ''
-					: mode === 'display' ? 'px-3 py-2.5 flex flex-col border border-trove-border-3/40 bg-trove-bg-2/60 text-trove-fg-1 overflow-x-auto cursor-pointer' : ''
+					: mode === 'display' ? 'px-3 py-2.5 flex flex-col glass-card text-trove-fg-1 overflow-x-auto cursor-pointer' : ''
 				}
         `}
 			onClick={() => { if (mode === 'display') { onOpenEdit() } }}
@@ -1313,6 +1311,7 @@ const titleOfBuiltinToolName = {
 	'search_pathnames_only': { done: 'Searched by file name', proposed: 'Search by file name', running: loadingTitleWrapper('Searching by file name') },
 	'search_for_files': { done: 'Searched', proposed: 'Search', running: loadingTitleWrapper('Searching') },
 	'search_codebase': { done: 'Searched codebase', proposed: 'Search codebase', running: loadingTitleWrapper('Searching codebase') },
+	'search_web': { done: 'Searched web', proposed: 'Search web', running: loadingTitleWrapper('Searching web') },
 	'create_file_or_folder': { done: `Created`, proposed: `Create`, running: loadingTitleWrapper(`Creating`) },
 	'delete_file_or_folder': { done: `Deleted`, proposed: `Delete`, running: loadingTitleWrapper(`Deleting`) },
 	'edit_file': { done: `Edited file`, proposed: 'Edit file', running: loadingTitleWrapper('Editing file') },
@@ -2152,16 +2151,15 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 							const folder = workspaceContextService.getWorkspace().folders[0]
 							const uri = folder ? URI.joinPath(folder.uri, match.filePath) : URI.file(match.filePath)
 							const lineLabel = `${match.startLine}-${match.endLine}`
-							return <div key={i} className='w-full'>
-								<ListableToolItem
-									name={`${getBasename(match.filePath)} (${lineLabel})`}
-									className='w-full overflow-auto'
-									onClick={() => { voidOpenFileFn(uri, accessor, [match.startLine, match.endLine]) }}
+							return (
+								<CollapsibleCodeSnippet
+									key={i}
+									fileName={getBasename(match.filePath)}
+									subtitle={lineLabel}
+									code={match.snippet}
+									onFileClick={() => { voidOpenFileFn(uri, accessor, [match.startLine, match.endLine]) }}
 								/>
-								<CodeChildren className='bg-trove-bg-3 mx-2 mb-2'>
-									<pre className='font-mono whitespace-pre-wrap text-xs'>{match.snippet}</pre>
-								</CodeChildren>
-							</div>
+							)
 						})}
 					</ToolChildrenWrapper>
 			}
@@ -2204,11 +2202,12 @@ const builtinToolNameToComponent: { [T in BuiltinToolName]: { resultWrapper: Res
 				componentParams.numResults = result.lines.length;
 				componentParams.children = result.lines.length === 0 ? undefined :
 					<ToolChildrenWrapper>
-						<CodeChildren className='bg-trove-bg-3'>
-							<pre className='font-mono whitespace-pre'>
-								{toolsService.stringOfResult['search_in_file'](params, result)}
-							</pre>
-						</CodeChildren>
+						<CollapsibleCodeSnippet
+							fileName={getBasename(params.uri.fsPath)}
+							subtitle={`${result.lines.length} match${result.lines.length === 1 ? '' : 'es'}`}
+							code={toolsService.stringOfResult['search_in_file'](params, result)}
+							onFileClick={() => { voidOpenFileFn(params.uri, accessor) }}
+						/>
 					</ToolChildrenWrapper>
 			}
 			else if (toolMessage.type === 'tool_error') {
@@ -2645,6 +2644,7 @@ export const SidebarChat = () => {
 	const latestError = currThreadStreamState?.error
 	const { displayContentSoFar, toolCallSoFar, reasoningSoFar } = currThreadStreamState?.llmInfo ?? {}
 	const runningToolInfo = currThreadStreamState?.isRunning === 'tool' ? currThreadStreamState.toolInfo : undefined
+	const idleStatus = currThreadStreamState?.isRunning === 'idle' ? currThreadStreamState.idleStatus : undefined
 	const contextWasTrimmed = !!(currThreadStreamState?.contextWasTrimmed && (isRunning === 'LLM' || isRunning === 'idle'))
 
 	// this is just if it's currently being generated, NOT if it's currently running
@@ -2686,6 +2686,7 @@ export const SidebarChat = () => {
 					search_pathnames_only: 'Searching by file name',
 					search_for_files: 'Searching files',
 					search_codebase: 'Searching codebase',
+					search_web: 'Searching the web',
 					search_in_file: 'Searching in file',
 					create_file_or_folder: 'Creating path',
 					delete_file_or_folder: 'Deleting path',
@@ -2723,10 +2724,10 @@ export const SidebarChat = () => {
 		if (isRunning === 'idle') {
 			return {
 				phase: 'preparing',
-				title: 'Preparing next model call',
-				detail: turnActivitySummary.summaryLine
+				title: idleStatus?.title ?? 'Preparing next model call',
+				detail: idleStatus?.detail ?? (turnActivitySummary.summaryLine
 					? `${chatModeLabel} mode · ${turnActivitySummary.summaryLine}`
-					: `${chatModeLabel} mode · assembling conversation context for ${modelLabel}`,
+					: `${chatModeLabel} mode · assembling conversation context for ${modelLabel}`),
 				contextLine: turnActivitySummary.recentFilesLine,
 			}
 		}
@@ -2768,18 +2769,26 @@ export const SidebarChat = () => {
 		turnActivitySummary,
 		modelLabel,
 		chatModeLabel,
+		idleStatus,
 		displayContentSoFar,
 		reasoningSoFar,
 	])
 
-	const showBackgroundActivity = !!backgroundActivity
+	const showBackgroundActivity = !!isRunning
 		&& !toolIsGenerating
 		&& !(isRunning === 'LLM' && !!displayContentSoFar?.trim())
 		&& !(isRunning === 'LLM' && !!reasoningSoFar?.trim() && !displayContentSoFar?.trim())
 
+	const activityPanelProps = backgroundActivity ?? (isRunning ? {
+		phase: 'preparing' as const,
+		title: idleStatus?.title ?? 'Working',
+		detail: idleStatus?.detail,
+		contextLine: undefined,
+	} : null)
+
 	const streamingStatusText = backgroundActivity
 		? [backgroundActivity.title, backgroundActivity.detail].filter(Boolean).join(' · ')
-		: undefined
+		: isRunning ? 'Working…' : undefined
 
 	// ----- SIDEBAR CHAT state (local) -----
 
@@ -2817,8 +2826,6 @@ export const SidebarChat = () => {
 		const threadId = currentThread.id
 		await chatThreadsService.abortRunning(threadId)
 	}
-
-	const keybindingString = accessor.get('IKeybindingService').lookupKeybinding(TROVE_CTRL_L_ACTION_ID)?.getLabel()
 
 	const threadId = currentThread.id
 	const agentDelivery = useAgentDelivery(threadId)
@@ -2895,7 +2902,7 @@ export const SidebarChat = () => {
 			w-full h-full
 			overflow-x-hidden
 			overflow-y-auto
-			${previousMessagesHTML.length === 0 && !displayContentSoFar && !reasoningSoFar ? 'hidden' : ''}
+			${previousMessagesHTML.length === 0 && !displayContentSoFar && !reasoningSoFar && !isRunning ? 'hidden' : ''}
 		`}
 	>
 		{/* previous messages */}
@@ -2913,12 +2920,12 @@ export const SidebarChat = () => {
 			: null}
 
 		{/* live activity — hide while reasoning stream or edit tool generation is visible */}
-		{showBackgroundActivity && backgroundActivity ?
+		{showBackgroundActivity && activityPanelProps ?
 			<BackgroundActivityPanel
-				phase={backgroundActivity.phase}
-				title={backgroundActivity.title}
-				detail={backgroundActivity.detail}
-				contextLine={backgroundActivity.contextLine}
+				phase={activityPanelProps.phase}
+				title={activityPanelProps.title}
+				detail={activityPanelProps.detail}
+				contextLine={activityPanelProps.contextLine}
 			/> : null}
 
 
@@ -2969,8 +2976,8 @@ export const SidebarChat = () => {
 			enableAtToMention
 			inlineSelections={selections}
 			setInlineSelections={setSelections}
-			className={`min-h-[72px] px-0 py-0 text-[13px] leading-[1.45]`}
-			placeholder={`@ to mention, ${keybindingString ? `${keybindingString} to add a selection. ` : ''}Enter instructions...`}
+			className={`min-h-[44px] px-0 py-0 text-[13px] leading-[1.45]`}
+			placeholder="Ask Trove anything…"
 			onChangeText={onChangeText}
 			onKeyDown={onKeyDown}
 			onFocus={() => { chatThreadsService.setCurrentlyFocusedMessageIdx(undefined) }}

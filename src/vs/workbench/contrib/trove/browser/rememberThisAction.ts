@@ -40,7 +40,7 @@ class RememberThisAction extends Action2 {
 		}
 
 		if (!text) {
-			notificationService.info('Select text in the editor to remember, or use chat to save instructions.');
+			notificationService.info('Select text in the editor to remember, or type "Please remember that …" in chat.');
 			return;
 		}
 

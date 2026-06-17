@@ -19,6 +19,7 @@ export const READ_ONLY_BATCH_TOOL_NAMES: ReadonlySet<BuiltinToolName> = new Set(
 	'search_for_files',
 	'search_in_file',
 	'search_codebase',
+	'search_web',
 ]);
 
 export const MAX_ADDITIONAL_READ_TOOLS = 4;
@@ -93,7 +94,7 @@ const buildDiscoverySystemMessage = (primary: RawToolCallObj): string => {
 		`The agent is already calling: ${primary.name} with params ${JSON.stringify(primary.rawParams)}.`,
 		'',
 		'List up to ' + MAX_ADDITIONAL_READ_TOOLS + ' ADDITIONAL read-only tool calls to make in parallel at this step.',
-		'Allowed tools: read_file, ls_dir, get_dir_tree, search_pathnames_only, search_for_files, search_in_file, search_codebase.',
+		'Allowed tools: read_file, ls_dir, get_dir_tree, search_pathnames_only, search_for_files, search_in_file, search_codebase, search_web.',
 		'',
 		'Output ONE JSON object per line (no markdown, no prose):',
 		'{"name":"read_file","rawParams":{"uri":"path/to/file.ts"}}',

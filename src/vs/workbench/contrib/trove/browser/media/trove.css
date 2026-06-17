@@ -208,9 +208,9 @@
 .monaco-workbench.hc-black .trove-icon,
 .monaco-workbench.vs-dark .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress,
 .monaco-workbench.hc-black .part.editor > .content .editor-group-container > .editor-group-watermark > .trove-watermark-logo-wrap > .letterpress {
-	/* JPEG has no alpha — lighten drops the black box on dark editor backgrounds */
-	filter: none;
-	mix-blend-mode: lighten;
+	/* Invert baked-in white JPEG: white → dark (matches bg), logo → light */
+	filter: invert(1) brightness(1.08);
+	mix-blend-mode: normal;
 	opacity: 0.9;
 }
 
@@ -235,6 +235,11 @@
 .monaco-workbench.vs-dark .trove-watermark-logo-wrap > .letterpress,
 .monaco-workbench.hc-black .trove-watermark-logo-wrap > .letterpress {
 	animation: none;
+}
+
+.monaco-workbench.vs-dark .trove-watermark-logo-wrap,
+.monaco-workbench.hc-black .trove-watermark-logo-wrap {
+	background: transparent;
 }
 
 .monaco-workbench.vs-dark .trove-watermark-logo-wrap::before,
@@ -426,32 +431,35 @@
 	}
 }
 
-/* Dark / high-contrast — softer text shimmer, no bloom bar behind copy */
+/* Dark / high-contrast — readable tagline and ownership on editor background */
 .monaco-workbench.vs-dark .trove-watermark-tagline,
 .monaco-workbench.hc-black .trove-watermark-tagline {
-	color: rgba(226, 232, 240, 0.7);
+	color: color-mix(in srgb, var(--vscode-foreground) 88%, var(--vscode-editor-background));
 	opacity: 1;
-	animation: trove-tagline-fade-dark 7s ease-in-out infinite;
+	animation: none;
 }
 
-@keyframes trove-tagline-fade-dark {
-	0%, 100% { color: rgba(203, 213, 225, 0.65); }
-	50% { color: rgba(241, 245, 249, 0.82); }
+.monaco-workbench.vs .trove-watermark-tagline,
+.monaco-workbench.hc-light .trove-watermark-tagline {
+	color: color-mix(in srgb, var(--vscode-foreground) 72%, var(--vscode-editor-background));
+	opacity: 1;
+	animation: none;
 }
 
 .monaco-workbench.vs-dark .trove-watermark-ownership,
 .monaco-workbench.hc-black .trove-watermark-ownership {
 	background: linear-gradient(
 		105deg,
-		#64748b 0%,
-		#7dd3fc 20%,
-		#93c5fd 42%,
-		#a5b4fc 64%,
-		#64748b 86%
+		#94a3b8 0%,
+		#7dd3fc 22%,
+		#93c5fd 44%,
+		#a5b4fc 66%,
+		#94a3b8 100%
 	);
 	background-size: 220% 100%;
 	filter: none;
 	animation: trove-ownership-shimmer-dark 7s ease-in-out infinite;
+	opacity: 1;
 }
 
 .monaco-workbench.vs-dark .trove-watermark-ownership::before,

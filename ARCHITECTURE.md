@@ -1,6 +1,6 @@
 # Trove Architecture
 
-This document describes how Trove is structured on top of VS Code OSS: process boundaries, the agent loop, IPC, core services, and conventions for extending the system.
+This document describes how Trove is structured on top of VS Code OSS: process boundaries, the agent loop, token economy, IPC, core services, and conventions for extending the system.
 
 ---
 
@@ -19,9 +19,10 @@ Trove is not a VS Code extension. It is a **workbench contribution** compiled in
 │  │  trove/browser/        │  │  │  trove/electron-main/              │  │
 │  │  · chatThreadService   │◄─┼──┤  · sendLLMMessageChannel           │  │
 │  │  · toolsService        │  │  │  · sendLLMMessage.impl (HTTP)      │  │
-│  │  · convertToLLM...     │  │  │  · repoIntelligence (SQLite)     │  │
-│  │  · React UI (sidebar)  │  │  │  · mcpChannel · troveSCM · metrics │  │
-│  └──────────┬─────────────┘  │  └────────────────────────────────────┘  │
+│  │  · convertToLLM...     │  │  │  · repoIntelligence (SQLite)       │  │
+│  │  · webSearchService    │  │  │  · mcpChannel · troveSCM · metrics   │  │
+│  │  · React UI (sidebar)  │  │  └────────────────────────────────────┘  │
+│  └──────────┬─────────────┘  │                                          │
 │             │ imports         │                                          │
 │  ┌──────────▼─────────────┐  │                                          │
 │  │  trove/common/         │  │                                          │
@@ -48,15 +49,16 @@ All Trove code lives under `src/vs/workbench/contrib/trove/`.
 | `browser/react/` | React UI (sidebar chat, settings, onboarding, diff widgets). Built with `tsup` → `out/`. |
 | `electron-main/` | LLM HTTP, SQLite repo intelligence, MCP main side, SCM, metrics, updates. |
 | `browser/trove.contribution.ts` | Entry point: registers all Trove services on workbench startup. |
-| `browser/media/trove.css` | Global Trove styles. |
+| `browser/media/trove.css` | Global Trove styles (watermark, editor chrome). |
 
 ### Key browser services
 
 | Service | File | Responsibility |
 |---------|------|----------------|
-| Chat / agent loop | `chatThreadService.ts` | Thread state, `while` agent loop, tool dispatch, checkpoints |
-| LLM message prep | `convertToLLMMessageService.ts` | System prompt, history, provider wire format, context trim |
-| Tools | `toolsService.ts` | Validate, execute, stringify results for 15+ builtin tools |
+| Chat / agent loop | `chatThreadService.ts` | Thread state, `while` agent loop, tool dispatch, checkpoints, idle status, token totals |
+| LLM message prep | `convertToLLMMessageService.ts` | System prompt, history, provider wire format, context trim, compaction |
+| Tools | `toolsService.ts` | Validate, execute, stringify results for 16+ builtin tools |
+| Web search | `webSearchService.ts` | Tavily HTTP search for `search_web` tool |
 | Terminal tools | `terminalToolService.ts` | Shell integration, persistent terminals, exit codes |
 | Agent delivery | `agentDeliveryService.ts` | Post-run build/server/localhost detection |
 | Edit / diffs | `editCodeService.ts` | Inline diff areas, accept/reject, snapshots |
@@ -66,13 +68,25 @@ All Trove code lives under `src/vs/workbench/contrib/trove/`.
 | Plan generation | `agentPlan.ts` | Pre-run bullet plan + status updates |
 | Parallel reads | `parallelReadToolBatch.ts` | Batch read-only tool calls |
 | Context trim | `contextWindowTrim.ts` | Token budget trimming for long threads |
+| Tool compaction | `toolResultCompaction.ts` | Replace stale read/search tool bodies with short refs |
+| Wire trim | `wireMessageTrim.ts` | Char-budget elision of oldest tool results on wire |
+| Memory intent | `chatMemoryIntent.ts` | Parse “remember that …” chat messages |
+| Workspace preview | `openWorkspacePreviewAction.ts`, `simpleBrowserOpen.ts` | Open localhost preview in Simple Browser |
+
+### Key common modules (token economy)
+
+| Module | File | Responsibility |
+|--------|------|----------------|
+| Prompt cache helpers | `promptCache.ts` | `cache_control` blocks for routed Anthropic models |
+| Token usage | `llmMessageUsage.ts` | Normalize provider usage; per-run totals and summary log |
+| Directory tree cache | `directoryStrService.ts` | Workspace tree string with invalidation on edits |
 
 ### Key main-process modules
 
 | Module | File | Responsibility |
 |--------|------|----------------|
 | LLM IPC | `sendLLMMessageChannel.ts` | Routes streaming events by `requestId` |
-| LLM HTTP | `llmMessage/sendLLMMessage.impl.ts` | Provider-specific API calls |
+| LLM HTTP | `llmMessage/sendLLMMessage.impl.ts` | Provider-specific API calls, prompt caching headers |
 | Repo intelligence | `repoIntelligence/repoIntelligenceService.impl.ts` | Profile generation, chunk index, search |
 | SQLite schema | `repoIntelligence/repoIntelligenceDb.ts` | Workspace profiles, FTS5 `code_chunks` |
 | Workspace scan | `repoIntelligence/workspaceScanner.ts` | Detect stack, collect files |
@@ -95,6 +109,7 @@ React components reach VS Code services through `browser/react/src/util/services
 
 - External imports must use a `.js` extension.
 - Keep `src/` one folder deep so `tsup` externals detection works.
+- Dev app loads bundles from `out/vs/workbench/contrib/trove/browser/react/out/` — `build.js` syncs after each build.
 
 ---
 
@@ -112,20 +127,23 @@ sequenceDiagram
     participant Tools as toolsService
 
     User->>Chat: sendNewMessage()
+    Chat->>Chat: remember intent? (skip LLM if memory-only)
     Chat->>Chat: generateAgentPlan() (optional)
+    Chat->>Convert: buildRunContext() once per run
     loop while shouldSendAnotherMessage
-        Chat->>Convert: prepareLLMChatMessages()
-        Convert->>Convert: system prompt + trim history
+        Chat->>Convert: prepareLLMChatMessages(precomputedSystemMessage)
+        Convert->>Convert: compact stale tools + trim history + wire elision
         Chat->>IPC: sendLLMMessage()
-        IPC->>Main: IPC call
-        Main-->>IPC: onText / onFinalMessage
+        IPC->>Main: IPC call (enablePromptCache)
+        Main-->>IPC: onText / onFinalMessage + usage
         alt tool call returned
             Chat->>Chat: parallelReadToolBatch? (read-only)
             Chat->>Tools: validateParams → callTool
-            Tools-->>Chat: tool result message
+            Tools-->>Chat: tool result message (compactable flag)
+            Chat->>Chat: invalidate directory cache if needed
             Chat->>Chat: update plan item status
         else no tool call
-            Chat->>Chat: finalizeDelivery(), checkpoint
+            Chat->>Chat: finalizeDelivery(), checkpoint, log token summary
         end
     end
 ```
@@ -133,6 +151,8 @@ sequenceDiagram
 ### Stream state
 
 `ThreadStreamState` is a discriminated union: `LLM | tool | awaiting_user | idle | undefined`. User approval for edits, terminal, or MCP tools sets `awaiting_user` until approved or rejected.
+
+While `idle`, the UI shows **`idleStatus`** (`{ title, detail? }`) — e.g. “Building workspace context”, “Waiting for claude-…”, “Planning parallel reads”.
 
 ### Chat modes (`common/troveSettingsTypes.ts`)
 
@@ -152,7 +172,7 @@ Defined in `common/chatThreadServiceTypes.ts`. The UI (`SidebarChat.tsx`) render
 |------|---------|
 | `user` | User text + `stagingSelections` (staged files/context) |
 | `assistant` | Model text + optional reasoning |
-| `tool` | Tool request / running / success / error / rejected |
+| `tool` | Tool request / running / success / error / rejected; success may set `compactable: true` |
 | `checkpoint` | File snapshots for rewind (`user_edit` \| `tool_edit`) |
 | `plan` | Checklist items (`pending` \| `done` \| `skipped`) |
 | `interrupted_streaming_tool` | Decorative cancel marker |
@@ -167,24 +187,39 @@ Defined in `common/chatThreadServiceTypes.ts`. The UI (`SidebarChat.tsx`) render
 
 Before each LLM call:
 
-1. Build system message from `common/prompt/prompts.ts` (`chat_systemMessage`).
-2. Inject workspace tree, repo intelligence profile, `.troverules`, user memory, gathered context snippets.
-3. Convert internal `ChatMessage[]` to provider format (Anthropic / OpenAI / Gemini).
-4. Apply **context window trim** (`contextWindowTrim.ts`) when estimated tokens exceed ~85% of model limit.
+1. **`buildRunContext`** (once per agent run) — builds the full system string: directory tree, repo profile, `.troverules`, memory, tool definitions.
+2. **`prepareLLMChatMessages`** (each loop turn) — reuses `precomputedSystemMessage` when provided.
+3. **`trimChatMessagesForContextWindow`** — structural history trim when over budget.
+4. **`compactStaleToolResults`** — replaces old read/search tool bodies outside the protected tail with one-line references.
+5. Convert internal `ChatMessage[]` to provider format (Anthropic / OpenAI / Gemini).
+6. **Wire trim** (`wireMessageTrim.ts`) — `elideOldestToolResultsFirst` drops oldest tool bodies to fit char budget; uses `computeEffectiveOutputReserve` instead of reserving half the context window for output.
 
-### 6.2 IPC bridge (`common/sendLLMMessageService.ts`)
+### 6.2 Prompt caching (`common/promptCache.ts`)
+
+When `enablePromptCache` is on (Trove Settings → Agent & token economy):
+
+- **Native Anthropic** — `cache_control: { type: 'ephemeral' }` on system, tools, and last user block; `anthropic-beta: prompt-caching-2024-07-31` header.
+- **Routed Claude** (OpenRouter, Bedrock, LiteLLM, Azure) — system content blocks with `cache_control` via `applyRoutedAnthropicPromptCache`.
+
+### 6.3 Token usage (`common/llmMessageUsage.ts`)
+
+Each `onFinalMessage` may include normalized `LLMMessageUsage` (input, output, cache read/write). `chatThreadService` accumulates per-run totals and logs `[Trove agent token usage] …` when the run completes.
+
+### 6.4 IPC bridge (`common/sendLLMMessageService.ts`)
 
 - Generates `requestId` per request.
+- Passes `enablePromptCache` from global settings.
 - Stores callbacks in a local map (callbacks cannot cross IPC).
 - `channel.call('sendLLMMessage', params)` → main process.
 - Listens on `onText_sendLLMMessage`, `onFinalMessage_sendLLMMessage`, etc., filtered by `requestId`.
 
-### 6.3 Main process (`sendLLMMessageChannel.ts` + `sendLLMMessage.impl.ts`)
+### 6.5 Main process (`sendLLMMessageChannel.ts` + `sendLLMMessage.impl.ts`)
 
 - Emits streaming events with `requestId`.
 - Performs HTTP to configured provider using keys from `ITroveSettingsService`.
+- Returns usage metadata from provider responses.
 
-### 6.4 Providers (`common/troveSettingsTypes.ts`, `common/modelCapabilities.ts`)
+### 6.6 Providers (`common/troveSettingsTypes.ts`, `common/modelCapabilities.ts`)
 
 Supported providers include Anthropic, OpenAI, Gemini, Ollama, vLLM, LM Studio, LiteLLM, DeepSeek, OpenRouter, Groq, Mistral, xAI, Google Vertex, and OpenAI-compatible endpoints. Each feature (Chat, Autocomplete, Apply, SCM) can use a different model.
 
@@ -211,6 +246,7 @@ Tools are declared in `common/prompt/prompts.ts` (`builtinTools`) and implemente
 | `search_for_files` | Content search (substring/regex) |
 | `search_codebase` | FTS5-ranked semantic search (repo intelligence DB) |
 | `search_in_file` | Line numbers matching query in one file |
+| `search_web` | Live web search via Tavily (`webSearchService.ts`) |
 | `read_lint_errors` | Linter diagnostics for a file |
 
 **Edit**
@@ -239,7 +275,15 @@ Destructive or sensitive tools require user approval (`toolsServiceTypes.ts`): e
 
 ### Parallel read batching (`parallelReadToolBatch.ts`)
 
-For read-only tools, the agent may issue a lightweight discovery LLM call to collect up to 4 additional read calls, then execute the batch with `Promise.all` before the next main LLM turn.
+For read-only tools (including `search_web`), the agent may issue a lightweight discovery LLM call to collect up to 4 additional read calls, then execute the batch with `Promise.all` before the next main LLM turn.
+
+### Tool result compaction (`toolResultCompaction.ts`)
+
+Successful tool messages for read/search tools are marked `compactable: true`. On later turns, bodies outside the protected tail are replaced with lines like `read_file(path) → <42 lines, lines 1-42>; re-read if needed` before wire conversion.
+
+### Directory tree cache (`directoryStrService.ts`)
+
+The workspace tree string is cached for the run. `invalidateCache()` is called after edits, creates/deletes, and terminal commands that may change the tree.
 
 ---
 
@@ -269,6 +313,7 @@ Users can:
 
 - Accept/reject individual hunks in the editor
 - Rewind to a checkpoint (restores snapshots)
+- Approve/reject all pending changes from the delivery output panel
 
 This is Trove’s undo model for agent edits — edits apply to live editor models, not a shadow workspace.
 
@@ -282,7 +327,13 @@ After terminal tool runs, delivery logic inspects output for:
 - Dev server start (`run_persistent_command`, npm/yarn dev scripts)
 - Localhost URLs in stdout
 
-Produces `AgentDeliverySummary` (`build_succeeded` \| `server_running` \| `verified`) rendered in `AgentDeliverySummary.tsx`. May auto-open SimpleBrowser for detected URLs.
+Produces `AgentDeliverySummary` (`build_succeeded` \| `server_running` \| `verified`) rendered in `AgentDeliverySummary.tsx` as a **glass output panel**:
+
+- Preview URL as primary display (click to open in workspace Simple Browser)
+- **Approve / Reject** for all pending workspace diffs
+- No caption headline — content-first layout
+
+Preview opens via `trove.openWorkspacePreview` → `simpleBrowserOpen.ts` (activates built-in Simple Browser extension in the primary editor column).
 
 ---
 
@@ -294,7 +345,17 @@ Uses `PLAN_OUTPUT_TOKEN_CAP` (300) so it does not consume main loop budget.
 
 ---
 
-## 12. Autocomplete
+## 12. Chat memory intent (`chatMemoryIntent.ts`)
+
+Natural-language remember requests are detected before the agent loop:
+
+- Patterns: “remember that …”, “don’t forget …”, “save to memory: …”, etc.
+- **Remember-only** messages append to `trove-memory.md` and return a confirmation without invoking the LLM.
+- Messages with a memory clause *and* a follow-on task still go through the full agent.
+
+---
+
+## 13. Autocomplete
 
 `autocompleteService.ts` sends FIM (fill-in-the-middle) requests to the configured Autocomplete model.
 
@@ -306,13 +367,13 @@ Uses `PLAN_OUTPUT_TOKEN_CAP` (300) so it does not consume main loop budget.
 
 ---
 
-## 13. Context gathering
+## 14. Context gathering
 
 `contextGatheringService.ts` caches recently viewed code regions. Snippets can be injected into chat context via `convertToLLMMessageService` (registered in `trove.contribution.ts`).
 
 ---
 
-## 14. IPC channel registry
+## 15. IPC channel registry
 
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
@@ -325,19 +386,29 @@ Uses `PLAN_OUTPUT_TOKEN_CAP` (300) so it does not consume main loop budget.
 
 **Convention:** add methods to existing channels rather than creating new channels when possible.
 
+Web search uses `IRequestService` in the browser (Tavily HTTPS) — not a separate IPC channel.
+
 ---
 
-## 15. React UI
+## 16. React UI
 
 Built with React + Tailwind (`browser/react/`). Entry bundles:
 
 | Bundle | Mount point |
 |--------|-------------|
-| `sidebar-tsx` | Chat sidebar (`SidebarChat.tsx`, `PlanView.tsx`, `AgentDeliverySummary.tsx`) |
-| `trove-settings-tsx` | Settings pane |
+| `sidebar-tsx` | Chat sidebar (`SidebarChat.tsx`, `PlanView.tsx`, `AgentDeliverySummary.tsx`, `ChatActivityUI.tsx`) |
+| `trove-settings-tsx` | Settings pane (models, token economy, web search) |
 | `trove-onboarding` | First-run onboarding |
 | `quick-edit-tsx` | Ctrl+K widget |
 | `diff` | Inline diff UI |
+
+### UI patterns
+
+- **`glass-card` / `glass-panel`** — frosted glass morphism (`styles.css`)
+- **`trove-output-panel`** — delivery summary with approve/reject actions
+- **`trove-assistant-summary-prose`** — polished committed assistant markdown output
+- **`CollapsibleCodeSnippet`** — expandable search/read results in chat
+- **`BackgroundActivityPanel`** — live idle/LLM activity with status text
 
 Build:
 
@@ -346,11 +417,11 @@ npm run buildreact      # one-shot
 npm run watchreact      # watch mode
 ```
 
-Output goes to `browser/react/out/` and is loaded by workbench contributions.
+Output goes to `browser/react/out/` and is synced to `out/vs/workbench/contrib/trove/browser/react/out/`.
 
 ---
 
-## 16. Settings and memory
+## 17. Settings and memory
 
 | Mechanism | Location | Loaded by |
 |-----------|----------|-----------|
@@ -358,20 +429,22 @@ Output goes to `browser/react/out/` and is loaded by workbench contributions.
 | `.troverules` | Workspace root | `repoIntelligenceService.ts` |
 | `trove-memory.md` | `<userData>/trove-memory.md` | Main repo intelligence / prompts |
 | Global AI instructions | Settings | `convertToLLMMessageService.ts` |
+| `enablePromptCache` | Settings → Agent & token economy | `sendLLMMessageService.ts` |
+| `enableWebSearch` / `webSearchApiKey` | Settings → Agent & token economy | `webSearchService.ts` |
 
 Path helper: `common/troveMemoryPaths.ts`.
 
 ---
 
-## 17. Registration and startup
+## 18. Registration and startup
 
 `trove.contribution.ts` is imported by the workbench and side-effect-imports every service. Order matters for some dependencies (e.g. `editCodeService` before chat, `toolsService` before `chatThreadService`).
 
-Common services (`sendLLMMessageService`, `troveSettingsService`) are registered as singletons and imported for DI registration side effects.
+Common services (`sendLLMMessageService`, `troveSettingsService`, `IWebSearchService`) are registered as singletons and imported for DI registration side effects.
 
 ---
 
-## 18. Extending Trove
+## 19. Extending Trove
 
 ### Add a builtin tool
 
@@ -379,7 +452,9 @@ Common services (`sendLLMMessageService`, `troveSettingsService`) are registered
 2. Add tool metadata in `common/prompt/prompts.ts` → `builtinTools`.
 3. Implement `validateParams`, `callTool`, `stringOfResult` in `browser/toolsService.ts`.
 4. Set `approvalType` if user confirmation is required.
-5. Add tests if logic is non-trivial.
+5. If read-only and batchable, add to `parallelReadToolBatch.ts` allowlist.
+6. If large output, add to `toolResultCompaction.ts` compactable set.
+7. Add tests if logic is non-trivial.
 
 ### Add a new chat message type
 
@@ -399,17 +474,21 @@ Never call Node or `fetch` for LLM from the browser. Never manipulate editor mod
 
 ---
 
-## 19. Testing
+## 20. Testing
 
 | Area | Location |
 |------|----------|
 | Trove unit tests | `browser/test/*.test.ts`, `electron-main/repoIntelligence/test/` |
+| Token economy tests | `wireMessageTrim.test.ts`, `toolResultCompaction.test.ts`, `promptCache.test.ts`, `llmMessageUsage.test.ts` |
+| Memory intent tests | `chatMemoryIntent.test.ts` |
 | VS Code suite | `npm run test-node`, `npm run test-browser` |
 | Layer checker | `npm run valid-layers-check` |
 
+See also [TROVE_TEST_PLAN.md](TROVE_TEST_PLAN.md) for manual QA scenarios.
+
 ---
 
-## 20. Relationship to VS Code
+## 21. Relationship to VS Code
 
 Trove inherits from VS Code OSS 1.99.x (`package.json` version). Upstream provides:
 
@@ -421,11 +500,13 @@ Trove-specific changes are concentrated in `contrib/trove/` plus channel registr
 
 ---
 
-## 21. Further reading
+## 22. Further reading
 
 | Document | Content |
 |----------|---------|
 | [README.md](README.md) | Build instructions, prerequisites, data paths |
+| [TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md](TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md) | Token economics problem analysis and phased implementation |
 | [TROVE_ARCHITECTURE_ANALYSIS.md](TROVE_ARCHITECTURE_ANALYSIS.md) | Gap analysis vs Cursor and incremental phase plan |
+| [TROVE_TEST_PLAN.md](TROVE_TEST_PLAN.md) | Manual test checklist |
 | [browser/react/README.md](src/vs/workbench/contrib/trove/browser/react/README.md) | React build constraints |
 | [VS Code wiki](https://github.com/microsoft/vscode/wiki/How-to-Contribute) | Upstream compile/debug guidance |

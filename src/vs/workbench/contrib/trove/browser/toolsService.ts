@@ -19,6 +19,7 @@ import { RawToolParamsObj } from '../common/sendLLMMessageTypes.js'
 import { MAX_CHILDREN_URIs_PAGE, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, isDevServerCommand, isBackgroundShellCommand, isPackageInstallCommand, packageInstallLooksSuccessful, stripBackgroundShellSuffix } from '../common/prompt/prompts.js'
 import { ITroveSettingsService } from '../common/troveSettingsService.js'
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js'
+import { IWebSearchService } from '../common/webSearchTypes.js'
 import { buildVerificationReminder } from '../common/prompt/prompts.js'
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js'
 import { generateUuid } from '../../../../base/common/uuid.js'
@@ -157,6 +158,7 @@ export class ToolsService implements IToolsService {
 		@IMarkerService private readonly markerService: IMarkerService,
 		@ITroveSettingsService private readonly troveSettingsService: ITroveSettingsService,
 		@IRepoIntelligenceService private readonly repoIntelligenceService: IRepoIntelligenceService,
+		@IWebSearchService private readonly webSearchService: IWebSearchService,
 	) {
 		const queryBuilder = instantiationService.createInstance(QueryBuilder);
 
@@ -223,6 +225,12 @@ export class ToolsService implements IToolsService {
 				const query = validateStr('query', queryUnknown)
 				const maxResults = validateNumber(maxResultsUnknown, { default: 10 }) ?? 10
 				return { query, maxResults: Math.min(Math.max(maxResults, 1), 50) }
+			},
+			search_web: (params: RawToolParamsObj) => {
+				const { query: queryUnknown, max_results: maxResultsUnknown } = params
+				const query = validateStr('query', queryUnknown)
+				const maxResults = validateNumber(maxResultsUnknown, { default: 5 }) ?? 5
+				return { query, maxResults: Math.min(Math.max(maxResults, 1), 10) }
 			},
 			search_in_file: (params: RawToolParamsObj) => {
 				const { uri: uriStr, query: queryUnknown, is_regex: isRegexUnknown } = params;
@@ -394,6 +402,10 @@ export class ToolsService implements IToolsService {
 				}))
 				return { result: { results, query } }
 			},
+			search_web: async ({ query, maxResults }) => {
+				const results = await this.webSearchService.search(query, maxResults)
+				return { result: { results, query } }
+			},
 			search_in_file: async ({ uri, query, isRegex }) => {
 				await troveModelService.initializeModel(uri);
 				const { model } = await troveModelService.getModelSafe(uri);
@@ -541,6 +553,15 @@ export class ToolsService implements IToolsService {
 					return `${i + 1}. ${r.filePath}:${r.startLine}-${r.endLine}\n\`\`\`\n${r.snippet}\n\`\`\``
 				})
 				return `Codebase search results for "${result.query}" (${result.results.length} matches):\n\n${lines.join('\n\n')}`
+			},
+			search_web: (params, result) => {
+				if (result.results.length === 0) {
+					return `No web results found for query: "${result.query}".`
+				}
+				const lines = result.results.map((r, i) => {
+					return `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`
+				})
+				return `Web search results for "${result.query}" (${result.results.length} matches):\n\n${lines.join('\n\n')}`
 			},
 			search_in_file: (params, result) => {
 				const { model } = troveModelService.getModel(params.uri)

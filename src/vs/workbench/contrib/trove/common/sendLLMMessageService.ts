@@ -134,6 +134,7 @@ export class LLMMessageService extends Disposable implements ILLMMessageService 
 			settingsOfProvider,
 			modelSelection,
 			mcpTools,
+			enablePromptCache: this.troveSettingsService.state.globalSettings.enablePromptCache,
 		} satisfies MainSendLLMMessageParams);
 
 		return requestId

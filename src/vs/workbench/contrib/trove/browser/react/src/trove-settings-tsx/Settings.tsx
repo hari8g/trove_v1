@@ -1298,6 +1298,59 @@ export const Settings = () => {
 
 										{/* Tools Section */}
 										<div>
+											<h4 className={`text-base`}>Agent & token economy</h4>
+											<div className='text-sm text-trove-fg-3 mt-1'>
+												Control structured plans, prompt caching, and parallel read-only tool batching in agent mode.
+											</div>
+											<div className='my-2'>
+												<ErrorBoundary>
+													<div className='flex items-center gap-x-2 my-2'>
+														<TroveSwitch
+															size='xs'
+															value={settingsState.globalSettings.enableAgentPlan}
+															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableAgentPlan', newVal)}
+														/>
+														<span className='text-trove-fg-3 text-xs pointer-events-none'>Structured agent plan checklist</span>
+													</div>
+													<div className='flex items-center gap-x-2 my-2'>
+														<TroveSwitch
+															size='xs'
+															value={settingsState.globalSettings.enablePromptCache}
+															onChange={(newVal) => troveSettingsService.setGlobalSetting('enablePromptCache', newVal)}
+														/>
+														<span className='text-trove-fg-3 text-xs pointer-events-none'>Prompt cache markers (Anthropic / routed Claude)</span>
+													</div>
+													<div className='flex items-center gap-x-2 my-2'>
+														<TroveSwitch
+															size='xs'
+															value={settingsState.globalSettings.enableParallelReadBatching}
+															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableParallelReadBatching', newVal)}
+														/>
+														<span className='text-trove-fg-3 text-xs pointer-events-none'>Parallel read-only tool batching</span>
+													</div>
+													<div className='flex items-center gap-x-2 my-2'>
+														<TroveSwitch
+															size='xs'
+															value={settingsState.globalSettings.enableWebSearch}
+															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableWebSearch', newVal)}
+														/>
+														<span className='text-trove-fg-3 text-xs pointer-events-none'>Web search tool (search_web)</span>
+													</div>
+													<div className='my-2'>
+														<TroveSimpleInputBox
+															value={settingsState.globalSettings.webSearchApiKey}
+															onChangeValue={(newVal) => troveSettingsService.setGlobalSetting('webSearchApiKey', newVal)}
+															placeholder='Tavily API key (for search_web)'
+															passwordBlur={true}
+															compact={true}
+														/>
+														<div className='py-1 px-3 opacity-50 text-xs'>Get a key at tavily.com — used by the agent search_web tool.</div>
+													</div>
+												</ErrorBoundary>
+											</div>
+										</div>
+
+										<div>
 											<h4 className={`text-base`}>Tools</h4>
 											<div className='text-sm text-trove-fg-3 mt-1'>{`Tools are functions that LLMs can call. Some tools require user approval.`}</div>
 

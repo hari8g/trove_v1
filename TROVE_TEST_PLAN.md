@@ -1,5 +1,5 @@
 # Trove — Sidebar-Driven Test Plan
-**63 test cases across 9 implementation phases**  
+**63 test cases across 9 implementation phases** (+ token economics verification below)  
 All tests executed from the Trove sidebar chat window (Ctrl+L).
 
 ---
@@ -692,6 +692,74 @@ What do you remember about this project?
 
 ---
 
+## Token Economics — Manual Verification
+
+These checks validate `TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md` phases 0–5. Open DevTools console (Help → Toggle Developer Tools) before running agent tasks.
+
+### TE-T01 — Per-run token summary logged (Phase 0)
+**Mode:** Agent  
+**Precondition:** A configured provider (Anthropic, OpenAI, or Gemini).  
+**Prompt:** Ask the agent to read one file and summarize it (any short task with 2+ LLM turns).  
+**Expected:** When the agent loop finishes, console shows a line like:
+`[Trove agent token usage] turns=N input=... output=... cache_read=... cache_read_ratio=...`  
+**Pass criteria:**
+- ✓ Summary line appears after run completes
+- ✓ `turns` ≥ 1 and `input` > 0
+
+---
+
+### TE-T02 — Cache read ratio grows on turn 2+ (Phase 0 / 0.5 / 1)
+**Mode:** Agent  
+**Precondition:** `enablePromptCache` on (Settings → Feature Options → Agent & token economy). Anthropic or OpenAI model with prompt caching.  
+**Prompt:** Multi-step task requiring 3+ tool calls (e.g. "Read README.md, then package.json, then summarize the stack").  
+**Expected:** From turn 2 onward, `cache_read` in the console summary is > 0; `cache_read_ratio` > 0 on later turns.  
+**Pass criteria:**
+- ✓ `cache_read` > 0 in final summary for multi-turn run
+- ✓ Total `input` lower than naive full-prefix re-billing would suggest (qualitative)
+
+---
+
+### TE-T03 — Context trim indicator (Phase 2 / Arch P6)
+**Mode:** Agent  
+**Precondition:** Long thread or very large file reads so context exceeds ~85% of window.  
+**Expected:** Sidebar shows trimming notice when older context was removed.  
+**Pass criteria:**
+- ✓ Trim indicator visible during streaming when budget exceeded
+
+---
+
+### TE-T04 — Parallel read batching (Phase 4)
+**Mode:** Agent  
+**Precondition:** `enableParallelReadBatching` on.  
+**Prompt:** Task that clearly needs multiple files (e.g. "Compare src/foo.ts and src/bar.ts").  
+**Expected:** Multiple read tool results appear in one turn cluster without separate LLM turns between each read.  
+**Pass criteria:**
+- ✓ Two or more read tool cards before next assistant message
+
+---
+
+### TE-T05 — Structured plan checklist (Phase 5 / Arch P7)
+**Mode:** Agent  
+**Precondition:** `enableAgentPlan` on.  
+**Prompt:** Any non-trivial task.  
+**Expected:** Checklist plan appears before tool cards; items mark done as tools run.  
+**Pass criteria:**
+- ✓ Plan UI is structured checklist, not prose-only markdown
+
+---
+
+### TE-T06 — Settings toggles affect behavior
+**Mode:** Agent  
+**Precondition:** Settings → Feature Options → Agent & token economy.  
+**Steps:**
+1. Turn off **Structured agent plan** → run agent → no plan checklist.
+2. Turn off **Parallel read-only tool batching** → run multi-file read task → reads serialize across turns.
+3. Turn **enablePromptCache** off → multi-turn run → `cache_read` may stay 0 on Anthropic (expected).  
+**Pass criteria:**
+- ✓ Each toggle changes observable behavior when disabled
+
+---
+
 ## Summary Table
 
 | Phase | Tests | Happy | Negative | Edge |
@@ -705,6 +773,7 @@ What do you remember about this project?
 | P7 — Plan view | 5 | 4 | 0 | 1 |
 | P8 — Multi-file diff panel | 5 | 4 | 1 | 1 |
 | P9 — Persistent memory | 6 | 5 | 1 | 0 |
-| **Total** | **45** | **34** | **7** | **6** |
+| Token economics (manual) | 6 | 5 | 0 | 1 |
+| **Total** | **51** | **39** | **7** | **7** |
 
 > Note: The HTML interactive version contains 63 tests (additional sub-cases per test), this markdown covers the primary test cases.

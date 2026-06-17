@@ -9,6 +9,7 @@ import { ChatMessage } from '../../../../common/chatThreadServiceTypes.js';
 import { BuiltinToolName } from '../../../../common/toolsServiceTypes.js';
 import { builtinToolNames, isABuiltinToolName } from '../../../../common/prompt/prompts.js';
 import { ChevronRight } from 'lucide-react';
+import { MAX_FILE_PREVIEW_LINES } from './ChatInlineDiffView.js';
 
 export type EditToolStreamStep = {
 	id: string;
@@ -114,7 +115,7 @@ export const StreamingEditToolCard = ({
 	children?: React.ReactNode;
 }) => {
 	const steps = useMemo(() => getEditToolStreamingSteps(toolCallSoFar), [toolCallSoFar]);
-	const [isExpanded, setIsExpanded] = useState(true);
+	const [isExpanded, setIsExpanded] = useState(false);
 	const stepsRef = useRef<HTMLDivElement>(null);
 	const activeStep = steps.find(s => s.status === 'active');
 
@@ -129,30 +130,31 @@ export const StreamingEditToolCard = ({
 	}, [steps]);
 
 	return (
-		<div className="w-full rounded-md px-1.5 py-0.5 bg-trove-bg-2/30 overflow-hidden my-0.5 select-none">
-			<div
-				className="flex items-center min-h-[18px] cursor-pointer hover:brightness-125 transition-all duration-150"
+		<div className="glass-card overflow-hidden my-1.5 select-none">
+			<button
+				type="button"
+				className="w-full flex items-center min-h-[28px] px-2.5 py-1.5 cursor-pointer hover:bg-trove-bg-2/30 transition-colors text-left"
 				onClick={() => setIsExpanded(v => !v)}
 			>
 				<ChevronRight
-					className={`text-trove-fg-3 mr-0.5 h-4 w-4 flex-shrink-0 transition-transform duration-100 ease-[cubic-bezier(0.4,0,0.2,1)] ${isExpanded ? 'rotate-90' : ''}`}
+					className={`text-trove-fg-4 mr-1 h-3.5 w-3.5 flex-shrink-0 transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}`}
 				/>
-				<span className="text-trove-fg-3 flex-shrink-0">{toolTitle}</span>
+				<span className="text-trove-fg-3 flex-shrink-0 text-[11px]">{toolTitle}</span>
 				{fileName ? (
 					<span
-						className={`text-trove-fg-4 text-xs italic truncate ml-2 font-mono ${onFileClick ? 'cursor-pointer hover:underline' : ''}`}
+						className={`text-trove-fg-2 text-[11px] truncate ml-2 font-mono ${onFileClick ? 'cursor-pointer hover:underline' : ''}`}
 						onClick={(e) => { if (onFileClick) { e.stopPropagation(); onFileClick(); } }}
 						title={filePath}
 					>
 						{fileName}
 					</span>
 				) : (
-					<span className="text-trove-fg-4 text-xs italic truncate ml-2">
+					<span className="text-trove-fg-4 text-[11px] italic truncate ml-2">
 						{activeStep?.label ?? 'Generating…'}
 					</span>
 				)}
 				{(addedLines !== undefined && addedLines > 0) || (removedLines !== undefined && removedLines > 0) ? (
-					<span className="flex items-center gap-1.5 shrink-0 font-mono text-[10px] ml-auto mr-1">
+					<span className="flex items-center gap-1.5 shrink-0 font-mono text-[10px] ml-auto">
 						{addedLines !== undefined && addedLines > 0 ? (
 							<span className="text-green-600 dark:text-green-400">+{addedLines}</span>
 						) : null}
@@ -161,24 +163,69 @@ export const StreamingEditToolCard = ({
 						) : null}
 					</span>
 				) : null}
-			</div>
+			</button>
 			{isExpanded ? (
-				<div className="pl-5 pr-1 pb-1 pt-0.5">
-					<div
-						ref={stepsRef}
-						className="max-h-28 overflow-y-auto mb-1"
-					>
+				<div className="pl-4 pr-2 pb-2 pt-0 border-t border-trove-border-3/25">
+					<div ref={stepsRef} className="max-h-28 overflow-y-auto mb-1">
 						{steps.map(step => (
 							<StreamingStepRow key={step.id} step={step} />
 						))}
 					</div>
-					{children ? (
-						<div className="rounded border border-trove-border-3/40 overflow-hidden">
-							{children}
-						</div>
-					) : null}
 				</div>
 			) : null}
+			{children ? (
+				<div className="border-t border-trove-border-3/25 overflow-hidden">
+					{React.isValidElement(children)
+						? React.cloneElement(children as React.ReactElement<{ limitLines?: boolean; maxVisibleLines?: number }>, {
+							limitLines: !isExpanded,
+							maxVisibleLines: MAX_FILE_PREVIEW_LINES,
+						})
+						: children}
+				</div>
+			) : null}
+		</div>
+	);
+};
+
+/** Collapsible plain-code snippet (search results, file reads). */
+export const CollapsibleCodeSnippet = ({
+	fileName,
+	subtitle,
+	onFileClick,
+	code,
+	defaultExpanded = false,
+}: {
+	fileName: string;
+	subtitle?: string;
+	onFileClick?: () => void;
+	code: string;
+	defaultExpanded?: boolean;
+}) => {
+	const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+	const lines = code.split('\n');
+	const visible = isExpanded ? lines : lines.slice(0, MAX_FILE_PREVIEW_LINES);
+	const hiddenCount = isExpanded ? 0 : Math.max(0, lines.length - MAX_FILE_PREVIEW_LINES);
+
+	return (
+		<div className="glass-card overflow-hidden my-1">
+			<button
+				type="button"
+				className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-trove-bg-2/30 transition-colors"
+				onClick={() => setIsExpanded(v => !v)}
+			>
+				<ChevronRight className={`h-3.5 w-3.5 shrink-0 text-trove-fg-4 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+				<span
+					className={`font-mono text-[11px] text-trove-fg-2 truncate ${onFileClick ? 'hover:underline' : ''}`}
+					onClick={(e) => { if (onFileClick) { e.stopPropagation(); onFileClick(); } }}
+				>
+					{fileName}
+				</span>
+				{subtitle ? <span className="text-[10px] text-trove-fg-4 truncate">{subtitle}</span> : null}
+			</button>
+			<pre className="font-mono text-[11px] leading-[1.45] px-2.5 py-1 border-t border-trove-border-3/25 overflow-x-auto whitespace-pre-wrap text-trove-fg-3 bg-trove-bg-2/15">
+				{visible.join('\n')}
+				{hiddenCount > 0 ? `\n… +${hiddenCount} more line${hiddenCount === 1 ? '' : 's'}` : ''}
+			</pre>
 		</div>
 	);
 };
@@ -370,7 +417,7 @@ export const BackgroundActivityPanel = ({
 							: 'Needs your input';
 
 	return (
-		<div className="rounded-md border border-trove-border-3/40 bg-trove-bg-2/35 px-2.5 py-2 my-1 select-none">
+		<div className="glass-card px-2.5 py-2 my-1 select-none">
 			<div className="flex items-start gap-2">
 				<span className={`inline-block w-1.5 h-1.5 shrink-0 rounded-full mt-1 animate-pulse ${phase === 'awaiting' ? 'bg-yellow-400/80' : 'bg-violet-400/80'}`} />
 				<div className="min-w-0 flex-1 flex flex-col gap-1">
@@ -523,6 +570,7 @@ export const EditToolChatBlock = ({
 	isRunning,
 	children,
 	footer,
+	defaultExpanded = false,
 }: {
 	fileName: string;
 	filePath?: string;
@@ -533,13 +581,24 @@ export const EditToolChatBlock = ({
 	isRunning?: boolean;
 	children: React.ReactNode;
 	footer?: React.ReactNode;
-}) => (
-	<div className={`rounded-lg border border-trove-border-3/50 overflow-hidden my-1 ${isRejected ? 'opacity-50' : ''}`}>
-		<div className={`flex items-center justify-between gap-2 px-2.5 py-1.5 bg-trove-bg-2/60 border-b border-trove-border-3/30 text-[11px] select-none ${isRejected ? 'line-through' : ''}`}>
-			<div className="flex items-center gap-2 min-w-0">
+	defaultExpanded?: boolean;
+}) => {
+	const [isExpanded, setIsExpanded] = React.useState(defaultExpanded);
+
+	return (
+	<div className={`glass-card overflow-hidden my-1.5 ${isRejected ? 'opacity-50' : ''}`}>
+		<button
+			type="button"
+			className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 text-[11px] select-none text-left hover:bg-trove-bg-2/30 transition-colors ${isRejected ? 'line-through' : ''}`}
+			onClick={() => setIsExpanded(v => !v)}
+		>
+			<div className="flex items-center gap-1.5 min-w-0 flex-1">
+				<ChevronRight
+					className={`h-3.5 w-3.5 shrink-0 text-trove-fg-4 transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}`}
+				/>
 				<span
 					className={`font-mono text-trove-fg-2 truncate ${onFileClick ? 'cursor-pointer hover:underline' : ''}`}
-					onClick={onFileClick}
+					onClick={(e) => { if (onFileClick) { e.stopPropagation(); onFileClick(); } }}
 					title={filePath}
 				>
 					{fileName}
@@ -558,17 +617,23 @@ export const EditToolChatBlock = ({
 			{isRunning ? (
 				<span className="text-trove-fg-4 italic shrink-0">Editing…</span>
 			) : null}
+		</button>
+		<div className="overflow-x-auto border-t border-trove-border-3/25">
+			{React.isValidElement(children)
+				? React.cloneElement(children as React.ReactElement<{ limitLines?: boolean; maxVisibleLines?: number }>, {
+					limitLines: !isExpanded,
+					maxVisibleLines: MAX_FILE_PREVIEW_LINES,
+				})
+				: children}
 		</div>
-		<div className="overflow-x-auto">
-			{children}
-		</div>
-		{footer ? (
-			<div className="px-2.5 py-1.5 border-t border-trove-border-3/30 bg-trove-bg-2/40 flex flex-col gap-1.5">
+		{footer && isExpanded ? (
+			<div className="px-2.5 py-1.5 border-t border-trove-border-3/25 bg-trove-bg-2/20 flex flex-col gap-1.5">
 				{footer}
 			</div>
 		) : null}
 	</div>
-);
+	);
+};
 
 export const ChatInlineDiffButtons = ({
 	onAccept,

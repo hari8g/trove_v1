@@ -317,6 +317,15 @@ export const builtinTools: {
 		},
 	},
 
+	search_web: {
+		name: 'search_web',
+		description: `Search the public web for documentation, APIs, libraries, or recent information not in the workspace. Use when the user asks about external docs, package versions, or topics outside the repo.`,
+		params: {
+			query: { description: 'Search query.' },
+			max_results: { description: 'Optional. Max results to return (default 5).' },
+		},
+	},
+
 	// add new search_in_file tool
 	search_in_file: {
 		name: 'search_in_file',
@@ -441,7 +450,7 @@ export const availableTools = (chatMode: ChatMode | null, mcpTools: InternalTool
 		: [
 			...effectiveBuiltinTools ?? [],
 			...effectiveMCPTools ?? [],
-		]
+		].sort((a, b) => a.name.localeCompare(b.name))
 
 	return tools
 }
