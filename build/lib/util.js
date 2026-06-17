@@ -20,6 +20,7 @@ exports.$if = $if;
 exports.appendOwnPathSourceURL = appendOwnPathSourceURL;
 exports.rewriteSourceMappingURL = rewriteSourceMappingURL;
 exports.rimraf = rimraf;
+exports.refreshDirectoryTimestamps = refreshDirectoryTimestamps;
 exports.rreddir = rreddir;
 exports.ensureDir = ensureDir;
 exports.rebase = rebase;
@@ -310,5 +311,46 @@ function getElectronVersion() {
     const electronVersion = /^target="(.*)"$/m.exec(npmrc)[1];
     const msBuildId = /^ms_build_id="(.*)"$/m.exec(npmrc)[1];
     return { electronVersion, msBuildId };
+}
+/** Electron zip artifacts often ship with 1980-01-01 timestamps (ZIP/FAT epoch). */
+const STALE_TIMESTAMP_MS = Date.UTC(2000, 0, 1);
+async function refreshFileTimestamps(filePath, now) {
+    try {
+        const stat = await fs_1.default.promises.stat(filePath);
+        if (stat.isFile() && stat.mtimeMs < STALE_TIMESTAMP_MS) {
+            const tmpPath = `${filePath}.trove-ts-${process.pid}`;
+            await fs_1.default.promises.copyFile(filePath, tmpPath);
+            await fs_1.default.promises.rename(tmpPath, filePath);
+        }
+    }
+    catch {
+        // ignore races on special files
+    }
+    try {
+        await fs_1.default.promises.utimes(filePath, now, now);
+    }
+    catch {
+        // ignore symlinks and other non-utimes paths
+    }
+}
+/** Refresh filesystem timestamps under a packaged app directory (post-gulp-electron). */
+async function refreshDirectoryTimestamps(dirPath) {
+    const now = new Date();
+    const entries = await fs_1.default.promises.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+        const fullPath = path_1.default.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+            await refreshDirectoryTimestamps(fullPath);
+            try {
+                await fs_1.default.promises.utimes(fullPath, now, now);
+            }
+            catch {
+                // ignore
+            }
+        }
+        else if (entry.isFile()) {
+            await refreshFileTimestamps(fullPath, now);
+        }
+    }
 }
 //# sourceMappingURL=util.js.map

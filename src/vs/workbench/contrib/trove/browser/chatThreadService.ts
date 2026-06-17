@@ -19,10 +19,13 @@ import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, TerminalResolveReason, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
 import { IToolsService } from './toolsService.js';
 import { IAgentDeliveryService } from './agentDeliveryService.js';
+import { IWorkspacePreviewService } from './workspacePreviewService.js';
 import { buildReadToolBatch, discoverAdditionalReadTools, isReadOnlyBatchTool, toolCallDedupKey } from './parallelReadToolBatch.js';
 import { isCompactableToolName } from './toolResultCompaction.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { completeRemainingPlanItems, findLatestPlanMessageIdx, generateAgentPlan, markPlanItemDoneForTool, skipRemainingPlanItems } from './agentPlan.js';
+import { buildRepeatEditHint, trackFileEdit } from './agentEditHints.js';
+import { getLLMRetryDelayMs, getMaxLLMRetryAttempts, isRateLimitLLMError } from './llmRateLimit.js';
 import { extractRememberIntent, isRememberOnlyMessage, MEMORY_SAVED_CONFIRMATION } from './chatMemoryIntent.js';
 import { addUsageToRunTotals, emptyAgentRunTokenTotals, formatAgentRunTokenSummary } from '../common/llmMessageUsage.js';
 import { ITroveCommandBarService } from './troveCommandBarService.js';
@@ -356,6 +359,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		@IFileService private readonly _fileService: IFileService,
 		@IMCPService private readonly _mcpService: IMCPService,
 		@IAgentDeliveryService private readonly _agentDeliveryService: IAgentDeliveryService,
+		@IWorkspacePreviewService private readonly _workspacePreviewService: IWorkspacePreviewService,
 		@ITroveCommandBarService private readonly _commandBarService: ITroveCommandBarService,
 		@ITerminalToolService private readonly _terminalToolService: ITerminalToolService,
 		@IRepoIntelligenceService private readonly _repoIntelligenceService: IRepoIntelligenceService,
@@ -681,7 +685,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		toolName: ToolName,
 		toolId: string,
 		mcpServerName: string | undefined,
-		opts: ({ preapproved: true, unvalidatedToolParams: RawToolParamsObj, validatedParams: ToolCallParams<ToolName> } | { preapproved: false, unvalidatedToolParams: RawToolParamsObj }) & { batchInsert?: boolean },
+		opts: ({ preapproved: true, unvalidatedToolParams: RawToolParamsObj, validatedParams: ToolCallParams<ToolName> } | { preapproved: false, unvalidatedToolParams: RawToolParamsObj }) & { batchInsert?: boolean; fileEditCounts?: Map<string, number> },
 	): Promise<{ awaitingUserApproval?: boolean, interrupted?: boolean }> => {
 
 		// compute these below
@@ -759,6 +763,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				liveOutputDisposable = this._terminalToolService.registerLiveOutputListener(terminalKey, (output) => {
 					const preview = output.length > 12_000 ? '…\n' + output.slice(-12_000) : output
 					const content = preview.trim() ? preview : '(waiting for terminal output…)'
+					const command = (toolParams as { command?: string }).command ?? ''
+					this._agentDeliveryService.handleLiveTerminalOutput(threadId, command, output)
 					this._updateLatestTool(threadId, { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content, result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName }, { batchInsert: opts.batchInsert })
 					const stream = this.streamState[threadId]
 					if (stream?.isRunning === 'tool') {
@@ -846,6 +852,13 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		}
 
 		this._markPlanItemDone(threadId, toolName, toolParams)
+
+		if (opts.fileEditCounts && (toolName === 'edit_file' || toolName === 'rewrite_file')) {
+			trackFileEdit(opts.fileEditCounts, toolName, toolParams as Record<string, unknown>)
+			if (this._workspacePreviewService.getActivePreviewUrl()) {
+				this._workspacePreviewService.scheduleReloadAfterWebChange()
+			}
+		}
 
 		if (toolName === 'run_command') {
 			void this._agentDeliveryService.handleTerminalToolResult(
@@ -956,11 +969,12 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		let shouldSendAnotherMessage = true
 		let isRunningWhenEnd: IsRunningType = undefined
 		const runTokenTotals = emptyAgentRunTokenTotals()
+		const fileEditCounts = new Map<string, number>()
 
 		try {
 		// before enter loop, call tool
 		if (callThisToolFirst) {
-			const { interrupted } = await this._runToolCall(threadId, callThisToolFirst.name, callThisToolFirst.id, callThisToolFirst.mcpServerName, { preapproved: true, unvalidatedToolParams: callThisToolFirst.rawParams, validatedParams: callThisToolFirst.params })
+			const { interrupted } = await this._runToolCall(threadId, callThisToolFirst.name, callThisToolFirst.id, callThisToolFirst.mcpServerName, { preapproved: true, unvalidatedToolParams: callThisToolFirst.rawParams, validatedParams: callThisToolFirst.params, fileEditCounts })
 			if (interrupted) {
 				this._setStreamState(threadId, undefined)
 				this._addUserCheckpoint({ threadId })
@@ -1008,11 +1022,12 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			)
 
 			const chatMessages = this.state.allThreads[threadId]?.messages ?? []
+			const repeatEditHint = buildRepeatEditHint(fileEditCounts)
 			const { messages, separateSystemMessage, contextWasTrimmed } = await this._convertToLLMMessagesService.prepareLLMChatMessages({
 				chatMessages,
 				modelSelection,
 				chatMode,
-				precomputedSystemMessage,
+				precomputedSystemMessage: (precomputedSystemMessage ?? '') + repeatEditHint,
 			})
 
 			if (interruptedWhenIdle) {
@@ -1091,16 +1106,22 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				}
 				// llm res error
 				else if (llmRes.type === 'llmError') {
+					const { error } = llmRes
+					const maxRetries = error ? getMaxLLMRetryAttempts(error) : CHAT_RETRIES
 					// error, should retry
-					if (nAttempts < CHAT_RETRIES) {
+					if (nAttempts < maxRetries) {
 						shouldRetryLLM = true
+						const retryDelayMs = error ? getLLMRetryDelayMs(error, nAttempts, RETRY_DELAY) : RETRY_DELAY
+						const retryReason = error && isRateLimitLLMError(error)
+							? `Rate limit — waiting ${Math.ceil(retryDelayMs / 1000)}s before retry`
+							: `Attempt ${nAttempts + 1} of ${maxRetries} after a transient error`
 						this._setIdleStatus(
 							threadId,
 							'Retrying model request',
-							`Attempt ${nAttempts + 1} of ${CHAT_RETRIES} after a transient error`,
+							retryReason,
 							{ interrupt: idleInterruptor },
 						)
-						await timeout(RETRY_DELAY)
+						await timeout(retryDelayMs)
 						if (interruptedWhenIdle) {
 							this._setStreamState(threadId, undefined)
 							return
@@ -1151,7 +1172,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					} else {
 						const mcpTool = mcpTools?.find(t => t.name === toolCall.name)
 
-						const { awaitingUserApproval, interrupted } = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams })
+						const { awaitingUserApproval, interrupted } = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams, fileEditCounts })
 						if (interrupted) {
 							this._setStreamState(threadId, undefined)
 							return

@@ -38,6 +38,22 @@ export class SimpleBrowserManager {
 		this._activeView ??= view;
 	}
 
+	public reloadActive(url?: string): boolean {
+		if (!this._activeView) {
+			return false;
+		}
+		this._activeView.reload(url);
+		return true;
+	}
+
+	public navigateActive(url: string): boolean {
+		if (!this._activeView) {
+			return false;
+		}
+		this._activeView.navigate(url);
+		return true;
+	}
+
 	private registerWebviewListeners(view: SimpleBrowserView) {
 		view.onDispose(() => {
 			if (this._activeView === view) {

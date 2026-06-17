@@ -29,6 +29,8 @@ const backButton = header.querySelector<HTMLButtonElement>('.back-button')!;
 const reloadButton = header.querySelector<HTMLButtonElement>('.reload-button')!;
 const openExternalButton = header.querySelector<HTMLButtonElement>('.open-external-button')!;
 
+let navigateToPage: ((rawUrl: string) => void) | undefined;
+
 window.addEventListener('message', e => {
 	switch (e.data.type) {
 		case 'focus':
@@ -39,6 +41,20 @@ window.addEventListener('message', e => {
 		case 'didChangeFocusLockIndicatorEnabled':
 			{
 				toggleFocusLockIndicatorEnabled(e.data.enabled);
+				break;
+			}
+		case 'reload':
+			{
+				const targetUrl = typeof e.data.url === 'string' && e.data.url ? e.data.url : input.value;
+				navigateToPage?.(targetUrl);
+				break;
+			}
+		case 'navigate':
+			{
+				if (typeof e.data.url === 'string' && e.data.url) {
+					input.value = e.data.url;
+					navigateToPage?.(e.data.url);
+				}
 				break;
 			}
 	}
@@ -84,18 +100,13 @@ onceDocumentLoaded(() => {
 		navigateTo(input.value);
 	});
 
-	navigateTo(settings.url);
-	input.value = settings.url;
-
-	toggleFocusLockIndicatorEnabled(settings.focusLockIndicatorEnabled);
-
 	function navigateTo(rawUrl: string): void {
 		try {
 			const url = new URL(rawUrl);
 
 			// Try to bust the cache for the iframe
 			// There does not appear to be any way to reliably do this except modifying the url
-			url.searchParams.append('vscodeBrowserReqId', Date.now().toString());
+			url.searchParams.set('vscodeBrowserReqId', Date.now().toString());
 
 			iframe.src = url.toString();
 		} catch {
@@ -104,6 +115,12 @@ onceDocumentLoaded(() => {
 
 		vscode.setState({ url: rawUrl });
 	}
+
+	navigateToPage = navigateTo;
+	navigateTo(settings.url);
+	input.value = settings.url;
+
+	toggleFocusLockIndicatorEnabled(settings.focusLockIndicatorEnabled);
 });
 
 function toggleFocusLockIndicatorEnabled(enabled: boolean) {

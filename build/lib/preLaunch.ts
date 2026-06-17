@@ -64,9 +64,6 @@ async function ensureAppIcons() {
 
 	if (process.platform === 'darwin' && await exists('.build/electron/Trove.app/Contents/Resources/Trove.icns')) {
 		await fs.copyFile(icnsPath, path.join(rootDir, '.build/electron/Trove.app/Contents/Resources/Trove.icns'));
-		const plistPath = path.join(rootDir, '.build/electron/Trove.app/Contents/Info.plist');
-		const now = new Date();
-		await fs.utimes(plistPath, now, now);
 	}
 }
 

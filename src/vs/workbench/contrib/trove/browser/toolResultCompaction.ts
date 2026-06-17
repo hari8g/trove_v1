@@ -8,6 +8,9 @@ import { ChatMessage } from '../common/chatThreadServiceTypes.js';
 import { BuiltinToolCallParams, ToolName } from '../common/toolsServiceTypes.js';
 import { getProtectedTailStartIndex } from './contextWindowTrim.js';
 
+/** How many recent compactable tool results stay at full size within the current agent run. */
+export const RECENT_FULL_TOOL_RESULTS = 2;
+
 export const COMPACTABLE_TOOL_NAMES: ReadonlySet<ToolName> = new Set([
 	'read_file',
 	'search_codebase',
@@ -40,11 +43,28 @@ const formatGenericCompact = (toolName: ToolName, content: string): string => {
 export const compactStaleToolResults = (chatMessages: ChatMessage[]): ChatMessage[] => {
 	const tailStart = getProtectedTailStartIndex(chatMessages);
 
+	const compactableIndices = chatMessages
+		.map((message, index) => ({ message, index }))
+		.filter(({ message, index }) => {
+			return message.role === 'tool'
+				&& message.compactable
+				&& message.type === 'success';
+		})
+		.map(({ index }) => index);
+
+	// Within the protected tail (typical single-turn agent runs), still compact all but the last N read/search results.
+	const tailCompactable = compactableIndices.filter(index => index >= tailStart);
+	const staleTailIndices = new Set(tailCompactable.slice(0, -RECENT_FULL_TOOL_RESULTS));
+	const stalePrefixIndices = new Set(compactableIndices.filter(index => index < tailStart));
+
 	return chatMessages.map((message, index) => {
-		if (message.role !== 'tool' || index >= tailStart) {
+		if (message.role !== 'tool') {
 			return message;
 		}
 		if (!message.compactable || message.type !== 'success') {
+			return message;
+		}
+		if (!stalePrefixIndices.has(index) && !staleTailIndices.has(index)) {
 			return message;
 		}
 

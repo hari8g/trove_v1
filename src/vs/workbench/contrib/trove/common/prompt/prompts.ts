@@ -366,7 +366,7 @@ export const builtinTools: {
 
 	edit_file: {
 		name: 'edit_file',
-		description: `Edit the contents of a file. You must provide the file's URI as well as a SINGLE string of SEARCH/REPLACE block(s) that will be used to apply the edit.`,
+		description: `Edit the contents of a file. Provide the file URI and ONE string containing all SEARCH/REPLACE block(s) for this edit. For related changes (e.g. theming several CSS sections), include every block in that single string — do not split across multiple edit_file calls.`,
 		params: {
 			...uriParam('file'),
 			search_replace_blocks: { description: replaceTool_description }
@@ -633,6 +633,8 @@ ${directoryStr}
 		details.push('After curl to localhost succeeds, STOP — give a concise summary. Do NOT run extra tsc/lint/test/html checks unless the user asked or a prior step failed.')
 		details.push('After EVERY code edit, run the minimal verification path above before responding. Only skip for pure comment/doc edits.')
 		details.push(`Gather context efficiently: read package.json and the files you will edit up front — avoid re-reading the same files.`)
+		details.push(`When changing styling, theming, or multiple related sections in one file (especially CSS/stylesheets), read the file once, then apply ALL related changes in a single edit_file call with multiple SEARCH/REPLACE blocks. Do NOT edit the same file repeatedly for the same task.`)
+		details.push(`Prefer one comprehensive edit over several incremental edits to the same file. Use rewrite_file only when replacing most of a file's contents.`)
 		details.push(`ALWAYS have maximal certainty in a change BEFORE you make it. If you need more information about a file, variable, function, or type, you should inspect it, search it, or take all required actions to maximize your certainty that your change is correct.`)
 		details.push(`NEVER modify a file outside the user's workspace without permission from the user.`)
 	}

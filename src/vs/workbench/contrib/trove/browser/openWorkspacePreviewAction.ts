@@ -5,10 +5,8 @@
 
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../editor/browser/editorExtensions.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { localize2 } from '../../../../nls.js';
-import { openWorkspaceSimpleBrowser } from './simpleBrowserOpen.js';
+import { IWorkspacePreviewService } from './workspacePreviewService.js';
 
 export const TROVE_OPEN_WORKSPACE_PREVIEW_ACTION_ID = 'trove.openWorkspacePreview';
 
@@ -25,11 +23,7 @@ class OpenWorkspacePreviewAction extends Action2 {
 		if (!url || typeof url !== 'string') {
 			return false;
 		}
-		return openWorkspaceSimpleBrowser(
-			accessor.get(ICommandService),
-			accessor.get(IExtensionService),
-			url,
-		);
+		return accessor.get(IWorkspacePreviewService).openPreview(url);
 	}
 }
 

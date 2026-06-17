@@ -600,6 +600,9 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	// on error
 	stream.on('error', (error) => {
 		if (error instanceof Anthropic.APIError && error.status === 401) { onError({ message: invalidApiKeyMessage(providerName), fullError: error }) }
+		else if (error instanceof Anthropic.APIError && error.status === 429) {
+			onError({ message: `Rate limit reached. ${error.message}`, fullError: error })
+		}
 		else { onError({ message: error + '', fullError: error }) }
 	})
 	_setAborter(() => stream.controller.abort())

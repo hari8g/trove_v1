@@ -36,6 +36,7 @@ import './troveUpdateActions.js'
 import './toolsService.js'
 import './terminalToolService.js'
 import './agentDeliveryService.js'
+import './workspacePreviewService.js'
 import './openWorkspacePreviewAction.js'
 
 // register Thread History

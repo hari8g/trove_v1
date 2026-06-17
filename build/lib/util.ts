@@ -380,3 +380,46 @@ export function getElectronVersion(): Record<string, string> {
 	const msBuildId = /^ms_build_id="(.*)"$/m.exec(npmrc)![1];
 	return { electronVersion, msBuildId };
 }
+
+/** Electron zip artifacts often ship with 1980-01-01 timestamps (ZIP/FAT epoch). */
+const STALE_TIMESTAMP_MS = Date.UTC(2000, 0, 1);
+
+async function refreshFileTimestamps(filePath: string, now: Date): Promise<void> {
+	try {
+		const stat = await fs.promises.stat(filePath);
+		if (stat.isFile() && stat.mtimeMs < STALE_TIMESTAMP_MS) {
+			const tmpPath = `${filePath}.trove-ts-${process.pid}`;
+			await fs.promises.copyFile(filePath, tmpPath);
+			await fs.promises.rename(tmpPath, filePath);
+		}
+	} catch {
+		// ignore races on special files
+	}
+
+	try {
+		await fs.promises.utimes(filePath, now, now);
+	} catch {
+		// ignore symlinks and other non-utimes paths
+	}
+}
+
+/** Refresh filesystem timestamps under a packaged app directory (post-gulp-electron). */
+export async function refreshDirectoryTimestamps(dirPath: string): Promise<void> {
+	const now = new Date();
+	const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+
+	for (const entry of entries) {
+		const fullPath = path.join(dirPath, entry.name);
+
+		if (entry.isDirectory()) {
+			await refreshDirectoryTimestamps(fullPath);
+			try {
+				await fs.promises.utimes(fullPath, now, now);
+			} catch {
+				// ignore
+			}
+		} else if (entry.isFile()) {
+			await refreshFileTimestamps(fullPath, now);
+		}
+	}
+}

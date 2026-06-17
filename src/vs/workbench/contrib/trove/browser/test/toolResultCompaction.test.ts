@@ -65,4 +65,64 @@ suite('Trove - toolResultCompaction', () => {
 			assert.ok(!tool.content.includes('line1'));
 		}
 	});
+
+	test('compactStaleToolResults compacts older read_file results within a single agent turn', () => {
+		const fileUri = URI.file('/proj/style.css');
+		const bigContent = 'line\n'.repeat(200);
+		const messages: ChatMessage[] = [
+			{
+				role: 'user',
+				content: 'theme it',
+				displayContent: 'theme it',
+				selections: null,
+				state: { stagingSelections: [], isBeingEdited: false },
+			},
+			{
+				role: 'tool',
+				type: 'success',
+				name: 'read_file',
+				content: bigContent,
+				id: 't1',
+				rawParams: {},
+				mcpServerName: undefined,
+				compactable: true,
+				params: { uri: fileUri, startLine: 1, endLine: 200, pageNumber: 1 },
+				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false },
+			},
+			{
+				role: 'tool',
+				type: 'success',
+				name: 'read_file',
+				content: bigContent,
+				id: 't2',
+				rawParams: {},
+				mcpServerName: undefined,
+				compactable: true,
+				params: { uri: fileUri, startLine: 1, endLine: 200, pageNumber: 1 },
+				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false },
+			},
+			{
+				role: 'tool',
+				type: 'success',
+				name: 'read_file',
+				content: bigContent,
+				id: 't3',
+				rawParams: {},
+				mcpServerName: undefined,
+				compactable: true,
+				params: { uri: fileUri, startLine: 1, endLine: 200, pageNumber: 1 },
+				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false },
+			},
+		];
+
+		const compacted = compactStaleToolResults(messages);
+		const firstRead = compacted[1];
+		const lastRead = compacted[3];
+		assert.strictEqual(firstRead.role, 'tool');
+		assert.strictEqual(lastRead.role, 'tool');
+		if (firstRead.role === 'tool' && lastRead.role === 'tool') {
+			assert.ok(!firstRead.content.includes('line\nline'));
+			assert.ok(lastRead.content.includes('line\nline'));
+		}
+	});
 });

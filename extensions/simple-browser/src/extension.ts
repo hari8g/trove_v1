@@ -62,6 +62,14 @@ export function activate(context: vscode.ExtensionContext) {
 		manager.show(url, showOptions);
 	}));
 
+	context.subscriptions.push(vscode.commands.registerCommand('simpleBrowser.api.reload', (url?: string) => {
+		if (url) {
+			manager.navigateActive(url);
+		} else {
+			manager.reloadActive();
+		}
+	}));
+
 	context.subscriptions.push(vscode.window.registerExternalUriOpener(openerId, {
 		canOpenExternalUri(uri: vscode.Uri) {
 			// We have to replace the IPv6 hosts with IPv4 because URL can't handle IPv6.

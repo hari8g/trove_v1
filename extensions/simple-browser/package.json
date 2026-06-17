@@ -24,6 +24,7 @@
   ],
   "activationEvents": [
     "onCommand:simpleBrowser.api.open",
+    "onCommand:simpleBrowser.api.reload",
     "onOpenExternalUri:http",
     "onOpenExternalUri:https",
     "onWebviewPanel:simpleBrowser.view"

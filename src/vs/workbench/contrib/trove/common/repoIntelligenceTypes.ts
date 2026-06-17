@@ -81,6 +81,8 @@ export const IRepoIntelligenceMainService = createDecorator<IRepoIntelligenceMai
 export interface IRepoIntelligenceService extends IRepoIntelligenceMainService {
 	getProfileSync(): WorkspaceProfile | null;
 	getWorkspaceRules(): string | null;
+	/** Idempotent — safe to call after workspace restore or folder changes. */
+	ensureInitialized(): Promise<void>;
 	readonly onDidChangeWorkspaceRules: Event<void>;
 	readonly onDidChangeChunkIndex: Event<number>;
 	readonly onDidChangeUserMemory: Event<void>;

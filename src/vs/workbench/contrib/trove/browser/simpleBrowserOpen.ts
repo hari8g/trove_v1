@@ -10,6 +10,17 @@ import { IExtensionService } from '../../../services/extensions/common/extension
 /** ViewColumn.One — open in the primary editor column (workspace center). */
 const WORKSPACE_BROWSER_VIEW_COLUMN = 1;
 
+const withCacheBust = (url: string): string => {
+	try {
+		const parsed = new URL(url);
+		parsed.searchParams.set('trove_reload', String(Date.now()));
+		return parsed.toString();
+	} catch {
+		const sep = url.includes('?') ? '&' : '?';
+		return `${url}${sep}trove_reload=${Date.now()}`;
+	}
+};
+
 /**
  * Opens the Simple Browser webview in the workspace editor area and focuses it.
  * Activates the built-in simple-browser extension first so the command is available.
@@ -43,4 +54,19 @@ export async function openWorkspaceSimpleBrowser(
 	}
 
 	return true;
+}
+
+/** Re-navigate the workspace Simple Browser to bust cache (live reload after edits). */
+export async function reloadWorkspaceSimpleBrowser(
+	commandService: ICommandService,
+	extensionService: IExtensionService,
+	url: string,
+): Promise<boolean> {
+	try {
+		await extensionService.activateByEvent('onCommand:simpleBrowser.api.reload');
+		await commandService.executeCommand('simpleBrowser.api.reload', url);
+		return true;
+	} catch {
+		return openWorkspaceSimpleBrowser(commandService, extensionService, withCacheBust(url));
+	}
 }

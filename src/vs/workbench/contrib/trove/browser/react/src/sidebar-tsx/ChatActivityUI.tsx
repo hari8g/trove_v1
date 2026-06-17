@@ -6,10 +6,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnthropicReasoning, RawToolCallObj } from '../../../../common/sendLLMMessageTypes.js';
 import { ChatMessage } from '../../../../common/chatThreadServiceTypes.js';
-import { BuiltinToolName } from '../../../../common/toolsServiceTypes.js';
+import { BuiltinToolName, ToolParamName } from '../../../../common/toolsServiceTypes.js';
 import { builtinToolNames, isABuiltinToolName } from '../../../../common/prompt/prompts.js';
 import { Check, ChevronRight, FileCode2, Pencil, Search, Sparkles, Terminal } from 'lucide-react';
 import { MAX_FILE_PREVIEW_LINES } from './ChatInlineDiffView.js';
+import { extractStreamingIntentLine, getStreamingTailPreview, getStreamingToolCallStatusLine } from '../../../liveStreamingText.js';
+import { formatEditStreamPhaseLabel, parseStreamingEditProgress } from '../../../liveEditStreaming.js';
+
+export { extractStreamingIntentLine, getStreamingTailPreview, getStreamingToolCallStatusLine } from '../../../liveStreamingText.js';
 
 export type EditToolStreamStep = {
 	id: string;
@@ -106,6 +110,7 @@ export const StreamingEditToolCard = ({
 	onFileClick,
 	filePath,
 	children,
+	isStreaming = true,
 }: {
 	toolCallSoFar: RawToolCallObj;
 	addedLines?: number;
@@ -113,24 +118,42 @@ export const StreamingEditToolCard = ({
 	onFileClick?: () => void;
 	filePath?: string;
 	children?: React.ReactNode;
+	isStreaming?: boolean;
 }) => {
 	const steps = useMemo(() => getEditToolStreamingSteps(toolCallSoFar), [toolCallSoFar]);
-	const [isExpanded, setIsExpanded] = useState(false);
+	const [isExpanded, setIsExpanded] = useState(isStreaming);
 	const stepsRef = useRef<HTMLDivElement>(null);
+	const contentScrollRef = useRef<HTMLDivElement>(null);
 	const activeStep = steps.find(s => s.status === 'active');
 
 	const toolTitle = toolCallSoFar.name === 'edit_file' ? 'Edit file' : 'Write file';
+	const isEditFile = toolCallSoFar.name === 'edit_file';
 	const uri = toolCallSoFar.rawParams.uri?.trim();
 	const fileName = uri ? basenameFromPath(uri) : undefined;
+	const contentParam = isEditFile ? 'search_replace_blocks' : 'new_content';
+	const rawContent = toolCallSoFar.rawParams[contentParam] ?? '';
+
+	const progress = useMemo(
+		() => parseStreamingEditProgress(rawContent, isEditFile),
+		[rawContent, isEditFile],
+	);
+	const phaseLabel = formatEditStreamPhaseLabel(progress, fileName);
+
+	useEffect(() => {
+		if (isStreaming) setIsExpanded(true);
+	}, [isStreaming]);
 
 	useEffect(() => {
 		if (stepsRef.current) {
 			stepsRef.current.scrollTop = stepsRef.current.scrollHeight;
 		}
-	}, [steps]);
+		if (contentScrollRef.current) {
+			contentScrollRef.current.scrollTop = contentScrollRef.current.scrollHeight;
+		}
+	}, [steps, progress.rawTail, rawContent.length]);
 
 	return (
-		<div className="glass-card overflow-hidden my-1.5 select-none">
+		<div className="glass-card overflow-hidden my-1.5 select-none border border-violet-400/20">
 			<button
 				type="button"
 				className="w-full flex items-center min-h-[28px] px-2.5 py-1.5 cursor-pointer hover:bg-trove-bg-2/30 transition-colors text-left"
@@ -139,6 +162,7 @@ export const StreamingEditToolCard = ({
 				<ChevronRight
 					className={`text-trove-fg-4 mr-1 h-3.5 w-3.5 flex-shrink-0 transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}`}
 				/>
+				<span className="inline-block w-1.5 h-1.5 shrink-0 rounded-full bg-violet-400/80 animate-pulse mr-1.5" />
 				<span className="text-trove-fg-3 flex-shrink-0 text-[11px]">{toolTitle}</span>
 				{fileName ? (
 					<span
@@ -153,6 +177,7 @@ export const StreamingEditToolCard = ({
 						{activeStep?.label ?? 'Generating…'}
 					</span>
 				)}
+				<span className="text-[10px] text-trove-fg-4 truncate ml-2 italic hidden sm:inline">{phaseLabel}</span>
 				{(addedLines !== undefined && addedLines > 0) || (removedLines !== undefined && removedLines > 0) ? (
 					<span className="flex items-center gap-1.5 shrink-0 font-mono text-[10px] ml-auto">
 						{addedLines !== undefined && addedLines > 0 ? (
@@ -164,21 +189,55 @@ export const StreamingEditToolCard = ({
 					</span>
 				) : null}
 			</button>
+
 			{isExpanded ? (
-				<div className="pl-4 pr-2 pb-2 pt-0 border-t border-trove-border-3/25">
-					<div ref={stepsRef} className="max-h-28 overflow-y-auto mb-1">
+				<div className="px-2.5 pb-2 pt-0 border-t border-trove-border-3/25 space-y-2">
+					<div ref={stepsRef} className="max-h-24 overflow-y-auto">
 						{steps.map(step => (
 							<StreamingStepRow key={step.id} step={step} />
 						))}
 					</div>
+
+					{progress.blocks.length > 0 ? (
+						<div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
+							<span className="text-[10px] uppercase tracking-wide text-trove-fg-4">Changes</span>
+							{progress.blocks.map(block => (
+								<div key={block.index} className="flex items-start gap-1.5 text-[10px] font-mono leading-snug">
+									<span className={`shrink-0 mt-0.5 w-1 h-1 rounded-full ${block.status === 'complete' ? 'bg-green-500/70' : 'bg-violet-400/80 animate-pulse'}`} />
+									<div className="min-w-0 flex-1">
+										<span className="text-trove-fg-3">
+											#{block.index + 1} {block.status === 'complete' ? 'ready' : 'streaming'}
+											{' · '}-{block.origLineCount}/+{block.finalLineCount}
+										</span>
+										{block.preview ? (
+											<div className="text-trove-fg-4 truncate italic">{block.preview}</div>
+										) : null}
+									</div>
+								</div>
+							))}
+						</div>
+					) : null}
+
+					{progress.rawTail ? (
+						<div className="flex flex-col gap-0.5">
+							<span className="text-[10px] uppercase tracking-wide text-trove-fg-4">Live stream</span>
+							<pre
+								ref={contentScrollRef}
+								className="max-h-36 overflow-y-auto text-[10px] leading-[1.4] font-mono text-trove-fg-3 whitespace-pre-wrap break-words bg-trove-bg-2/20 rounded-md px-2 py-1.5 border border-trove-border-3/20"
+							>
+								{progress.rawTail}
+								{isStreaming ? <span className="text-violet-400/90 animate-pulse">▍</span> : null}
+							</pre>
+						</div>
+					) : null}
 				</div>
 			) : null}
 			{children ? (
 				<div className="border-t border-trove-border-3/25 overflow-hidden">
 					{React.isValidElement(children)
 						? React.cloneElement(children as React.ReactElement<{ limitLines?: boolean; maxVisibleLines?: number }>, {
-							limitLines: !isExpanded,
-							maxVisibleLines: MAX_FILE_PREVIEW_LINES,
+							limitLines: !isExpanded && !isStreaming,
+							maxVisibleLines: isStreaming ? 24 : MAX_FILE_PREVIEW_LINES,
 						})
 						: children}
 				</div>
@@ -186,6 +245,31 @@ export const StreamingEditToolCard = ({
 		</div>
 	);
 };
+
+export const ApplyingEditActivityPanel = ({
+	fileName,
+	filePath,
+	onFileClick,
+}: {
+	fileName: string;
+	filePath?: string;
+	onFileClick?: () => void;
+}) => (
+	<div className="glass-card px-2.5 py-2 my-1 select-none border border-violet-400/20">
+		<div className="flex items-center gap-2">
+			<span className="inline-block w-1.5 h-1.5 shrink-0 rounded-full bg-violet-400/80 animate-pulse" />
+			<span className="text-[11px] text-trove-fg-2 font-medium">Applying edit</span>
+			<span
+				className={`text-[11px] font-mono text-trove-fg-3 truncate ${onFileClick ? 'cursor-pointer hover:underline' : ''}`}
+				onClick={onFileClick}
+				title={filePath}
+			>
+				{fileName}
+			</span>
+			<span className="text-[10px] text-trove-fg-4 italic ml-auto">Writing to workspace…</span>
+		</div>
+	</div>
+);
 
 /** Collapsible plain-code snippet (search results, file reads). */
 export const CollapsibleCodeSnippet = ({
@@ -550,6 +634,173 @@ export type BackgroundActivityPhase =
 	| 'writing'
 	| 'tool'
 	| 'awaiting';
+
+const StreamingTextBlock = ({
+	label,
+	text,
+	isActive,
+	showCursor = false,
+}: {
+	label: string;
+	text: string;
+	isActive: boolean;
+	showCursor?: boolean;
+}) => {
+	const scrollRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		if (scrollRef.current) {
+			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+		}
+	}, [text]);
+
+	if (!text.trim()) return null;
+
+	return (
+		<div className="flex flex-col gap-0.5">
+			<div className="flex items-center gap-1.5">
+				{isActive ? (
+					<span className="inline-block w-1 h-1 shrink-0 rounded-full bg-violet-400/80 animate-pulse" />
+				) : (
+					<span className="inline-block w-1 h-1 shrink-0 rounded-full bg-trove-fg-4/40" />
+				)}
+				<span className="text-[10px] font-medium uppercase tracking-wide text-trove-fg-4">{label}</span>
+			</div>
+			<div
+				ref={scrollRef}
+				className="max-h-28 overflow-y-auto pl-2.5 ml-0.5 border-l border-trove-border-3/40 text-[11px] leading-[1.45] text-trove-fg-3 whitespace-pre-wrap break-words !select-text"
+			>
+				{text}
+				{showCursor ? <span className="inline-block w-[6px] ml-0.5 text-violet-400/90 animate-pulse">▍</span> : null}
+			</div>
+		</div>
+	);
+};
+
+export const StreamingToolCallPreview = ({ toolCallSoFar }: { toolCallSoFar: RawToolCallObj }) => {
+	const label = getStreamingToolCallStatusLine(toolCallSoFar);
+	const paramEntries = Object.entries(toolCallSoFar.rawParams).filter(([, v]) => typeof v === 'string' && v.trim());
+	const doneSet = new Set(toolCallSoFar.doneParams);
+
+	return (
+		<div className="glass-card px-2.5 py-2 my-1 select-none">
+			<div className="flex items-center gap-2">
+				<span className="inline-block w-1.5 h-1.5 shrink-0 rounded-full bg-emerald-400/80 animate-pulse" />
+				<span className="text-[11px] text-trove-fg-2 font-medium truncate">{label}</span>
+			</div>
+			{paramEntries.length > 0 ? (
+				<div className="mt-1.5 pl-3.5 flex flex-col gap-1 max-h-24 overflow-y-auto">
+					{paramEntries.map(([key, value]) => (
+						<div key={key} className="text-[10px] leading-snug font-mono">
+							<span className="text-trove-fg-4">{key}: </span>
+							<span className={`text-trove-fg-3 ${doneSet.has(key as ToolParamName<ToolName>) ? '' : 'opacity-70 italic'}`}>
+								{String(value).length > 100 ? `${String(value).slice(0, 97)}…` : String(value)}
+							</span>
+						</div>
+					))}
+				</div>
+			) : (
+				<div className="mt-1 pl-3.5 text-[10px] text-trove-fg-4 italic">Receiving tool parameters…</div>
+			)}
+		</div>
+	);
+};
+
+export const LiveLLMStreamingPanel = ({
+	displayContentSoFar,
+	reasoningSoFar,
+	toolCallSoFar,
+	contextLine,
+	chatModeLabel,
+}: {
+	displayContentSoFar?: string;
+	reasoningSoFar?: string;
+	toolCallSoFar?: RawToolCallObj | null;
+	contextLine?: string;
+	chatModeLabel: string;
+}) => {
+	const [elapsedSeconds, setElapsedSeconds] = useState(0);
+	const startedAtRef = useRef(Date.now());
+
+	const hasReasoning = !!reasoningSoFar?.trim();
+	const hasDisplay = !!displayContentSoFar?.trim();
+	const isToolGenerating = !!toolCallSoFar && !toolCallSoFar.isDone;
+	const intentLine = extractStreamingIntentLine(displayContentSoFar);
+
+	const phase: BackgroundActivityPhase = isToolGenerating
+		? 'tool'
+		: hasDisplay
+			? 'writing'
+			: hasReasoning
+				? 'reasoning'
+				: 'waiting';
+
+	const title = isToolGenerating
+		? getStreamingToolCallStatusLine(toolCallSoFar!)
+		: hasDisplay
+			? (intentLine ? `Next: ${intentLine}` : 'Writing response')
+			: hasReasoning
+				? 'Reasoning'
+				: 'Waiting for model response';
+
+	useEffect(() => {
+		startedAtRef.current = Date.now();
+		setElapsedSeconds(0);
+	}, [phase, title]);
+
+	useEffect(() => {
+		const interval = setInterval(() => {
+			setElapsedSeconds(Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000)));
+		}, 500);
+		return () => clearInterval(interval);
+	}, [phase, title]);
+
+	if (isToolGenerating) {
+		return <StreamingToolCallPreview toolCallSoFar={toolCallSoFar!} />;
+	}
+
+	const reasoningPreview = getStreamingTailPreview(reasoningSoFar, { maxLines: 4, maxChars: 600 });
+	const displayPreview = getStreamingTailPreview(displayContentSoFar, { maxLines: 6, maxChars: 900 });
+
+	return (
+		<div className="glass-card px-2.5 py-2 my-1 select-none">
+			<div className="flex items-start gap-2">
+				<span className="inline-block w-1.5 h-1.5 shrink-0 rounded-full mt-1 animate-pulse bg-violet-400/80" />
+				<div className="min-w-0 flex-1 flex flex-col gap-1.5">
+					<div className="flex items-baseline justify-between gap-2">
+						<span className="text-[11px] text-trove-fg-2 font-medium truncate">{title}</span>
+						<span className="text-[10px] text-trove-fg-4 shrink-0 tabular-nums">{elapsedSeconds}s</span>
+					</div>
+
+					{phase === 'waiting' ? (
+						<div className="text-[11px] leading-snug text-trove-fg-3 italic">
+							{contextLine
+								? `${chatModeLabel} mode · synthesizing from ${contextLine}`
+								: `${chatModeLabel} mode · model is composing a response`}
+						</div>
+					) : null}
+
+					{hasReasoning && !hasDisplay ? (
+						<StreamingTextBlock label="Reasoning" text={reasoningPreview} isActive={phase === 'reasoning'} showCursor={phase === 'reasoning'} />
+					) : null}
+
+					{hasReasoning && hasDisplay ? (
+						<StreamingTextBlock label="Reasoning" text={reasoningPreview} isActive={false} />
+					) : null}
+
+					{hasDisplay ? (
+						<StreamingTextBlock label="Response" text={displayPreview} isActive={phase === 'writing'} showCursor={phase === 'writing'} />
+					) : null}
+
+					{contextLine && phase !== 'waiting' ? (
+						<div className="text-[10px] leading-snug text-trove-fg-4 truncate" title={contextLine}>
+							Context: {contextLine}
+						</div>
+					) : null}
+				</div>
+			</div>
+		</div>
+	);
+};
 
 export const BackgroundActivityPanel = ({
 	phase,

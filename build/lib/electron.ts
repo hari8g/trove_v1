@@ -234,6 +234,10 @@ async function main(arch: string = process.arch): Promise<void> {
 		await util.rimraf(electronPath)();
 		await util.streamToPromise(getElectron(arch)());
 	}
+
+	if (fs.existsSync(electronPath)) {
+		await util.refreshDirectoryTimestamps(electronPath);
+	}
 }
 
 if (require.main === module) {

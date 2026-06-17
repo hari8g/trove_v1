@@ -46,12 +46,14 @@ export class RepoIntelligenceStatusContribution extends Disposable implements IW
 			this._isIndexing = true;
 			this._ensureEntry();
 			this._updateEntry();
+			void this._repoIntelligenceService.ensureInitialized();
 		}));
 
 		if (this._workspaceContextService.getWorkspace().folders.length > 0) {
 			this._isIndexing = !this._repoIntelligenceService.getProfileSync();
 			this._ensureEntry();
 			this._updateEntry();
+			void this._repoIntelligenceService.ensureInitialized();
 		}
 	}
 

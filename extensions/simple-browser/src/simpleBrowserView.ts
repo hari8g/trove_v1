@@ -109,6 +109,14 @@ export class SimpleBrowserView extends Disposable {
 		this._webviewPanel.reveal(options?.viewColumn, options?.preserveFocus);
 	}
 
+	public reload(url?: string) {
+		this._webviewPanel.webview.postMessage({ type: 'reload', url });
+	}
+
+	public navigate(url: string) {
+		this._webviewPanel.webview.postMessage({ type: 'navigate', url });
+	}
+
 	private getHtml(url: string) {
 		const configuration = vscode.workspace.getConfiguration('simpleBrowser');
 

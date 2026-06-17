@@ -36,7 +36,8 @@ import { ToolApprovalTypeSwitch } from '../trove-settings-tsx/Settings.js';
 import { persistentTerminalNameOfId, ITerminalToolService } from '../../../terminalToolService.js';
 import { AnsiTerminalOutput } from '../util/ansiOutput.js';
 import { removeMCPToolNamePrefix } from '../../../../common/mcpServiceTypes.js';
-import { BackgroundActivityPanel, AgentTurnCompleteSummaryCard, ChatInlineDiffButtons, CollapsibleCodeSnippet, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveReasoningBlock, StreamingEditToolCard, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
+import { ApplyingEditActivityPanel, BackgroundActivityPanel, AgentTurnCompleteSummaryCard, ChatInlineDiffButtons, CollapsibleCodeSnippet, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, extractStreamingIntentLine, formatAnthropicReasoning, getStreamingTailPreview, getStreamingToolCallStatusLine, LiveLLMStreamingPanel, LiveReasoningBlock, StreamingEditToolCard, StreamingToolCallPreview, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
+import { formatEditStreamPhaseLabel, parseStreamingEditProgress } from '../../../liveEditStreaming.js';
 import { PlanView } from './PlanView.js';
 import { ChatInlineDiffView, computeChatDiff } from './ChatInlineDiffView.js';
 import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
@@ -390,7 +391,7 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 				<div className="flex items-center gap-1.5 shrink-0">
 
 					{isStreaming ? (
-						<span className="text-[10px] text-trove-fg-4 italic max-w-[220px] truncate" title={streamingStatusText ?? 'Working…'}>
+						<span className="text-[10px] text-trove-fg-4 italic max-w-[min(420px,45vw)] truncate" title={streamingStatusText ?? 'Working…'}>
 							{streamingStatusText ?? 'Working…'}
 						</span>
 					) : null}
@@ -461,7 +462,7 @@ const scrollToBottom = (divRef: { current: HTMLElement | null }) => {
 
 
 
-const ScrollToBottomContainer = ({ children, className, style, scrollContainerRef }: { children: React.ReactNode, className?: string, style?: React.CSSProperties, scrollContainerRef: React.MutableRefObject<HTMLDivElement | null> }) => {
+const ScrollToBottomContainer = ({ children, className, style, scrollContainerRef, scrollTriggers }: { children: React.ReactNode, className?: string, style?: React.CSSProperties, scrollContainerRef: React.MutableRefObject<HTMLDivElement | null>, scrollTriggers?: unknown[] }) => {
 	const [isAtBottom, setIsAtBottom] = useState(true); // Start at bottom
 
 	const divRef = scrollContainerRef
@@ -477,12 +478,12 @@ const ScrollToBottomContainer = ({ children, className, style, scrollContainerRe
 		setIsAtBottom(isBottom);
 	};
 
-	// When children change (new messages added)
+	// When children change (new messages added) or streaming content grows
 	useEffect(() => {
 		if (isAtBottom) {
 			scrollToBottom(divRef);
 		}
-	}, [children, isAtBottom]); // Dependency on children to detect new messages
+	}, [children, isAtBottom, scrollTriggers]);
 
 	// Initial scroll to bottom
 	useEffect(() => {
@@ -1288,14 +1289,21 @@ const AssistantMessageComponent = ({ chatMessage, isCheckpointGhost, isCommitted
 		{/* assistant message */}
 		{chatMessage.displayContent &&
 			<div className={`${isCheckpointGhost ? 'opacity-50' : ''}`}>
-				<ProseWrapper variant={isCommitted ? 'assistant-summary' : 'default'}>
-					<ChatMarkdownRender
-						string={chatMessage.displayContent || ''}
-						chatMessageLocation={chatMessageLocation}
-						isApplyEnabled={true}
-						isLinkDetectionEnabled={true}
-					/>
-				</ProseWrapper>
+				{!isCommitted ? (
+					<div className="text-trove-fg-2 text-[13px] leading-[1.5] whitespace-pre-wrap break-words !select-text">
+						{chatMessage.displayContent}
+						<span className="inline-block w-[6px] ml-0.5 text-violet-400/90 animate-pulse">▍</span>
+					</div>
+				) : (
+					<ProseWrapper variant='assistant-summary'>
+						<ChatMarkdownRender
+							string={chatMessage.displayContent || ''}
+							chatMessageLocation={chatMessageLocation}
+							isApplyEnabled={true}
+							isLinkDetectionEnabled={true}
+						/>
+					</ProseWrapper>
+				)}
 			</div>
 		}
 	</>
@@ -2618,6 +2626,7 @@ const EditToolSoFar = ({ toolCallSoFar, }: { toolCallSoFar: RawToolCallObj }) =>
 			removedLines={streamingDiff?.removed}
 			filePath={uri?.fsPath}
 			onFileClick={uri ? () => voidOpenFileFn(uri, accessor) : undefined}
+			isStreaming={true}
 		>
 			{uri ? (
 				<ChatInlineDiffView code={code} type={editToolType} />
@@ -2741,19 +2750,30 @@ export const SidebarChat = () => {
 		}
 
 		if (isRunning === 'LLM') {
+			if (toolCallSoFar && !toolCallSoFar.isDone) {
+				return {
+					phase: 'tool',
+					title: getStreamingToolCallStatusLine(toolCallSoFar),
+					detail: 'Streaming tool call parameters',
+				}
+			}
+
 			if (displayContentSoFar?.trim()) {
+				const intent = extractStreamingIntentLine(displayContentSoFar)
+				const tail = getStreamingTailPreview(displayContentSoFar, { maxLines: 2, maxChars: 160 })
 				return {
 					phase: 'writing',
 					title: 'Writing response',
-					detail: `${displayContentSoFar.length.toLocaleString()} characters streamed so far`,
+					detail: intent ?? tail ?? 'Composing response…',
 				}
 			}
 
 			if (reasoningSoFar?.trim()) {
+				const tail = getStreamingTailPreview(reasoningSoFar, { maxLines: 2, maxChars: 120 })
 				return {
 					phase: 'reasoning',
 					title: 'Reasoning',
-					detail: `${reasoningSoFar.length.toLocaleString()} characters of internal reasoning received`,
+					detail: tail ?? 'Processing internal reasoning…',
 				}
 			}
 
@@ -2779,12 +2799,37 @@ export const SidebarChat = () => {
 		idleStatus,
 		displayContentSoFar,
 		reasoningSoFar,
+		toolCallSoFar,
 	])
 
 	const showBackgroundActivity = !!isRunning
 		&& !toolIsGenerating
-		&& !(isRunning === 'LLM' && !!displayContentSoFar?.trim())
-		&& !(isRunning === 'LLM' && !!reasoningSoFar?.trim() && !displayContentSoFar?.trim())
+		&& isRunning !== 'LLM'
+
+	const showLiveLLMStreamingPanel = isRunning === 'LLM' && !toolIsGenerating
+
+	const applyingEditPanel = isRunning === 'tool' && runningToolInfo
+		&& (runningToolInfo.toolName === 'edit_file' || runningToolInfo.toolName === 'rewrite_file')
+		&& 'uri' in runningToolInfo.toolParams ? (() => {
+			const uri = runningToolInfo.toolParams.uri
+			const fsPath = uri?.fsPath ?? ''
+			const fileName = fsPath.replace(/\\/g, '/').split('/').pop() ?? fsPath
+			return (
+				<ApplyingEditActivityPanel
+					fileName={fileName}
+					filePath={fsPath}
+					onFileClick={uri ? () => voidOpenFileFn(uri, accessor) : undefined}
+				/>
+			)
+		})() : null
+
+	const editToolStreamStatus = toolIsGenerating && toolCallSoFar
+		&& (toolCallSoFar.name === 'edit_file' || toolCallSoFar.name === 'rewrite_file') ? (() => {
+			const isEditFile = toolCallSoFar.name === 'edit_file'
+			const raw = toolCallSoFar.rawParams[isEditFile ? 'search_replace_blocks' : 'new_content'] ?? ''
+			const fileName = toolCallSoFar.rawParams.uri?.trim().replace(/\\/g, '/').split('/').pop()
+			return formatEditStreamPhaseLabel(parseStreamingEditProgress(raw, isEditFile), fileName)
+		})() : undefined
 
 	const activityPanelProps = backgroundActivity ?? (isRunning ? {
 		phase: 'preparing' as const,
@@ -2793,9 +2838,36 @@ export const SidebarChat = () => {
 		contextLine: undefined,
 	} : null)
 
-	const streamingStatusText = backgroundActivity
-		? [backgroundActivity.title, backgroundActivity.detail].filter(Boolean).join(' · ')
-		: isRunning ? 'Working…' : undefined
+	const streamingStatusText = useMemo(() => {
+		if (editToolStreamStatus) {
+			return editToolStreamStatus
+		}
+		if (isRunning === 'LLM') {
+			if (toolCallSoFar && !toolCallSoFar.isDone) {
+				return getStreamingToolCallStatusLine(toolCallSoFar)
+			}
+			if (displayContentSoFar?.trim()) {
+				const intent = extractStreamingIntentLine(displayContentSoFar)
+				if (intent) return intent
+				const tail = getStreamingTailPreview(displayContentSoFar, { maxLines: 1, maxChars: 100 })
+				return tail || 'Writing response…'
+			}
+			if (reasoningSoFar?.trim()) {
+				const tail = getStreamingTailPreview(reasoningSoFar, { maxLines: 1, maxChars: 80 })
+				return tail ? `Thinking · ${tail}` : 'Thinking…'
+			}
+		}
+		return backgroundActivity
+			? [backgroundActivity.title, backgroundActivity.detail].filter(Boolean).join(' · ')
+			: isRunning ? 'Working…' : undefined
+	}, [
+		isRunning,
+		backgroundActivity,
+		displayContentSoFar,
+		reasoningSoFar,
+		toolCallSoFar,
+		editToolStreamStatus,
+	])
 
 	// ----- SIDEBAR CHAT state (local) -----
 
@@ -2892,17 +2964,23 @@ export const SidebarChat = () => {
 
 
 	// the tool currently being generated
-	const generatingTool = toolIsGenerating ?
+	const generatingTool = toolIsGenerating && toolCallSoFar ?
 		toolCallSoFar.name === 'edit_file' || toolCallSoFar.name === 'rewrite_file' ? <EditToolSoFar
 			key={'curr-streaming-tool'}
 			toolCallSoFar={toolCallSoFar}
 		/>
-			: null
+			: <StreamingToolCallPreview
+				key={'curr-streaming-tool'}
+				toolCallSoFar={toolCallSoFar}
+			/>
 		: null
+
+	const streamScrollKey = `${displayContentSoFar?.length ?? 0}:${reasoningSoFar?.length ?? 0}:${toolCallSoFar?.isDone ?? ''}:${toolCallSoFar?.name ?? ''}:${Object.values(toolCallSoFar?.rawParams ?? {}).join('|').length}`
 
 	const messagesHTML = <ScrollToBottomContainer
 		key={'messages' + chatThreadsState.currentThreadId} // force rerender on all children if id changes
 		scrollContainerRef={scrollContainerRef}
+		scrollTriggers={[streamScrollKey, isRunning]}
 		className={`
 			flex flex-col
 			px-3 py-2 space-y-0.5
@@ -2918,6 +2996,18 @@ export const SidebarChat = () => {
 
 		{/* Generating tool */}
 		{generatingTool}
+
+		{applyingEditPanel}
+
+		{/* live LLM stream — reasoning, response tail, waiting context */}
+		{showLiveLLMStreamingPanel ?
+			<LiveLLMStreamingPanel
+				displayContentSoFar={displayContentSoFar}
+				reasoningSoFar={reasoningSoFar}
+				toolCallSoFar={toolCallSoFar}
+				contextLine={turnActivitySummary.recentFilesLine}
+				chatModeLabel={chatModeLabel}
+			/> : null}
 
 		{/* context window trim notice */}
 		{contextWasTrimmed ?

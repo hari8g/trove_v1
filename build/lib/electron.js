@@ -248,6 +248,9 @@ async function main(arch = process.arch) {
         await util.rimraf(electronPath)();
         await util.streamToPromise(getElectron(arch)());
     }
+    if (fs_1.default.existsSync(electronPath)) {
+        await util.refreshDirectoryTimestamps(electronPath);
+    }
 }
 if (require.main === module) {
     main(process.argv[2]).catch(err => {

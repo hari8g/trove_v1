@@ -440,6 +440,16 @@ function packageTask(platform, arch, sourceFolderName, destinationFolderName, op
 	};
 }
 
+function refreshBuildTimestampsTask(destinationFolderName) {
+	const destination = path.join(buildRoot, destinationFolderName);
+
+	return async () => {
+		if (fs.existsSync(destination)) {
+			await util.refreshDirectoryTimestamps(destination);
+		}
+	};
+}
+
 function patchWin32DependenciesTask(destinationFolderName) {
 	const cwd = path.join(path.dirname(root), destinationFolderName);
 
@@ -493,7 +503,8 @@ BUILD_TARGETS.forEach(buildTarget => {
 		const tasks = [
 			compileNativeExtensionsBuildTask,
 			util.rimraf(path.join(buildRoot, destinationFolderName)),
-			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts)
+			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
+			refreshBuildTimestampsTask(destinationFolderName),
 		];
 
 		if (platform === 'win32') {

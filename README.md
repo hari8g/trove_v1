@@ -22,9 +22,9 @@ Trove is a fork of VS Code OSS with AI capabilities integrated into the workbenc
 | **Repo intelligence** | SQLite-backed workspace profile (languages, frameworks, commands, LLM summaries) |
 | **Codebase search** | FTS5 semantic-ish search via `search_codebase` tool |
 | **Web search** | `search_web` tool (Tavily) for live documentation and external context |
-| **Agent delivery** | Detects build success, running dev servers, and localhost URLs; opens preview in workspace browser |
+| **Agent delivery** | Detects build success, running dev servers, and localhost URLs; opens preview in workspace browser with **live reload** on web asset edits |
 | **Structured plans** | Pre-run checklist with smart tool-to-step matching; remaining items auto-complete when the run finishes |
-| **Token economy** | Prompt caching, per-run system context, stale tool compaction, smarter wire trimming |
+| **Token economy** | Prompt caching, per-run system context, stale tool compaction (including mid-run), smarter wire trimming, and **429 rate-limit** retry with `retry-after` |
 | **Natural memory** | “Remember that …” in chat saves to `trove-memory.md` without a full agent turn |
 | **MCP** | Model Context Protocol tools discovered and passed to the agent alongside builtins |
 | **Multi-provider** | Anthropic, OpenAI, Gemini, Ollama, vLLM, LM Studio, LiteLLM, DeepSeek, OpenRouter, Groq, Mistral, xAI, and OpenAI-compatible endpoints |
@@ -44,7 +44,9 @@ Trove is a fork of VS Code OSS with AI capabilities integrated into the workbenc
 ### UI highlights
 
 - **Glass morphism** chat surfaces (input panel, tool cards, assistant output, delivery panel)
-- **Live activity** — idle/streaming status while the agent plans, reads, and calls the model
+- **Live streaming UX** — intent lines, reasoning/response tails, and per-block edit progress while the model writes (not just character counts)
+- **Live activity** — idle/streaming status while the agent plans, reads, edits, and calls the model
+- **Workspace preview** — Simple Browser opens when a dev server reports ready; auto-reloads on HTML/CSS/JS edits (250ms debounce)
 - **Turn complete card** — post-turn recap with color-coded activity chips and touched files
 - **Thread rename** — inline rename in the chat thread selector (custom titles persist)
 - **Delivery output panel** — preview URL and **Approve / Reject** actions for pending workspace edits
@@ -164,6 +166,10 @@ Trove-specific unit tests live alongside Trove code, e.g.:
 - `src/vs/workbench/contrib/trove/browser/test/chatMemoryIntent.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/wireMessageTrim.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/toolResultCompaction.test.ts`
+- `src/vs/workbench/contrib/trove/browser/test/llmRateLimit.test.ts`
+- `src/vs/workbench/contrib/trove/browser/test/agentEditHints.test.ts`
+- `src/vs/workbench/contrib/trove/browser/test/liveEditStreaming.test.ts`
+- `src/vs/workbench/contrib/trove/browser/test/liveStreamingUI.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/promptCache.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/llmMessageUsage.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/modelSettingsMerge.test.ts`
@@ -194,6 +200,8 @@ Repo intelligence SQLite DB and workspace profiles are managed in the Electron m
 5. Under **Feature Options → Agent & token economy**:
    - **Prompt cache** — enables Anthropic `cache_control` breakpoints (OpenRouter, Bedrock, LiteLLM, Azure routes)
    - **Web search** — enables the `search_web` tool; add a [Tavily](https://tavily.com) API key
+
+When the agent runs a dev server (`npm run start`, etc.), Trove opens the localhost URL in the workspace **Simple Browser** and reloads it after web file edits land on disk. The built-in Simple Browser extension supports in-place reload via `simpleBrowser.api.reload` for faster refresh.
 
 You can also save facts in chat with natural language, e.g. *“Remember that this API runs on port 3000.”*
 

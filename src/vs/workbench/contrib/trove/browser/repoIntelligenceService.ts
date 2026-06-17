@@ -10,7 +10,7 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { CodebaseSearchResult, IRepoIntelligenceService, REPO_INTEL_CHANNEL, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
 
 class RepoIntelligenceService extends Disposable implements IRepoIntelligenceService {
@@ -29,6 +29,8 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 	readonly onDidChangeUserMemory = this._onDidChangeUserMemory.event;
 
 	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile' | 'searchCodebase' | 'getChunkCount' | 'getUserMemory' | 'appendToUserMemory'>;
+	private _initInFlight: Promise<void> | null = null;
+	private _initAttempts = 0;
 
 	constructor(
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
@@ -40,18 +42,19 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 			this._mainProcessService.getChannel(REPO_INTEL_CHANNEL),
 		);
 
-		// Eager init may run before workspace folders are restored — retry after restore.
-		this._initProfile();
-		this._loadWorkspaceRules();
-		this._loadUserMemory();
-		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); this._loadUserMemory(); }, 0);
-		setTimeout(() => { this._initProfile(); this._loadWorkspaceRules(); this._loadUserMemory(); }, 2000);
+		this._register(
+			this._workspaceContextService.onDidChangeWorkbenchState(state => {
+				if (state !== WorkbenchState.EMPTY) {
+					void this.ensureInitialized();
+				}
+			}),
+		);
 
 		this._register(
 			this._workspaceContextService.onDidChangeWorkspaceFolders(async (e) => {
 				if (e.added.length > 0 || e.changed.length > 0 || e.removed.length > 0) {
-					await this._initProfile();
-					await this._loadWorkspaceRules();
+					this._initAttempts = 0;
+					await this.ensureInitialized();
 				}
 			}),
 		);
@@ -61,6 +64,30 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 				this._loadWorkspaceRules();
 			}
 		}));
+
+		void this.ensureInitialized();
+	}
+
+	ensureInitialized(): Promise<void> {
+		if (this._initInFlight) {
+			return this._initInFlight;
+		}
+		this._initInFlight = this._initProfile()
+			.then(() => this._loadWorkspaceRules())
+			.then(() => this._loadUserMemory())
+			.finally(() => {
+				this._initInFlight = null;
+			});
+		return this._initInFlight;
+	}
+
+	private _scheduleInitRetry(): void {
+		if (this._initAttempts >= 5) {
+			return;
+		}
+		this._initAttempts += 1;
+		const delayMs = Math.min(10_000, 500 * this._initAttempts);
+		setTimeout(() => { void this.ensureInitialized(); }, delayMs);
 	}
 
 	private _getWorkspaceRoot(): string | null {
@@ -82,6 +109,7 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 				const count = await this._mainProxy.getChunkCount(root);
 				if (count > 0) {
 					this._onDidChangeChunkIndex.fire(count);
+					this._initAttempts = 0;
 					return;
 				}
 			}
@@ -92,10 +120,12 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 			this._cachedProfile = await this._mainProxy.getProfile(root);
 			console.log('[RepoIntelligence] Profile loaded for', root);
 			await this._refreshChunkCount();
+			this._initAttempts = 0;
 		} catch (err) {
 			console.error('[RepoIntelligence] Failed to load profile:', err);
 			this._cachedProfile = null;
 			this._onDidChangeChunkIndex.fire(0);
+			this._scheduleInitRetry();
 		}
 	}
 

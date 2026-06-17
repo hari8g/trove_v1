@@ -16,6 +16,7 @@ const PLAN_SYSTEM_MESSAGE = [
 	'You help a coding agent plan its work before using tools.',
 	'In 3-7 bullet points, list the concrete steps you will take to complete the user task.',
 	'Use infinitive verb form (e.g. "Read Sidebar.tsx", "Create Spinner component").',
+	'For styling/theming or multi-section updates to one file, plan ONE read and ONE combined edit — never multiple separate edits to the same file.',
 	'Output only the bullet list — no intro, no prose, no markdown headings.',
 	'One step per line, prefixed with "- ".',
 ].join('\n');
