@@ -22,7 +22,7 @@ import { IAgentDeliveryService } from './agentDeliveryService.js';
 import { buildReadToolBatch, discoverAdditionalReadTools, isReadOnlyBatchTool, toolCallDedupKey } from './parallelReadToolBatch.js';
 import { isCompactableToolName } from './toolResultCompaction.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
-import { findLatestPlanMessageIdx, generateAgentPlan, markPlanItemDoneForTool, skipRemainingPlanItems } from './agentPlan.js';
+import { completeRemainingPlanItems, findLatestPlanMessageIdx, generateAgentPlan, markPlanItemDoneForTool, skipRemainingPlanItems } from './agentPlan.js';
 import { extractRememberIntent, isRememberOnlyMessage, MEMORY_SAVED_CONFIRMATION } from './chatMemoryIntent.js';
 import { addUsageToRunTotals, emptyAgentRunTokenTotals, formatAgentRunTokenSummary } from '../common/llmMessageUsage.js';
 import { ITroveCommandBarService } from './troveCommandBarService.js';
@@ -134,6 +134,7 @@ export type ThreadType = {
 	id: string; // store the id here too
 	createdAt: string; // ISO string
 	lastModified: string; // ISO string
+	title?: string;
 
 	messages: ChatMessage[];
 	filesWithUserChanges: Set<string>;
@@ -266,6 +267,7 @@ export interface IChatThreadService {
 	// thread selector
 	deleteThread(threadId: string): void;
 	duplicateThread(threadId: string): void;
+	renameThread(threadId: string, title: string): void;
 
 	// exposed getters/setters
 	// these all apply to current thread
@@ -1032,12 +1034,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				let resMessageIsDonePromise: (res: ResTypes) => void // resolves when user approves this tool use (or if tool doesn't require approval)
 				const messageIsDonePromise = new Promise<ResTypes>((res, rej) => { resMessageIsDonePromise = res })
 
-				const modelLabel = modelSelection?.modelName ?? 'model'
 				this._setIdleStatus(
 					threadId,
-					`Waiting for ${modelLabel}`,
+					'Waiting for model response',
 					contextWasTrimmed
-						? 'Sending trimmed context to the model'
+						? 'Sending trimmed context'
 						: `${chatMode} mode · request in flight`,
 					{ interrupt: idleInterruptor, contextWasTrimmed },
 				)
@@ -1170,6 +1171,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 		// add checkpoint before the next user message
 		if (!isRunningWhenEnd) {
+			this._completeRemainingPlanItems(threadId)
 			this._agentDeliveryService.finalizeDelivery(threadId)
 			const filesChanged = this._commandBarService.sortedURIs.map(uri => uri.fsPath)
 			const pendingDiffCount = filesChanged.length
@@ -1179,8 +1181,6 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			this._onDidFinishAgentRun.fire({ threadId, pendingDiffCount, filesChanged })
 			this._addUserCheckpoint({ threadId })
 			this._terminalToolService.disposeSandboxSession()
-		} else {
-			this._skipRemainingPlanItems(threadId)
 		}
 
 		// capture number of messages sent
@@ -1232,6 +1232,17 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		if (planMessage.role !== 'plan') return
 		if (!planMessage.items.some(item => item.status === 'pending')) return
 		this._editMessageInThread(threadId, planIdx, skipRemainingPlanItems(planMessage))
+	}
+
+	private _completeRemainingPlanItems(threadId: string) {
+		const thread = this.state.allThreads[threadId]
+		if (!thread) return
+		const planIdx = findLatestPlanMessageIdx(thread.messages)
+		if (planIdx === -1) return
+		const planMessage = thread.messages[planIdx]
+		if (planMessage.role !== 'plan') return
+		if (!planMessage.items.some(item => item.status === 'pending')) return
+		this._editMessageInThread(threadId, planIdx, completeRemainingPlanItems(planMessage))
 	}
 
 	private _editMessageInThread(threadId: string, messageIdx: number, newMessage: ChatMessage,) {
@@ -2026,6 +2037,24 @@ We only need to do it for files that were edited since `from`, ie files between 
 		}
 		this._storeAllThreads(newThreads)
 		this._setState({ allThreads: newThreads })
+	}
+
+	renameThread(threadId: string, title: string): void {
+		const { allThreads: currentThreads } = this.state
+		const thread = currentThreads[threadId]
+		if (!thread) return
+
+		const trimmedTitle = title.trim()
+		const newThreads = {
+			...currentThreads,
+			[threadId]: {
+				...thread,
+				title: trimmedTitle || undefined,
+				lastModified: new Date().toISOString(),
+			},
+		}
+		this._storeAllThreads(newThreads)
+		this._setState({ ...this.state, allThreads: newThreads })
 	}
 
 

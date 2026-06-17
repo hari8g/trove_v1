@@ -36,7 +36,7 @@ import { ToolApprovalTypeSwitch } from '../trove-settings-tsx/Settings.js';
 import { persistentTerminalNameOfId, ITerminalToolService } from '../../../terminalToolService.js';
 import { AnsiTerminalOutput } from '../util/ansiOutput.js';
 import { removeMCPToolNamePrefix } from '../../../../common/mcpServiceTypes.js';
-import { BackgroundActivityPanel, ChatInlineDiffButtons, CollapsibleCodeSnippet, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveReasoningBlock, StreamingEditToolCard, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
+import { BackgroundActivityPanel, AgentTurnCompleteSummaryCard, ChatInlineDiffButtons, CollapsibleCodeSnippet, CompactActivityRow, CompactCompletedToolRow, EditToolChatBlock, formatAnthropicReasoning, LiveReasoningBlock, StreamingEditToolCard, summarizeAgentTurnActivity, type BackgroundActivityPhase } from './ChatActivityUI.js';
 import { PlanView } from './PlanView.js';
 import { ChatInlineDiffView, computeChatDiff } from './ChatInlineDiffView.js';
 import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
@@ -1106,28 +1106,38 @@ const UserMessageComponent = ({ chatMessage, messageIdx, isCheckpointGhost, curr
 	return <div
 		// align chatbubble according to role — full-width Cursor-style user prompt
 		className={`
-        relative w-full
-        ${mode === 'edit' ? 'max-w-full'
-				: mode === 'display' ? `whitespace-pre-wrap` : ''
-			}
+        relative w-full my-1
+        ${mode === 'edit' ? 'max-w-full' : ''}
 
         ${isCheckpointGhost && !isMsgAfterCheckpoint ? 'opacity-50 pointer-events-none' : ''}
     `}
 		onMouseEnter={() => setIsHovered(true)}
 		onMouseLeave={() => setIsHovered(false)}
 	>
-		<div
-			// style chatbubble according to role
-			className={`
-            text-left rounded-xl max-w-full
-            ${mode === 'edit' ? ''
-					: mode === 'display' ? 'px-3 py-2.5 flex flex-col glass-card text-trove-fg-1 overflow-x-auto cursor-pointer' : ''
-				}
-        `}
-			onClick={() => { if (mode === 'display') { onOpenEdit() } }}
-		>
-			{chatbubbleContents}
-		</div>
+		{mode === 'display' ? (
+			<div
+				className={`
+					relative my-2 overflow-hidden rounded-2xl border border-sky-500/25
+					bg-gradient-to-br from-sky-500/[0.09] via-trove-bg-2/90 to-indigo-500/[0.05]
+					shadow-md shadow-sky-500/5 backdrop-blur-xl
+					max-w-full cursor-pointer text-left overflow-x-auto
+				`}
+				onClick={() => { onOpenEdit() }}
+			>
+				<div className="pointer-events-none absolute -right-6 -top-8 h-20 w-20 rounded-full bg-sky-400/15 blur-2xl" aria-hidden="true" />
+				<div className="pointer-events-none absolute -bottom-6 -left-5 h-16 w-16 rounded-full bg-indigo-400/10 blur-2xl" aria-hidden="true" />
+				<div className="relative flex items-center gap-2 border-b border-white/10 dark:border-white/5 px-3 py-1.5">
+					<span className="text-[10px] font-bold uppercase tracking-[0.14em] text-sky-600 dark:text-sky-300">You</span>
+				</div>
+				<div className="relative px-3.5 py-2.5 text-[13px] leading-relaxed text-trove-fg-1 whitespace-pre-wrap break-words">
+					{chatbubbleContents}
+				</div>
+			</div>
+		) : (
+			<div className="text-left rounded-xl max-w-full">
+				{chatbubbleContents}
+			</div>
+		)}
 
 
 
@@ -2661,8 +2671,6 @@ export const SidebarChat = () => {
 		[previousMessages],
 	)
 
-	const modelSelection = settingsState.modelSelectionOfFeature['Chat']
-	const modelLabel = modelSelection?.modelName ?? 'model'
 	const chatMode = settingsState.globalSettings.chatMode
 	const chatModeLabel = chatMode === 'agent' ? 'Agent' : chatMode === 'gather' ? 'Gather' : 'Chat'
 
@@ -2727,7 +2735,7 @@ export const SidebarChat = () => {
 				title: idleStatus?.title ?? 'Preparing next model call',
 				detail: idleStatus?.detail ?? (turnActivitySummary.summaryLine
 					? `${chatModeLabel} mode · ${turnActivitySummary.summaryLine}`
-					: `${chatModeLabel} mode · assembling conversation context for ${modelLabel}`),
+					: `${chatModeLabel} mode · assembling conversation context`),
 				contextLine: turnActivitySummary.recentFilesLine,
 			}
 		}
@@ -2751,12 +2759,12 @@ export const SidebarChat = () => {
 
 			return {
 				phase: 'waiting',
-				title: `Waiting for ${modelLabel}`,
+				title: 'Waiting for model response',
 				detail: turnActivitySummary.fileCount > 0
 					? `Analyzing ${turnActivitySummary.fileCount} file${turnActivitySummary.fileCount === 1 ? '' : 's'} read this turn before replying`
 					: turnActivitySummary.toolCount > 0
 						? `Processing ${turnActivitySummary.summaryLine ?? `${turnActivitySummary.toolCount} tool result${turnActivitySummary.toolCount === 1 ? '' : 's'}`}`
-						: `${chatModeLabel} mode · sending request to the model`,
+						: `${chatModeLabel} mode · request in flight`,
 				contextLine: turnActivitySummary.recentFilesLine,
 			}
 		}
@@ -2767,7 +2775,6 @@ export const SidebarChat = () => {
 		runningToolInfo,
 		liveActivityDetail,
 		turnActivitySummary,
-		modelLabel,
 		chatModeLabel,
 		idleStatus,
 		displayContentSoFar,
@@ -2947,6 +2954,13 @@ export const SidebarChat = () => {
 		{!isRunning && agentDelivery ?
 			<div className="px-1 pb-2">
 				<AgentDeliverySummaryCard delivery={agentDelivery} threadId={currentThread.id} />
+			</div>
+			: null}
+
+		{/* turn activity recap — shown after execution when tools were used */}
+		{!isRunning && !agentDelivery && turnActivitySummary.summaryLine ?
+			<div className="px-1 pb-2">
+				<AgentTurnCompleteSummaryCard summary={turnActivitySummary} />
 			</div>
 			: null}
 	</ScrollToBottomContainer>

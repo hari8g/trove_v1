@@ -161,13 +161,11 @@
 	gap: 4px;
 }
 
-/* Pills + textarea share one field (Cursor-style composer) */
+/* Pills + textarea — pills on top, input always full width */
 .trove-composer-inline-field {
 	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	align-content: flex-start;
-	gap: 4px 6px;
+	flex-direction: column;
+	align-items: stretch;
 	width: 100%;
 	min-height: 72px;
 	padding: 0;
@@ -175,9 +173,23 @@
 	cursor: text;
 }
 
+.trove-composer-pills-row {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 6px;
+	width: 100%;
+	flex-shrink: 0;
+}
+
 .trove-composer-inline-textarea {
-	display: inline-block;
-	vertical-align: middle;
+	display: block;
+	width: 100% !important;
+	max-width: 100%;
+	min-width: 0;
+	flex: 1 1 auto;
+	box-sizing: border-box;
 	background: transparent !important;
 	font-family: var(--vscode-font-family);
 	font-size: 13px;
@@ -290,23 +302,231 @@
 
 /* Agent output panel — glass delivery card */
 .trove-output-panel {
-	padding: 14px 16px;
+	padding: 0;
 	display: flex;
 	flex-direction: column;
 	gap: 0;
 	overflow: hidden;
+	border-radius: 12px;
+}
+
+.trove-output-panel--verified {
+	border-color: color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 28%, transparent);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 12%, transparent),
+		0 6px 24px color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 10%, transparent);
+}
+
+.trove-output-panel--running {
+	border-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 28%, transparent);
+}
+
+.trove-output-panel--built {
+	border-color: color-mix(in srgb, var(--vscode-charts-yellow, #d29922) 28%, transparent);
+}
+
+.trove-output-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 14px 14px 10px;
+}
+
+.trove-output-header-main {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	min-width: 0;
+	flex: 1;
+}
+
+.trove-output-title {
+	font-size: 13px;
+	font-weight: 600;
+	line-height: 1.35;
+	letter-spacing: -0.02em;
+	color: var(--trove-fg-1);
+	margin: 0;
+}
+
+.trove-output-subtitle {
+	font-size: 11px;
+	line-height: 1.35;
+	color: var(--trove-fg-4);
+	margin: 2px 0 0;
+}
+
+.trove-output-badge {
+	flex-shrink: 0;
+	font-size: 10px;
+	font-weight: 650;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	padding: 3px 8px;
+	border-radius: 999px;
+	color: var(--vscode-testing-iconPassed, #3fb950);
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 14%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 28%, transparent);
+}
+
+.trove-output-panel--running .trove-output-badge {
+	color: var(--vscode-charts-blue, #3794ff);
+	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 14%, transparent);
+	border-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 28%, transparent);
+}
+
+.trove-output-panel--built .trove-output-badge {
+	color: var(--vscode-charts-yellow, #d29922);
+	background: color-mix(in srgb, var(--vscode-charts-yellow, #d29922) 14%, transparent);
+	border-color: color-mix(in srgb, var(--vscode-charts-yellow, #d29922) 28%, transparent);
 }
 
 .trove-output-icon-wrap {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 32px;
-	height: 32px;
+	width: 34px;
+	height: 34px;
 	border-radius: 10px;
 	background: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent);
 	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
 	box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+}
+
+.trove-output-url-block {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	width: calc(100% - 28px);
+	margin: 0 14px 12px;
+	padding: 10px 12px;
+	border-radius: 9px;
+	text-align: left;
+	cursor: pointer;
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+	background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent);
+	transition:
+		border-color 0.15s ease,
+		background 0.15s ease,
+		box-shadow 0.15s ease;
+}
+
+.trove-output-url-block:hover {
+	border-color: color-mix(in srgb, var(--trove-link-color) 40%, transparent);
+	background: color-mix(in srgb, var(--trove-link-color) 6%, var(--vscode-editor-background));
+	box-shadow: 0 2px 12px color-mix(in srgb, var(--trove-link-color) 12%, transparent);
+}
+
+.trove-output-url-text {
+	font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1.4;
+	color: var(--trove-link-color);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+	flex: 1;
+}
+
+.trove-output-url-action {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+	font-size: 10px;
+	font-weight: 650;
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+	color: var(--trove-fg-4);
+	transition: color 0.15s ease;
+}
+
+.trove-output-url-block:hover .trove-output-url-action {
+	color: var(--trove-link-color);
+}
+
+.trove-output-fallback-line {
+	margin: 0 14px 12px;
+	padding: 10px 12px;
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--trove-fg-2);
+	border-radius: 9px;
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	background: color-mix(in srgb, var(--vscode-editor-background) 65%, transparent);
+}
+
+.trove-output-changes {
+	margin-top: 2px;
+	padding: 12px 14px 14px;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	background: color-mix(in srgb, var(--vscode-editor-background) 35%, transparent);
+}
+
+.trove-output-changes-label {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	margin-bottom: 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--trove-fg-2);
+	letter-spacing: -0.01em;
+}
+
+.trove-output-changes-count {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 20px;
+	height: 20px;
+	padding: 0 6px;
+	border-radius: 6px;
+	font-size: 11px;
+	font-weight: 700;
+	color: var(--trove-fg-1);
+	background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+
+.trove-output-file-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-bottom: 12px;
+}
+
+.trove-output-file-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	max-width: 100%;
+	padding: 4px 8px;
+	border-radius: 7px;
+	font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+	font-size: 11px;
+	line-height: 1.2;
+	color: var(--trove-fg-2);
+	background: color-mix(in srgb, var(--vscode-editor-background) 80%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+
+.trove-output-file-more {
+	align-self: center;
+	font-size: 10px;
+	color: var(--trove-fg-4);
+	padding: 0 4px;
+}
+
+.trove-output-action-row {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
 }
 
 .trove-output-display-text {
@@ -365,7 +585,7 @@
 	font-size: 11px;
 	font-weight: 650;
 	letter-spacing: 0.02em;
-	padding: 6px 12px;
+	padding: 7px 14px;
 	border-radius: 8px;
 	cursor: pointer;
 	white-space: nowrap;
@@ -499,4 +719,162 @@
 }
 .trove-assistant-summary-prose a {
 	color: var(--trove-link-color);
+}
+
+.trove-turn-complete-summary {
+	border-color: color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 32%, transparent);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 14%, transparent),
+		0 8px 28px color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 12%, transparent);
+}
+
+.trove-turn-complete-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 14px 14px 10px;
+}
+
+.trove-turn-complete-header-main {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	min-width: 0;
+	flex: 1;
+}
+
+.trove-turn-complete-icon-wrap {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	border-radius: 11px;
+	flex-shrink: 0;
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 12%, var(--vscode-editor-background));
+	border: 1px solid color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 30%, transparent);
+	box-shadow:
+		inset 0 1px 0 color-mix(in srgb, white 12%, transparent),
+		0 0 20px color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 18%, transparent);
+}
+
+.trove-turn-complete-title {
+	font-size: 14px;
+	font-weight: 650;
+	line-height: 1.3;
+	letter-spacing: -0.025em;
+	color: var(--trove-fg-1);
+	margin: 0;
+}
+
+.trove-turn-complete-subtitle {
+	font-size: 11px;
+	line-height: 1.35;
+	color: var(--trove-fg-4);
+	margin: 3px 0 0;
+}
+
+.trove-turn-complete-badge {
+	flex-shrink: 0;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	padding: 4px 9px;
+	border-radius: 999px;
+	color: var(--vscode-testing-iconPassed, #3fb950);
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 16%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 32%, transparent);
+}
+
+.trove-turn-complete-stats {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 0 14px 12px;
+}
+
+.trove-turn-complete-stat {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 5px 10px;
+	border-radius: 8px;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1.2;
+	color: var(--trove-fg-2);
+	background: color-mix(in srgb, var(--vscode-editor-background) 70%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+}
+
+.trove-turn-complete-stat--read {
+	color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 90%, var(--trove-fg-1));
+	border-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 22%, transparent);
+	background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 8%, var(--vscode-editor-background));
+}
+
+.trove-turn-complete-stat--edit,
+.trove-turn-complete-stat--write {
+	color: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 90%, var(--trove-fg-1));
+	border-color: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 22%, transparent);
+	background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 8%, var(--vscode-editor-background));
+}
+
+.trove-turn-complete-stat--search {
+	color: color-mix(in srgb, var(--vscode-charts-yellow, #d29922) 95%, var(--trove-fg-1));
+	border-color: color-mix(in srgb, var(--vscode-charts-yellow, #d29922) 22%, transparent);
+	background: color-mix(in srgb, var(--vscode-charts-yellow, #d29922) 8%, var(--vscode-editor-background));
+}
+
+.trove-turn-complete-stat--run {
+	color: color-mix(in srgb, var(--vscode-terminal-ansiGreen, #3fb950) 90%, var(--trove-fg-1));
+	border-color: color-mix(in srgb, var(--vscode-terminal-ansiGreen, #3fb950) 22%, transparent);
+	background: color-mix(in srgb, var(--vscode-terminal-ansiGreen, #3fb950) 8%, var(--vscode-editor-background));
+}
+
+.trove-turn-complete-files {
+	padding: 10px 14px 14px;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+	background: color-mix(in srgb, var(--vscode-editor-background) 40%, transparent);
+}
+
+.trove-turn-complete-files-label {
+	display: block;
+	font-size: 10px;
+	font-weight: 650;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--trove-fg-4);
+	margin-bottom: 8px;
+}
+
+.trove-turn-complete-file-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.trove-turn-complete-file-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	max-width: 100%;
+	padding: 4px 9px;
+	border-radius: 7px;
+	font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+	font-size: 11px;
+	line-height: 1.2;
+	color: var(--trove-fg-2);
+	background: color-mix(in srgb, var(--vscode-editor-background) 85%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+
+.trove-turn-complete-file-more {
+	align-self: center;
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--trove-fg-4);
+	padding: 0 4px;
 }

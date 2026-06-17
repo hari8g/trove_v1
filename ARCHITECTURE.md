@@ -343,6 +343,19 @@ Before the main tool loop (agent mode), a separate lightweight LLM call produces
 
 Uses `PLAN_OUTPUT_TOKEN_CAP` (300) so it does not consume main loop budget.
 
+### Plan item matching
+
+`markPlanItemDoneForTool` scores pending items against each tool call:
+
+- **Tool categories** — read, search, edit, create, run, delete (mapped from builtin tool names).
+- **File basename** — strong match when the plan text mentions the target file or stem.
+- **Verb heuristics** — category-specific verbs (e.g. read/open/inspect, edit/save, verify/test for run tools).
+- **Token overlap** — fallback scoring on path/query tokens from `getToolSummaryForPlanMatch`.
+
+Edit tools can mark multiple pending items when file + edit/save verbs align. Run tools with a file target can match verify-style steps. When no score clears the threshold, falls back to loose text match or the first pending item.
+
+When an agent run finishes successfully, `completeRemainingPlanItems` marks any still-pending steps as `done` (previously they were skipped mid-loop). Interrupted runs still use `skipRemainingPlanItems`.
+
 ---
 
 ## 12. Chat memory intent (`chatMemoryIntent.ts`)
@@ -409,6 +422,8 @@ Built with React + Tailwind (`browser/react/`). Entry bundles:
 - **`trove-assistant-summary-prose`** — polished committed assistant markdown output
 - **`CollapsibleCodeSnippet`** — expandable search/read results in chat
 - **`BackgroundActivityPanel`** — live idle/LLM activity with status text
+- **`AgentTurnCompleteSummaryCard`** — post-turn recap with color-coded activity chips (read/edit/search/run) and touched files
+- **Thread rename** — `SidebarThreadSelector.tsx` inline rename; `chatThreadService.renameThread()` persists optional `title` on each thread
 
 Build:
 
@@ -433,6 +448,16 @@ Output goes to `browser/react/out/` and is synced to `out/vs/workbench/contrib/t
 | `enableWebSearch` / `webSearchApiKey` | Settings → Agent & token economy | `webSearchService.ts` |
 
 Path helper: `common/troveMemoryPaths.ts`.
+
+### Default model lists (`modelCapabilities.ts`)
+
+Trove ships at most **`MAX_DEFAULT_MODELS` (4)** curated defaults per cloud provider. When the app loads or defaults change:
+
+1. **`stateWithMergedDefaultModels`** — swaps in new default IDs, drops removed ones, preserves `isHidden` and custom models.
+2. **`pruneStaleOverridesOfModel`** — removes per-model overrides for models no longer in the active list.
+3. **`validatedModelState`** — remaps feature selections (Chat, Ctrl+K, etc.) when the selected model was pruned.
+
+Helpers are exported from `troveSettingsService.ts` for testing (`modelSettingsMerge.test.ts`).
 
 ---
 
@@ -480,6 +505,8 @@ Never call Node or `fetch` for LLM from the browser. Never manipulate editor mod
 |------|----------|
 | Trove unit tests | `browser/test/*.test.ts`, `electron-main/repoIntelligence/test/` |
 | Token economy tests | `wireMessageTrim.test.ts`, `toolResultCompaction.test.ts`, `promptCache.test.ts`, `llmMessageUsage.test.ts` |
+| Model settings merge | `modelSettingsMerge.test.ts` |
+| Agent plan tests | `agentPlan.test.ts` |
 | Memory intent tests | `chatMemoryIntent.test.ts` |
 | VS Code suite | `npm run test-node`, `npm run test-browser` |
 | Layer checker | `npm run valid-layers-check` |

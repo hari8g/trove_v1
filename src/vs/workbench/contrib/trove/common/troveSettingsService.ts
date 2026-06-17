@@ -84,7 +84,7 @@ export interface ITroveSettingsService {
 
 
 
-const _modelsWithSwappedInNewModels = (options: { existingModels: TroveStatefulModelInfo[], models: string[], type: 'autodetected' | 'default' }) => {
+export const modelsWithSwappedInNewModels = (options: { existingModels: TroveStatefulModelInfo[], models: string[], type: 'autodetected' | 'default' }) => {
 	const { existingModels, models, type } = options
 
 	const existingModelsMap: Record<string, TroveStatefulModelInfo> = {}
@@ -123,7 +123,10 @@ export const modelFilterOfFeatureName: {
 }
 
 
-const _stateWithMergedDefaultModels = (state: TroveSettingsState): TroveSettingsState => {
+const _modelsWithSwappedInNewModels = modelsWithSwappedInNewModels
+
+
+export const stateWithMergedDefaultModels = (state: TroveSettingsState): TroveSettingsState => {
 	let newSettingsOfProvider = state.settingsOfProvider
 
 	// recompute default models
@@ -146,7 +149,29 @@ const _stateWithMergedDefaultModels = (state: TroveSettingsState): TroveSettings
 	}
 }
 
-const _validatedModelState = (state: Omit<TroveSettingsState, '_modelOptions'>): TroveSettingsState => {
+const _stateWithMergedDefaultModels = stateWithMergedDefaultModels
+
+
+export const pruneStaleOverridesOfModel = (state: Omit<TroveSettingsState, '_modelOptions'>): OverridesOfModel => {
+	const pruned: OverridesOfModel = { ...state.overridesOfModel }
+	for (const providerName of providerNames) {
+		const providerOverrides = pruned[providerName]
+		if (!providerOverrides) continue
+		const activeModelNames = new Set(state.settingsOfProvider[providerName].models.map(m => m.modelName))
+		for (const modelName of Object.keys(providerOverrides)) {
+			if (!activeModelNames.has(modelName)) {
+				delete providerOverrides[modelName]
+			}
+		}
+		if (Object.keys(providerOverrides).length === 0) {
+			delete pruned[providerName]
+		}
+	}
+	return pruned
+}
+
+
+export const validatedModelState = (state: Omit<TroveSettingsState, '_modelOptions'>): TroveSettingsState => {
 
 	let newSettingsOfProvider = state.settingsOfProvider
 
@@ -213,6 +238,8 @@ const _validatedModelState = (state: Omit<TroveSettingsState, '_modelOptions'>):
 
 	return newState
 }
+
+const _validatedModelState = validatedModelState
 
 
 
@@ -353,6 +380,10 @@ class TroveSettingsService extends Disposable implements ITroveSettingsService {
 
 		this.state = readS
 		this.state = _stateWithMergedDefaultModels(this.state)
+		this.state = {
+			...this.state,
+			overridesOfModel: pruneStaleOverridesOfModel(this.state),
+		}
 		this.state = _validatedModelState(this.state);
 
 

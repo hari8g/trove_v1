@@ -3,11 +3,11 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CopyButton, IconShell1 } from '../markdown/ApplyBlockHoverButtons.js';
 import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useFullChatThreadsStreamState, useSettingsState } from '../util/services.js';
 import { IconX } from './SidebarChat.js';
-import { Check, Copy, Icon, LoaderCircle, MessageCircleQuestion, Trash2, UserCheck, X } from 'lucide-react';
+import { Check, Copy, Icon, LoaderCircle, MessageCircleQuestion, Pencil, Trash2, UserCheck, X } from 'lucide-react';
 import { IsRunningType, ThreadType } from '../../../chatThreadService.js';
 
 
@@ -114,6 +114,20 @@ const formatTime = (date: Date) => {
 	});
 };
 
+const getThreadDisplayTitle = (pastThread: ThreadType): string => {
+	if (pastThread.title?.trim()) {
+		return pastThread.title.trim();
+	}
+
+	const firstUserMsgIdx = pastThread.messages.findIndex((msg) => msg.role === 'user');
+	if (firstUserMsgIdx !== -1) {
+		const firstUserMsgObj = pastThread.messages[firstUserMsgIdx];
+		return firstUserMsgObj.role === 'user' && firstUserMsgObj.displayContent || '';
+	}
+
+	return 'Untitled';
+};
+
 
 const DuplicateButton = ({ threadId }: { threadId: string }) => {
 	const accessor = useAccessor()
@@ -168,6 +182,17 @@ const TrashButton = ({ threadId }: { threadId: string }) => {
 	)
 }
 
+const RenameButton = ({ onClick }: { onClick: () => void }) => {
+	return <IconShell1
+		Icon={Pencil}
+		className='size-[11px]'
+		onClick={onClick}
+		data-tooltip-id='trove-tooltip'
+		data-tooltip-place='top'
+		data-tooltip-content='Rename thread'
+	/>
+}
+
 const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunning }: {
 	pastThread: ThreadType,
 	idx: number,
@@ -178,46 +203,35 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 
 ) => {
 
-
 	const accessor = useAccessor()
 	const chatThreadsService = accessor.get('IChatThreadService')
+	const [isRenaming, setIsRenaming] = useState(false)
+	const [renameValue, setRenameValue] = useState('')
+	const renameInputRef = useRef<HTMLInputElement>(null)
 
-	// const settingsState = useSettingsState()
-	// const convertService = accessor.get('IConvertToLLMMessageService')
-	// const chatMode = settingsState.globalSettings.chatMode
-	// const modelSelection = settingsState.modelSelectionOfFeature?.Chat ?? null
-	// const copyChatButton = <CopyButton
-	// 	codeStr={async () => {
-	// 		const { messages } = await convertService.prepareLLMChatMessages({
-	// 			chatMessages: currentThread.messages,
-	// 			chatMode,
-	// 			modelSelection,
-	// 		})
-	// 		return JSON.stringify(messages, null, 2)
-	// 	}}
-	// 	toolTipName={modelSelection === null ? 'Copy As Messages Payload' : `Copy As ${displayInfoOfProviderName(modelSelection.providerName).title} Payload`}
-	// />
+	const displayTitle = getThreadDisplayTitle(pastThread)
+	const numMessages = pastThread.messages.filter((msg) => msg.role === 'assistant' || msg.role === 'user').length;
 
+	useEffect(() => {
+		if (isRenaming) {
+			renameInputRef.current?.focus()
+			renameInputRef.current?.select()
+		}
+	}, [isRenaming])
 
-	// const currentThread = chatThreadsService.getCurrentThread()
-	// const copyChatButton2 = <CopyButton
-	// 	codeStr={async () => {
-	// 		return JSON.stringify(currentThread.messages, null, 2)
-	// 	}}
-	// 	toolTipName={`Copy As Trove Chat`}
-	// />
-
-	let firstMsg = null;
-	const firstUserMsgIdx = pastThread.messages.findIndex((msg) => msg.role === 'user');
-
-	if (firstUserMsgIdx !== -1) {
-		const firsUsertMsgObj = pastThread.messages[firstUserMsgIdx];
-		firstMsg = firsUsertMsgObj.role === 'user' && firsUsertMsgObj.displayContent || '';
-	} else {
-		firstMsg = '""';
+	const startRename = () => {
+		setRenameValue(pastThread.title ?? displayTitle)
+		setIsRenaming(true)
 	}
 
-	const numMessages = pastThread.messages.filter((msg) => msg.role === 'assistant' || msg.role === 'user').length;
+	const confirmRename = () => {
+		chatThreadsService.renameThread(pastThread.id, renameValue)
+		setIsRenaming(false)
+	}
+
+	const cancelRename = () => {
+		setIsRenaming(false)
+	}
 
 	const detailsHTML = <span
 	// data-tooltip-id='trove-tooltip'
@@ -236,6 +250,7 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 			py-1 px-2 rounded text-sm bg-zinc-700/5 hover:bg-zinc-700/10 dark:bg-zinc-300/5 dark:hover:bg-zinc-300/10 cursor-pointer opacity-80 hover:opacity-100
 		`}
 		onClick={() => {
+			if (isRenaming) return
 			chatThreadsService.switchToThread(pastThread.id);
 		}}
 		onMouseEnter={() => setHoveredIdx(idx)}
@@ -250,22 +265,54 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 						:
 						null}
 				{/* name */}
-				<span className="truncate overflow-hidden text-ellipsis"
-					data-tooltip-id='trove-tooltip'
-					data-tooltip-content={numMessages + ' messages'}
-					data-tooltip-place='top'
-				>{firstMsg}</span>
+				{isRenaming ? (
+					<input
+						ref={renameInputRef}
+						value={renameValue}
+						onChange={(e) => setRenameValue(e.target.value)}
+						onClick={(e) => e.stopPropagation()}
+						onKeyDown={(e) => {
+							e.stopPropagation()
+							if (e.key === 'Enter') confirmRename()
+							if (e.key === 'Escape') cancelRename()
+						}}
+						className="min-w-0 flex-1 truncate rounded border border-trove-border-1 bg-trove-bg-1 px-1 py-0.5 text-sm text-trove-fg-1 outline-none"
+					/>
+				) : (
+					<span className="truncate overflow-hidden text-ellipsis"
+						data-tooltip-id='trove-tooltip'
+						data-tooltip-content={numMessages + ' messages'}
+						data-tooltip-place='top'
+					>{displayTitle}</span>
+				)}
 
 				{/* <span className='opacity-60'>{`(${numMessages})`}</span> */}
 			</span>
 
 			<div className="flex items-center gap-x-1 opacity-60">
-				{idx === hoveredIdx ?
+				{isRenaming ?
+					<div className='flex flex-nowrap text-nowrap gap-1'>
+						<IconShell1
+							Icon={X}
+							className='size-[11px]'
+							onClick={cancelRename}
+							data-tooltip-id='trove-tooltip'
+							data-tooltip-place='top'
+							data-tooltip-content='Cancel'
+						/>
+						<IconShell1
+							Icon={Check}
+							className='size-[11px]'
+							onClick={confirmRename}
+							data-tooltip-id='trove-tooltip'
+							data-tooltip-place='top'
+							data-tooltip-content='Save'
+						/>
+					</div>
+					: idx === hoveredIdx ?
 					<>
-						{/* trash icon */}
+						<RenameButton onClick={startRename} />
 						<DuplicateButton threadId={pastThread.id} />
-
-						{/* trash icon */}
 						<TrashButton threadId={pastThread.id} />
 					</>
 					: <>

@@ -749,11 +749,13 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 			}}
 		>
 			{inlineSelections && inlineSelections.length > 0 && setInlineSelections ?
-				<InlineContextPills
-					type='staging'
-					selections={inlineSelections}
-					setSelections={setInlineSelections}
-				/>
+				<div className="trove-composer-pills-row">
+					<InlineContextPills
+						type='staging'
+						selections={inlineSelections}
+						setSelections={setInlineSelections}
+					/>
+				</div>
 				: null}
 			<textarea
 			autoFocus={false}
@@ -774,8 +776,11 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 
 			disabled={!isEnabled}
 
-			className={`trove-composer-inline-textarea flex-1 min-w-[72px] min-h-[22px] resize-none max-h-[500px] overflow-y-auto text-trove-fg-1 placeholder:text-trove-fg-3 bg-transparent border-0 outline-none shadow-none p-0 m-0 text-[13px] leading-[1.45]`}
+			className={`trove-composer-inline-textarea w-full min-h-[22px] resize-none max-h-[500px] overflow-y-auto text-trove-fg-1 placeholder:text-trove-fg-3 bg-transparent border-0 outline-none shadow-none p-0 m-0 text-[13px] leading-[1.45]`}
 			style={{
+				width: '100%',
+				maxWidth: '100%',
+				boxSizing: 'border-box',
 				background: 'transparent',
 				color: asCssVariable(inputForeground)
 			}}
@@ -822,6 +827,8 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 			}, [onKeyDown, onMenuKeyDown, multiline])}
 
 			rows={1}
+			cols={1}
+			wrap="soft"
 			placeholder={inlineSelections?.length ? undefined : placeholder}
 		/>
 		</div>

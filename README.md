@@ -23,7 +23,7 @@ Trove is a fork of VS Code OSS with AI capabilities integrated into the workbenc
 | **Codebase search** | FTS5 semantic-ish search via `search_codebase` tool |
 | **Web search** | `search_web` tool (Tavily) for live documentation and external context |
 | **Agent delivery** | Detects build success, running dev servers, and localhost URLs; opens preview in workspace browser |
-| **Structured plans** | Pre-run checklist the agent updates as tools complete |
+| **Structured plans** | Pre-run checklist with smart tool-to-step matching; remaining items auto-complete when the run finishes |
 | **Token economy** | Prompt caching, per-run system context, stale tool compaction, smarter wire trimming |
 | **Natural memory** | “Remember that …” in chat saves to `trove-memory.md` without a full agent turn |
 | **MCP** | Model Context Protocol tools discovered and passed to the agent alongside builtins |
@@ -39,14 +39,17 @@ Trove is a fork of VS Code OSS with AI capabilities integrated into the workbenc
 
 - **`.troverules`** — per-workspace AI instructions injected into the system prompt
 - **`trove-memory.md`** — persistent user memory in the Trove data folder (via “Remember this” or natural-language remember requests)
-- **Trove Settings** — per-feature model selection, API keys, global AI instructions, prompt cache, and web search
+- **Trove Settings** — per-feature model selection (curated defaults, up to 4 per provider), API keys, global AI instructions, prompt cache, and web search; stale model overrides are pruned on load
 
 ### UI highlights
 
 - **Glass morphism** chat surfaces (input panel, tool cards, assistant output, delivery panel)
 - **Live activity** — idle/streaming status while the agent plans, reads, and calls the model
+- **Turn complete card** — post-turn recap with color-coded activity chips and touched files
+- **Thread rename** — inline rename in the chat thread selector (custom titles persist)
 - **Delivery output panel** — preview URL and **Approve / Reject** actions for pending workspace edits
 - **Collapsible code snippets** for search and read tool results
+- **Editor watermark** — Chat / Quick Edit shortcuts on empty and folder views; theme-aware ownership banner
 
 ---
 
@@ -163,6 +166,7 @@ Trove-specific unit tests live alongside Trove code, e.g.:
 - `src/vs/workbench/contrib/trove/browser/test/toolResultCompaction.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/promptCache.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/llmMessageUsage.test.ts`
+- `src/vs/workbench/contrib/trove/browser/test/modelSettingsMerge.test.ts`
 - `src/vs/workbench/contrib/trove/electron-main/repoIntelligence/test/`
 
 ---

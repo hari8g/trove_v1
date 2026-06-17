@@ -70,41 +70,34 @@ export const defaultProviderSettings = {
 
 
 
+// Trove ships at most MAX_DEFAULT_MODELS curated defaults per cloud provider.
+// Update process: check provider changelog → update list → add capability entry if new ID → run merge tests.
+export const MAX_DEFAULT_MODELS = 4
 
 export const defaultModelsOfProvider = {
-	openAI: [ // https://platform.openai.com/docs/models/gp
-		'gpt-4.1',
-		'gpt-4.1-mini',
-		'gpt-4.1-nano',
-		'o3',
-		'o4-mini',
-		// 'o1',
-		// 'o1-mini',
-		// 'gpt-4o',
-		// 'gpt-4o-mini',
+	openAI: [ // https://platform.openai.com/docs/models
+		'gpt-5.5',
+		'gpt-5.4',
+		'gpt-5.4-mini',
+		'gpt-5.3-chat-latest',
 	],
 	anthropic: [ // https://docs.anthropic.com/en/docs/about-claude/models
 		'claude-opus-4-8',
 		'claude-sonnet-4-6',
 		'claude-haiku-4-5',
 		'claude-opus-4-7',
-		'claude-opus-4-6',
-		'claude-3-7-sonnet-latest',
-		'claude-3-5-haiku-latest',
 	],
 	xAI: [ // https://docs.x.ai/docs/models?cluster=us-east-1
-		'grok-2',
 		'grok-3',
 		'grok-3-mini',
 		'grok-3-fast',
-		'grok-3-mini-fast'
+		'grok-2',
 	],
 	gemini: [ // https://ai.google.dev/gemini-api/docs/models/gemini
-		'gemini-2.5-pro-exp-03-25',
+		'gemini-2.5-pro-preview-05-06',
 		'gemini-2.5-flash-preview-04-17',
 		'gemini-2.0-flash',
 		'gemini-2.0-flash-lite',
-		'gemini-2.5-pro-preview-05-06',
 	],
 	deepseek: [ // https://api-docs.deepseek.com/quick_start/pricing
 		'deepseek-chat',
@@ -117,36 +110,20 @@ export const defaultModelsOfProvider = {
 	lmStudio: [], // autodetected
 
 	openRouter: [ // https://openrouter.ai/models
-		// 'anthropic/claude-3.7-sonnet:thinking',
-		'anthropic/claude-opus-4',
 		'anthropic/claude-sonnet-4',
-		'qwen/qwen3-235b-a22b',
-		'anthropic/claude-3.7-sonnet',
-		'anthropic/claude-3.5-sonnet',
+		'anthropic/claude-opus-4',
 		'deepseek/deepseek-r1',
 		'deepseek/deepseek-r1-zero:free',
-		'mistralai/devstral-small:free'
-		// 'openrouter/quasar-alpha',
-		// 'google/gemini-2.5-pro-preview-03-25',
-		// 'mistralai/codestral-2501',
-		// 'qwen/qwen-2.5-coder-32b-instruct',
-		// 'mistralai/mistral-small-3.1-24b-instruct:free',
-		// 'google/gemini-2.0-flash-lite-preview-02-05:free',
-		// 'google/gemini-2.0-pro-exp-02-05:free',
-		// 'google/gemini-2.0-flash-exp:free',
 	],
 	groq: [ // https://console.groq.com/docs/models
 		'qwen-qwq-32b',
 		'llama-3.3-70b-versatile',
 		'llama-3.1-8b-instant',
-		// 'qwen-2.5-coder-32b', // preview mode (experimental)
 	],
 	mistral: [ // https://docs.mistral.ai/getting-started/models/models_overview/
 		'codestral-latest',
-		'devstral-small-latest',
 		'mistral-large-latest',
-		'mistral-medium-latest',
-		'ministral-3b-latest',
+		'devstral-small-latest',
 		'ministral-8b-latest',
 	],
 	openAICompatible: [], // fallback
@@ -415,10 +392,10 @@ const extensiveModelOptionsFallback: VoidStaticProviderInfo['modelOptionsFallbac
 		};
 	}
 
-	if (lower.includes('gemini') && (lower.includes('2.5') || lower.includes('2-5'))) return toFallback(geminiModelOptions, 'gemini-2.5-pro-exp-03-25')
+	if (lower.includes('gemini') && (lower.includes('2.5') || lower.includes('2-5'))) return toFallback(geminiModelOptions, 'gemini-2.5-pro-preview-05-06')
 
 	if (lower.includes('claude-3-5') || lower.includes('claude-3.5')) return toFallback(anthropicModelOptions, 'claude-3-5-sonnet-20241022')
-	if (lower.includes('claude')) return toFallback(anthropicModelOptions, 'claude-3-7-sonnet-20250219')
+	if (lower.includes('claude')) return toFallback(anthropicModelOptions, 'claude-sonnet-4-6')
 
 	if (lower.includes('grok2') || lower.includes('grok2')) return toFallback(xAIModelOptions, 'grok-2')
 	if (lower.includes('grok')) return toFallback(xAIModelOptions, 'grok-3')
@@ -450,6 +427,13 @@ const extensiveModelOptionsFallback: VoidStaticProviderInfo['modelOptionsFallbac
 	if (lower.includes('openhands')) return toFallback(openSourceModelOptions_assumingOAICompat, 'openhands-lm-32b') // max output uncler
 
 	if (lower.includes('quasar') || lower.includes('quaser')) return toFallback(openSourceModelOptions_assumingOAICompat, 'quasar')
+
+	if (lower.includes('gpt') && lower.includes('5.5')) return toFallback(openAIModelOptions, 'gpt-5.5')
+	if (lower.includes('gpt') && lower.includes('5.4') && lower.includes('nano')) return toFallback(openAIModelOptions, 'gpt-5.4-nano')
+	if (lower.includes('gpt') && lower.includes('5.4') && lower.includes('mini')) return toFallback(openAIModelOptions, 'gpt-5.4-mini')
+	if (lower.includes('gpt') && lower.includes('5.4')) return toFallback(openAIModelOptions, 'gpt-5.4')
+	if (lower.includes('gpt') && lower.includes('5.3')) return toFallback(openAIModelOptions, 'gpt-5.3-chat-latest')
+	if (lower.includes('gpt') && lower.includes('5')) return toFallback(openAIModelOptions, 'gpt-5.5')
 
 	if (lower.includes('gpt') && lower.includes('mini') && (lower.includes('4.1') || lower.includes('4-1'))) return toFallback(openAIModelOptions, 'gpt-4.1-mini')
 	if (lower.includes('gpt') && lower.includes('nano') && (lower.includes('4.1') || lower.includes('4-1'))) return toFallback(openAIModelOptions, 'gpt-4.1-nano')
@@ -638,7 +622,70 @@ const anthropicSettings: VoidStaticProviderInfo = {
 
 
 // ---------------- OPENAI ----------------
+const openAIGpt5ReasoningDefaults = {
+	downloadable: false as const,
+	supportsFIM: false as const,
+	specialToolFormat: 'openai-style' as const,
+	supportsSystemMessage: 'developer-role' as const,
+	reasoningCapabilities: {
+		supportsReasoning: true as const,
+		canTurnOffReasoning: true,
+		canIOReasoning: false,
+		reasoningSlider: { type: 'effort_slider' as const, values: ['low', 'medium', 'high', 'xhigh'], default: 'medium' },
+	},
+}
+
 const openAIModelOptions = { // https://platform.openai.com/docs/pricing
+	'gpt-5.5': {
+		contextWindow: 1_050_000,
+		reservedOutputTokenSpace: 32_768,
+		cost: { input: 5.00, output: 30.00, cache_read: 0.50 },
+		...openAIGpt5ReasoningDefaults,
+	},
+	'gpt-5.4': {
+		contextWindow: 1_050_000,
+		reservedOutputTokenSpace: 32_768,
+		cost: { input: 2.50, output: 15.00, cache_read: 0.25 },
+		...openAIGpt5ReasoningDefaults,
+		reasoningCapabilities: {
+			supportsReasoning: true,
+			canTurnOffReasoning: true,
+			canIOReasoning: false,
+			reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high'], default: 'medium' },
+		},
+	},
+	'gpt-5.4-mini': {
+		contextWindow: 272_000,
+		reservedOutputTokenSpace: 32_768,
+		cost: { input: 0.75, output: 4.50, cache_read: 0.075 },
+		...openAIGpt5ReasoningDefaults,
+		reasoningCapabilities: {
+			supportsReasoning: true,
+			canTurnOffReasoning: true,
+			canIOReasoning: false,
+			reasoningSlider: { type: 'effort_slider', values: ['low', 'medium', 'high'], default: 'low' },
+		},
+	},
+	'gpt-5.4-nano': {
+		contextWindow: 272_000,
+		reservedOutputTokenSpace: 16_384,
+		cost: { input: 0.20, output: 1.25, cache_read: 0.02 },
+		downloadable: false,
+		supportsFIM: false,
+		specialToolFormat: 'openai-style',
+		supportsSystemMessage: 'developer-role',
+		reasoningCapabilities: false,
+	},
+	'gpt-5.3-chat-latest': {
+		contextWindow: 272_000,
+		reservedOutputTokenSpace: 16_384,
+		cost: { input: 1.00, output: 4.00, cache_read: 0.10 },
+		downloadable: false,
+		supportsFIM: false,
+		specialToolFormat: 'openai-style',
+		supportsSystemMessage: 'developer-role',
+		reasoningCapabilities: false,
+	},
 	'o3': {
 		contextWindow: 1_047_576,
 		reservedOutputTokenSpace: 32_768,
@@ -754,9 +801,15 @@ const openAISettings: VoidStaticProviderInfo = {
 	modelOptionsFallback: (modelName) => {
 		const lower = modelName.toLowerCase()
 		let fallbackName: keyof typeof openAIModelOptions | null = null
-		if (lower.includes('o1')) { fallbackName = 'o1' }
-		if (lower.includes('o3-mini')) { fallbackName = 'o3-mini' }
-		if (lower.includes('gpt-4o')) { fallbackName = 'gpt-4o' }
+		if (lower.includes('gpt-5.5') || lower.includes('gpt-5-5')) { fallbackName = 'gpt-5.5' }
+		else if (lower.includes('gpt-5.4') && lower.includes('nano')) { fallbackName = 'gpt-5.4-nano' }
+		else if (lower.includes('gpt-5.4') && lower.includes('mini')) { fallbackName = 'gpt-5.4-mini' }
+		else if (lower.includes('gpt-5.4') || lower.includes('gpt-5-4')) { fallbackName = 'gpt-5.4' }
+		else if (lower.includes('gpt-5.3') || lower.includes('gpt-5-3')) { fallbackName = 'gpt-5.3-chat-latest' }
+		else if (lower.includes('gpt-5')) { fallbackName = 'gpt-5.5' }
+		else if (lower.includes('o1')) { fallbackName = 'o1' }
+		else if (lower.includes('o3-mini')) { fallbackName = 'o3-mini' }
+		else if (lower.includes('gpt-4o')) { fallbackName = 'gpt-4o' }
 		if (fallbackName) return { modelName: fallbackName, recognizedModelName: fallbackName, ...openAIModelOptions[fallbackName] }
 		return null
 	},

@@ -98,18 +98,21 @@ registerAction2(class extends Action2 {
 
 		metricsService.capture('Ctrl+L', {})
 
-		// capture selection and model before opening the chat panel
-		const editor = editorService.getActiveCodeEditor()
-		const model = editor?.getModel()
-		if (!model) return
-
-		const selectionRange = roundRangeToLines(editor?.getSelection(), { emptySelectionBehavior: 'null' })
-
 		// open panel
 		const wasAlreadyOpen = viewsService.isViewContainerVisible(TROVE_VIEW_CONTAINER_ID)
 		if (!wasAlreadyOpen) {
 			await commandService.executeCommand(TROVE_OPEN_SIDEBAR_ACTION_ID)
 		}
+
+		// capture selection and model after opening the chat panel
+		const editor = editorService.getActiveCodeEditor()
+		const model = editor?.getModel()
+		if (!model) {
+			await chatThreadService.focusCurrentChat()
+			return
+		}
+
+		const selectionRange = roundRangeToLines(editor?.getSelection(), { emptySelectionBehavior: 'null' })
 
 		// Add selection to chat
 		// add line selection

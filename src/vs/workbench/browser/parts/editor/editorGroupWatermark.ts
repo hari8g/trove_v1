@@ -21,6 +21,8 @@ import { OpenFileFolderAction, OpenFolderAction } from '../../actions/workspaceA
 import { IWindowOpenable } from '../../../../platform/window/common/window.js';
 import { splitRecentLabel } from '../../../../base/common/labels.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
+import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { isDark } from '../../../../platform/theme/common/theme.js';
 
 /* eslint-disable */ // Void
 import { TROVE_CTRL_K_ACTION_ID, TROVE_CTRL_L_ACTION_ID } from '../../../contrib/trove/browser/actionIDs.js';
@@ -81,6 +83,7 @@ import { VIEWLET_ID as REMOTE_EXPLORER_VIEWLET_ID } from '../../../contrib/remot
 
 export class EditorGroupWatermark extends Disposable {
 	private readonly shortcuts: HTMLElement;
+	private readonly ownershipEl: HTMLElement;
 	private readonly transientDisposables = this._register(new DisposableStore());
 	// private enabled: boolean = false;
 	private workbenchState: WorkbenchState;
@@ -97,6 +100,7 @@ export class EditorGroupWatermark extends Disposable {
 		@IHostService private readonly hostService: IHostService,
 		@ILabelService private readonly labelService: ILabelService,
 		@IViewsService private readonly viewsService: IViewsService,
+		@IThemeService private readonly themeService: IThemeService,
 	) {
 		super();
 
@@ -113,15 +117,41 @@ export class EditorGroupWatermark extends Disposable {
 
 		append(container, elements.root);
 		this.shortcuts = elements.shortcuts; // shortcuts div is modified on render()
+		this.ownershipEl = elements.ownership;
 
 		elements.icon.classList.add('trove-icon');
 		elements.tagline.textContent = 'Where intelligent development begins.';
 		elements.ownership.textContent = 'Property of Bosch Mobility and Platform Solutions Pvt. Limited';
 
+		this.updateOwnershipThemeClass();
+		this._register(this.themeService.onDidColorThemeChange(() => this.updateOwnershipThemeClass()));
+
 		this.registerListeners();
 
 		this.workbenchState = contextService.getWorkbenchState();
 		this.render();
+	}
+
+	private updateOwnershipThemeClass(): void {
+		this.ownershipEl.classList.toggle('trove-watermark-ownership--dark', isDark(this.themeService.getColorTheme().type));
+	}
+
+	private appendTroveShortcutRow(parent: HTMLElement, label: string, commandId: string): void {
+		const keys = this.keybindingService.lookupKeybinding(commandId);
+		const dl = append(parent, $('dl'));
+		dl.classList.add('trove-watermark-shortcut');
+		dl.title = label;
+		dl.addEventListener('click', () => {
+			this.commandService.executeCommand(commandId);
+		});
+		const dt = append(dl, $('dt'));
+		dt.textContent = label;
+		const dd = append(dl, $('dd'));
+		const keyLabel = new KeybindingLabel(dd, OS, { renderUnboundKeybindings: true, ...defaultKeybindingLabelStyles });
+		if (keys) {
+			keyLabel.set(keys);
+		}
+		this.currentDisposables.add(keyLabel);
 	}
 
 	private registerListeners(): void {
@@ -215,6 +245,8 @@ export class EditorGroupWatermark extends Disposable {
 				}
 				buttonContainer.appendChild(openSSHButton.root);
 
+				this.appendTroveShortcutRow(troveIconBox, 'Chat', TROVE_CTRL_L_ACTION_ID);
+				this.appendTroveShortcutRow(troveIconBox, 'Quick Edit', TROVE_CTRL_K_ACTION_ID);
 
 				// Recents
 				if (recentlyOpened.length !== 0) {
@@ -278,26 +310,8 @@ export class EditorGroupWatermark extends Disposable {
 			else {
 
 				// show them Trove keybindings
-				const keys = this.keybindingService.lookupKeybinding(TROVE_CTRL_L_ACTION_ID);
-				const dl = append(troveIconBox, $('dl'));
-				const dt = append(dl, $('dt'));
-				dt.textContent = 'Chat'
-				const dd = append(dl, $('dd'));
-				const label = new KeybindingLabel(dd, OS, { renderUnboundKeybindings: true, ...defaultKeybindingLabelStyles });
-				if (keys)
-					label.set(keys);
-				this.currentDisposables.add(label);
-
-
-				const keys2 = this.keybindingService.lookupKeybinding(TROVE_CTRL_K_ACTION_ID);
-				const dl2 = append(troveIconBox, $('dl'));
-				const dt2 = append(dl2, $('dt'));
-				dt2.textContent = 'Quick Edit'
-				const dd2 = append(dl2, $('dd'));
-				const label2 = new KeybindingLabel(dd2, OS, { renderUnboundKeybindings: true, ...defaultKeybindingLabelStyles });
-				if (keys2)
-					label2.set(keys2);
-				this.currentDisposables.add(label2);
+				this.appendTroveShortcutRow(troveIconBox, 'Chat', TROVE_CTRL_L_ACTION_ID);
+				this.appendTroveShortcutRow(troveIconBox, 'Quick Edit', TROVE_CTRL_K_ACTION_ID);
 
 				// const keys3 = this.keybindingService.lookupKeybinding('workbench.action.openGlobalKeybindings');
 				// const button3 = append(recentsBox, $('button'));

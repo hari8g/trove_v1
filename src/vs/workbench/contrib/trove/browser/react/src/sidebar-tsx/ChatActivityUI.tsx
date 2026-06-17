@@ -8,7 +8,7 @@ import { AnthropicReasoning, RawToolCallObj } from '../../../../common/sendLLMMe
 import { ChatMessage } from '../../../../common/chatThreadServiceTypes.js';
 import { BuiltinToolName } from '../../../../common/toolsServiceTypes.js';
 import { builtinToolNames, isABuiltinToolName } from '../../../../common/prompt/prompts.js';
-import { ChevronRight } from 'lucide-react';
+import { Check, ChevronRight, FileCode2, Pencil, Search, Sparkles, Terminal } from 'lucide-react';
 import { MAX_FILE_PREVIEW_LINES } from './ChatInlineDiffView.js';
 
 export type EditToolStreamStep = {
@@ -283,11 +283,85 @@ export const CompactCompletedToolRow = ({
 	</div>
 );
 
+export type AgentTurnActivityItem = {
+	label: string;
+	kind: 'read' | 'edit' | 'write' | 'search' | 'run' | 'other';
+};
+
 export type AgentTurnActivitySummary = {
 	fileCount: number;
 	toolCount: number;
 	recentFilesLine?: string;
 	summaryLine?: string;
+	activityItems: AgentTurnActivityItem[];
+	touchedFiles: string[];
+};
+
+const activityKindForTool = (toolName: BuiltinToolName): AgentTurnActivityItem['kind'] => {
+	switch (toolName) {
+		case 'read_file':
+		case 'ls_dir':
+		case 'get_dir_tree':
+		case 'read_lint_errors':
+			return 'read';
+		case 'edit_file':
+			return 'edit';
+		case 'rewrite_file':
+			return 'write';
+		case 'search_codebase':
+		case 'search_for_files':
+		case 'search_pathnames_only':
+		case 'search_in_file':
+		case 'search_web':
+			return 'search';
+		case 'run_command':
+		case 'run_persistent_command':
+		case 'open_persistent_terminal':
+		case 'kill_persistent_terminal':
+			return 'run';
+		default:
+			return 'other';
+	}
+};
+
+const ACTIVITY_STAT_TW: Record<AgentTurnActivityItem['kind'], { chip: string; icon: string }> = {
+	read: {
+		chip: 'border-sky-400/30 bg-gradient-to-br from-sky-500/20 via-sky-400/5 to-transparent text-sky-900 dark:text-sky-100 ring-1 ring-inset ring-sky-400/15 shadow-sm shadow-sky-500/10',
+		icon: 'text-sky-500 dark:text-sky-400',
+	},
+	edit: {
+		chip: 'border-violet-400/30 bg-gradient-to-br from-violet-500/20 via-fuchsia-500/5 to-transparent text-violet-900 dark:text-violet-100 ring-1 ring-inset ring-violet-400/15 shadow-sm shadow-violet-500/10',
+		icon: 'text-violet-500 dark:text-violet-400',
+	},
+	write: {
+		chip: 'border-fuchsia-400/30 bg-gradient-to-br from-fuchsia-500/20 via-pink-500/5 to-transparent text-fuchsia-900 dark:text-fuchsia-100 ring-1 ring-inset ring-fuchsia-400/15 shadow-sm shadow-fuchsia-500/10',
+		icon: 'text-fuchsia-500 dark:text-fuchsia-400',
+	},
+	search: {
+		chip: 'border-amber-400/30 bg-gradient-to-br from-amber-500/20 via-orange-400/5 to-transparent text-amber-900 dark:text-amber-100 ring-1 ring-inset ring-amber-400/15 shadow-sm shadow-amber-500/10',
+		icon: 'text-amber-500 dark:text-amber-400',
+	},
+	run: {
+		chip: 'border-emerald-400/30 bg-gradient-to-br from-emerald-500/20 via-teal-400/5 to-transparent text-emerald-900 dark:text-emerald-100 ring-1 ring-inset ring-emerald-400/15 shadow-sm shadow-emerald-500/10',
+		icon: 'text-emerald-500 dark:text-emerald-400',
+	},
+	other: {
+		chip: 'border-trove-border-3/60 bg-gradient-to-br from-trove-bg-3/80 to-transparent text-trove-fg-2 ring-1 ring-inset ring-trove-border-3/40',
+		icon: 'text-trove-fg-3',
+	},
+};
+
+const ActivityStatIcon = ({ kind }: { kind: AgentTurnActivityItem['kind'] }) => {
+	const iconClass = `shrink-0 ${ACTIVITY_STAT_TW[kind].icon}`;
+	const size = 10;
+	switch (kind) {
+		case 'read': return <FileCode2 size={size} className={iconClass} aria-hidden="true" />;
+		case 'edit': return <Pencil size={size} className={iconClass} aria-hidden="true" />;
+		case 'write': return <Sparkles size={size} className={iconClass} aria-hidden="true" />;
+		case 'search': return <Search size={size} className={iconClass} aria-hidden="true" />;
+		case 'run': return <Terminal size={size} className={iconClass} aria-hidden="true" />;
+		default: return <Sparkles size={size} className={iconClass} aria-hidden="true" />;
+	}
 };
 
 const basenameFromFsPath = (fsPath: string): string => {
@@ -328,6 +402,7 @@ export const summarizeAgentTurnActivity = (messages: ChatMessage[]): AgentTurnAc
 	const turnMessages = lastUserIdx >= 0 ? messages.slice(lastUserIdx + 1) : messages;
 	const toolCounts = new Map<string, number>();
 	const readFiles: string[] = [];
+	const touchedFiles: string[] = [];
 
 	for (const message of turnMessages) {
 		if (message.role !== 'tool') continue;
@@ -335,28 +410,40 @@ export const summarizeAgentTurnActivity = (messages: ChatMessage[]): AgentTurnAc
 
 		toolCounts.set(message.name, (toolCounts.get(message.name) ?? 0) + 1);
 
-		if (message.name === 'read_file' && 'params' in message && message.params && 'uri' in message.params) {
-			readFiles.push(basenameFromFsPath(message.params.uri.fsPath));
+		if ('params' in message && message.params && 'uri' in message.params) {
+			const basename = basenameFromFsPath(message.params.uri.fsPath);
+			if (message.name === 'read_file') {
+				readFiles.push(basename);
+			}
+			if (message.name === 'read_file' || message.name === 'edit_file' || message.name === 'rewrite_file') {
+				touchedFiles.push(basename);
+			}
 		}
 	}
 
 	const toolCount = [...toolCounts.values()].reduce((sum, n) => sum + n, 0);
 	const fileCount = toolCounts.get('read_file') ?? 0;
 
+	const activityItems: AgentTurnActivityItem[] = [];
 	const summaryParts: string[] = [];
 	for (const toolName of builtinToolNames) {
 		const count = toolCounts.get(toolName);
 		if (count && isABuiltinToolName(toolName)) {
-			summaryParts.push(toolActivityLabel(toolName, count));
+			const label = toolActivityLabel(toolName, count);
+			activityItems.push({ label, kind: activityKindForTool(toolName) });
+			summaryParts.push(label);
 		}
 	}
 	for (const [toolName, count] of toolCounts) {
 		if (!isABuiltinToolName(toolName)) {
-			summaryParts.push(`${count} MCP call${count === 1 ? '' : 's'}`);
+			const label = `${count} MCP call${count === 1 ? '' : 's'}`;
+			activityItems.push({ label, kind: 'other' });
+			summaryParts.push(label);
 		}
 	}
 
 	let recentFilesLine: string | undefined;
+	const uniqueTouched = [...new Set(touchedFiles)];
 	if (readFiles.length > 0) {
 		const unique = [...new Set(readFiles)];
 		if (unique.length <= 3) {
@@ -371,7 +458,89 @@ export const summarizeAgentTurnActivity = (messages: ChatMessage[]): AgentTurnAc
 		toolCount,
 		recentFilesLine,
 		summaryLine: summaryParts.length > 0 ? summaryParts.join(' · ') : undefined,
+		activityItems,
+		touchedFiles: uniqueTouched,
 	};
+};
+
+/** Compact recap shown after a turn finishes (when tools were used). */
+export const AgentTurnCompleteSummaryCard = ({ summary }: { summary: AgentTurnActivitySummary }) => {
+	if (!summary.summaryLine) return null;
+
+	const files = summary.touchedFiles.length > 0
+		? summary.touchedFiles
+		: (summary.recentFilesLine?.split(', ').map(f => f.replace(/ \+\d+ more$/, '').trim()).filter(Boolean) ?? []);
+
+	return (
+		<div className="relative my-1.5 overflow-hidden rounded-xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/[0.07] via-trove-bg-2/95 to-indigo-500/[0.05] shadow-md shadow-emerald-500/5 backdrop-blur-xl select-none">
+			<div className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-emerald-400/20 blur-2xl" aria-hidden="true" />
+
+			{/* header — single tight row */}
+			<div className="relative flex items-center justify-between gap-2 border-b border-white/10 dark:border-white/5 px-2.5 py-1.5">
+				<div className="flex min-w-0 items-center gap-2">
+					<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-400/25 to-teal-500/10 ring-1 ring-emerald-400/25" aria-hidden="true">
+						<Check size={14} strokeWidth={2.5} className="text-emerald-600 dark:text-emerald-400" />
+					</div>
+					<div className="min-w-0 leading-none">
+						<p className="text-[12px] font-semibold tracking-tight text-trove-fg-1">
+							Turn complete
+							<span className="font-normal text-trove-fg-4">
+								{' · '}
+								<span className="text-emerald-600 dark:text-emerald-400">{summary.toolCount}</span>
+								{' action'}{summary.toolCount === 1 ? '' : 's'}
+							</span>
+						</p>
+					</div>
+				</div>
+				<span className="shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-400/25">
+					Done
+				</span>
+			</div>
+
+			{/* activity stats — dense inline chips */}
+			{summary.activityItems.length > 0 ? (
+				<div className="relative flex flex-wrap gap-1 px-2.5 py-1.5">
+					{summary.activityItems.map((item) => (
+						<span
+							key={item.label}
+							className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none ${ACTIVITY_STAT_TW[item.kind].chip}`}
+						>
+							<ActivityStatIcon kind={item.kind} />
+							<span className="truncate">{item.label}</span>
+						</span>
+					))}
+				</div>
+			) : null}
+
+			{/* files — label inline with chips */}
+			{files.length > 0 ? (
+				<div className="relative flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-white/10 dark:border-white/5 px-2.5 py-1.5">
+					<span className="shrink-0 text-[9px] font-bold uppercase tracking-wide text-trove-fg-4">
+						Files
+					</span>
+					{files.slice(0, 8).map((file, i) => (
+						<span
+							key={file}
+							title={file}
+							className={`inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[10px] leading-none text-trove-fg-2 ${
+								i % 3 === 0
+									? 'border-sky-400/20 bg-sky-500/10'
+									: i % 3 === 1
+										? 'border-violet-400/20 bg-violet-500/10'
+										: 'border-amber-400/20 bg-amber-500/10'
+							}`}
+						>
+							<FileCode2 size={9} className="shrink-0 opacity-70" aria-hidden="true" />
+							<span className="truncate max-w-[110px]">{file}</span>
+						</span>
+					))}
+					{files.length > 8 ? (
+						<span className="text-[9px] font-semibold text-trove-fg-4">+{files.length - 8}</span>
+					) : null}
+				</div>
+			) : null}
+		</div>
+	);
 };
 
 export type BackgroundActivityPhase =
@@ -410,7 +579,7 @@ export const BackgroundActivityPanel = ({
 
 	const phaseHint =
 		phase === 'preparing' ? 'Assembling context'
-			: phase === 'waiting' ? 'Model request in flight'
+			: phase === 'waiting' ? 'Waiting for model response'
 				: phase === 'reasoning' ? 'Internal reasoning'
 					: phase === 'writing' ? 'Streaming reply'
 						: phase === 'tool' ? 'Tool execution'

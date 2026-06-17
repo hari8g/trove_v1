@@ -14,6 +14,7 @@ import { TROVE_CTRL_K_ACTION_ID } from './actionIDs.js';
 import { localize2 } from '../../../../nls.js';
 import { IMetricsService } from '../common/metricsService.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 
 export type QuickEditPropsType = {
 	diffareaid: number,
@@ -42,7 +43,7 @@ registerAction2(class extends Action2 {
 			keybinding: {
 				primary: KeyMod.CtrlCmd | KeyCode.KeyK,
 				weight: KeybindingWeight.TroveExtension,
-				when: ContextKeyExpr.deserialize('editorFocus && !terminalFocus'),
+				when: ContextKeyExpr.deserialize('!terminalFocus'),
 			}
 		});
 	}
@@ -51,9 +52,14 @@ registerAction2(class extends Action2 {
 
 		const editorService = accessor.get(ICodeEditorService)
 		const metricsService = accessor.get(IMetricsService)
+		const commandService = accessor.get(ICommandService)
 		metricsService.capture('Ctrl+K', {})
 
-		const editor = editorService.getActiveCodeEditor()
+		let editor = editorService.getActiveCodeEditor()
+		if (!editor?.getModel()) {
+			await commandService.executeCommand('workbench.action.files.newUntitledFile')
+			editor = editorService.getActiveCodeEditor()
+		}
 		if (!editor) return;
 		const model = editor.getModel()
 		if (!model) return;
