@@ -6,7 +6,9 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { completeRemainingPlanItems, markPlanItemDoneForTool, parsePlanBulletItems } from '../agentPlan.js';
+import { completeRemainingPlanItems, generateAgentPlan, markPlanItemDoneForTool, parsePlanBulletItems } from '../agentPlan.js';
+import type { ChatMessage } from '../../common/chatThreadServiceTypes.js';
+import type { IUsageMeteringService } from '../usageMeteringService.js';
 
 suite('Trove - agentPlan', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -72,5 +74,55 @@ suite('Trove - agentPlan', () => {
 		const completed = completeRemainingPlanItems(plan);
 		assert.strictEqual(completed.items[0].status, 'done');
 		assert.strictEqual(completed.items[1].status, 'done');
+	});
+
+	test('generateAgentPlan records usage via metering service', async () => {
+		const recorded: Array<{ threadId: string; inputTokens: number }> = [];
+		const usageMeteringService: Pick<IUsageMeteringService, 'recordTurn'> = {
+			recordTurn: (opts) => {
+				recorded.push({ threadId: opts.threadId, inputTokens: opts.usage.inputTokens });
+			},
+		};
+
+		const chatMessages: ChatMessage[] = [{
+			role: 'user',
+			displayContent: 'fix the tests',
+			content: 'fix the tests',
+			selections: null,
+			state: { stagingSelections: [], isBeingEdited: false },
+		}];
+
+		const plan = await generateAgentPlan({
+			llmMessageService: {
+				sendLLMMessage: (params: any) => {
+					params.onFinalMessage({
+						fullText: '- Read package.json\n- Run tests',
+						fullReasoning: '',
+						anthropicReasoning: null,
+						usage: { inputTokens: 250, outputTokens: 40, cacheReadTokens: 0 },
+					});
+					return 'plan-req-1';
+				},
+			} as any,
+			convertToLLMMessageService: {
+				prepareLLMSimpleMessages: () => ({
+					messages: [{ role: 'user', content: 'task' }],
+					separateSystemMessage: 'plan system',
+				}),
+			} as any,
+			modelSelection: { providerName: 'anthropic', modelName: 'claude-sonnet-4-6' },
+			modelSelectionOptions: undefined,
+			overridesOfModel: undefined,
+			chatMode: 'agent',
+			chatMessages,
+			threadId: 'thread-plan-1',
+			usageMeteringService: usageMeteringService as IUsageMeteringService,
+		});
+
+		assert.ok(plan);
+		assert.strictEqual(plan!.items.length, 2);
+		assert.strictEqual(recorded.length, 1);
+		assert.strictEqual(recorded[0].threadId, 'thread-plan-1');
+		assert.strictEqual(recorded[0].inputTokens, 250);
 	});
 });

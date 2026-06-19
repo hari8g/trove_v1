@@ -26,9 +26,65 @@ export const isRateLimitLLMError = (error: LLMErrorLike): boolean => {
 	return serialized?.status === 429;
 };
 
+export const isContextOverflowLLMError = (error: LLMErrorLike): boolean => {
+	const message = error.message.toLowerCase();
+	return message.includes('context_length')
+		|| message.includes('context length')
+		|| message.includes('context_length_exceeded')
+		|| message.includes('token limit')
+		|| message.includes('maximum context')
+		|| message.includes('too many tokens')
+		|| message.includes('prompt is too long')
+		|| message.includes('request too large');
+};
+
+export const isStreamStallLLMError = (error: LLMErrorLike): boolean => {
+	return error.message.toLowerCase().includes('stream stalled');
+};
+
+export const isFatalLLMError = (error: LLMErrorLike): boolean => {
+	if (isContextOverflowLLMError(error)) {
+		return false;
+	}
+	const serialized = getSerializedError(error.fullError);
+	const status = serialized?.status;
+	if (status === 401 || status === 403 || status === 404) {
+		return true;
+	}
+	if (status === 400) {
+		return true;
+	}
+	const message = error.message.toLowerCase();
+	return message.includes('unauthorized')
+		|| message.includes('invalid api key')
+		|| message.includes('authentication')
+		|| message.includes('forbidden')
+		|| message.includes('not found');
+};
+
 /** Max retries for generic LLM errors vs rate-limit errors. */
 export const getMaxLLMRetryAttempts = (error: LLMErrorLike): number => {
-	return isRateLimitLLMError(error) ? 2 : 3;
+	if (isFatalLLMError(error)) {
+		return 0;
+	}
+	if (isContextOverflowLLMError(error)) {
+		return 2;
+	}
+	if (isRateLimitLLMError(error)) {
+		return 2;
+	}
+	if (isStreamStallLLMError(error)) {
+		return 2;
+	}
+	const serialized = getSerializedError(error.fullError);
+	if (serialized?.status && serialized.status >= 500) {
+		return 3;
+	}
+	return 3;
+};
+
+export const shouldForceAggressiveTrimOnRetry = (error: LLMErrorLike): boolean => {
+	return isContextOverflowLLMError(error);
 };
 
 /** Prefer provider retry-after header; otherwise exponential backoff for rate limits. */

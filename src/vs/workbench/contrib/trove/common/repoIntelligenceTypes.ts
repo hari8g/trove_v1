@@ -91,3 +91,10 @@ export interface IRepoIntelligenceService extends IRepoIntelligenceMainService {
 export const IRepoIntelligenceService = createDecorator<IRepoIntelligenceService>('repoIntelligenceService');
 
 export const REPO_INTEL_PROFILE_STALE_MS = 24 * 60 * 60 * 1000;
+
+// Injection char budget caps (per mode). CHARS_PER_TOKEN ≈ 4 in wireMessageTrim.
+export const REPO_PROFILE_MAX_CHARS: Record<'agent' | 'gather' | 'normal', number> = {
+	agent: 4_800,  // ~1 200 tokens — full structural context
+	gather: 3_200, // ~800 tokens — commands + framework
+	normal: 1_600, // ~400 tokens — language + minimal facts
+};

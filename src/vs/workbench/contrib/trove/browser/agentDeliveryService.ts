@@ -10,11 +10,14 @@ import { registerSingleton, InstantiationType } from '../../../../platform/insta
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { AgentDeliverySummary, AgentDeliveryStatus } from '../common/agentDeliveryTypes.js';
+import { buildDeliveryNextStepsMessage } from '../common/agentDeliveryNextSteps.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { BuiltinToolCallParams, TerminalResolveReason } from '../common/toolsServiceTypes.js';
 import { IWorkspacePreviewService } from './workspacePreviewService.js';
 import { isDevServerCommand, isPackageInstallCommand, isLongRunningTerminalCommand, terminalCommandLooksSuccessful, DEV_SERVER_COMMAND_PATTERN } from '../common/prompt/prompts.js';
 import { SERVER_READY_OUTPUT_PATTERN } from '../common/prompt/prompts.js';
+import { ITerminalToolService } from './terminalToolService.js';
+import { timeout } from '../../../../base/common/async.js';
 
 const LOCALHOST_URL_PATTERN = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:\/[^\s"'<>]*)?/gi;
 const LOCALHOST_HOST_PORT_PATTERN = /(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0):(\d{2,5})/gi;
@@ -38,6 +41,8 @@ export interface IAgentDeliveryService {
 	): Promise<void>;
 
 	finalizeDelivery(threadId: string): void;
+	ensurePreviewLive(threadId: string): Promise<{ opened: boolean; restartedServer: boolean }>;
+	getNextStepsMessage(threadId: string): string | undefined;
 	setPendingDiffs(threadId: string, pendingDiffCount: number, filesChanged: string[]): void;
 }
 
@@ -100,6 +105,7 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IRepoIntelligenceService private readonly repoIntelligenceService: IRepoIntelligenceService,
 		@IWorkspacePreviewService private readonly workspacePreviewService: IWorkspacePreviewService,
+		@ITerminalToolService private readonly terminalToolService: ITerminalToolService,
 	) {
 		super();
 	}
@@ -124,6 +130,7 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 			buildLabel: patch.buildLabel ?? prev?.buildLabel,
 			serverLabel: patch.serverLabel ?? prev?.serverLabel,
 			previewOpenedInEditor: patch.previewOpenedInEditor ?? prev?.previewOpenedInEditor ?? false,
+			persistentTerminalId: patch.persistentTerminalId ?? prev?.persistentTerminalId,
 			updatedAt: new Date().toISOString(),
 		};
 		this._deliveryByThread.set(threadId, next);
@@ -141,6 +148,95 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 			if (DEV_SERVER_COMMAND_PATTERN.test(candidate)) return candidate;
 		}
 		return undefined;
+	}
+
+	private async _waitForPreviewUrl(url: string, maxWaitMs: number): Promise<boolean> {
+		const deadline = Date.now() + maxWaitMs;
+		while (Date.now() < deadline) {
+			if (await this.workspacePreviewService.probePreviewUrl(url, 2_000)) {
+				return true;
+			}
+			await timeout(750);
+		}
+		return false;
+	}
+
+	private async _resolvePersistentTerminalId(existingId?: string): Promise<string> {
+		if (existingId && this.terminalToolService.persistentTerminalExists(existingId)) {
+			return existingId;
+		}
+		const ids = this.terminalToolService.listPersistentTerminalIds();
+		if (ids.length > 0) {
+			return ids[0];
+		}
+		return this.terminalToolService.createPersistentTerminal({ cwd: null });
+	}
+
+	private async _restartDevServer(serverCommand: string, persistentTerminalId?: string): Promise<string> {
+		const terminalId = await this._resolvePersistentTerminalId(persistentTerminalId);
+		this.notificationService.info(`Starting dev server in Trove Agent terminal…`);
+		const { resPromise } = await this.terminalToolService.runCommand(serverCommand, {
+			type: 'persistent',
+			persistentTerminalId: terminalId,
+		});
+		await resPromise;
+		return terminalId;
+	}
+
+	async ensurePreviewLive(threadId: string): Promise<{ opened: boolean; restartedServer: boolean }> {
+		const delivery = this._deliveryByThread.get(threadId);
+		if (!delivery?.previewUrl) {
+			return { opened: false, restartedServer: false };
+		}
+
+		const url = delivery.previewUrl;
+		let restartedServer = false;
+		let reachable = await this.workspacePreviewService.probePreviewUrl(url);
+
+		if (!reachable && delivery.serverCommand) {
+			const terminalId = await this._restartDevServer(delivery.serverCommand, delivery.persistentTerminalId);
+			restartedServer = true;
+			this._mergeDelivery(threadId, {
+				status: delivery.status,
+				persistentTerminalId: terminalId,
+				serverCommand: delivery.serverCommand,
+				serverLabel: delivery.serverLabel,
+				previewUrl: url,
+			});
+			delivery.persistentTerminalId = terminalId;
+			reachable = await this._waitForPreviewUrl(url, 45_000);
+		}
+
+		if (!reachable) {
+			this.notificationService.warn(
+				`${url} is not responding yet. Check the **Trove Agent** terminal — the dev server runs there, not your panel shell.`,
+			);
+			return { opened: false, restartedServer };
+		}
+
+		const opened = await this._openPreviewInEditor(url);
+		if (opened) {
+			this._mergeDelivery(threadId, {
+				status: delivery.status === 'build_succeeded' ? 'verified' : delivery.status,
+				previewUrl: url,
+				previewOpenedInEditor: true,
+				persistentTerminalId: delivery.persistentTerminalId,
+				serverCommand: delivery.serverCommand,
+				serverLabel: delivery.serverLabel,
+			});
+			if (restartedServer) {
+				this.notificationService.info(`Dev server restarted in Trove Agent terminal — opened ${url}.`);
+			}
+		}
+		return { opened, restartedServer };
+	}
+
+	getNextStepsMessage(threadId: string): string | undefined {
+		const delivery = this._deliveryByThread.get(threadId);
+		if (!delivery?.previewUrl && !(delivery?.pendingDiffCount)) {
+			return undefined;
+		}
+		return buildDeliveryNextStepsMessage(delivery);
 	}
 
 	private async _openPreviewInEditor(url: string): Promise<boolean> {
@@ -192,7 +288,10 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 		result: { result: string; resolveReason: TerminalResolveReason; autoPersistentTerminalId?: string },
 	): Promise<void> {
 		const command = 'command' in params ? params.command : '';
-		const { resolveReason, result: rawOutput } = result;
+		const { resolveReason, result: rawOutput, autoPersistentTerminalId } = result;
+		const persistentFromParams = toolName === 'run_persistent_command'
+			? (params as BuiltinToolCallParams['run_persistent_command']).persistentTerminalId
+			: autoPersistentTerminalId;
 		const plainOutput = removeAnsiEscapeCodes(rawOutput);
 		if (!commandSucceeded(command, plainOutput, resolveReason)) return;
 		const url = extractLocalhostUrl(plainOutput, command);
@@ -200,35 +299,33 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 		// Localhost curl / HTTP check succeeded
 		if (isLocalhostCurlCommand(command) && resolveReason.type === 'done' && resolveReason.exitCode === 0) {
 			const previewUrl = url ?? extractLocalhostUrl(plainOutput);
-			let previewOpenedInEditor = false;
-			if (previewUrl) {
-				previewOpenedInEditor = await this._openPreviewInEditor(previewUrl);
-				if (previewOpenedInEditor) {
-					this.notificationService.info(`Verified — opened ${previewUrl} in the editor.`);
-				}
-			}
+			const prev = this._deliveryByThread.get(threadId);
 			this._mergeDelivery(threadId, {
 				status: 'verified',
 				previewUrl,
-				previewOpenedInEditor,
+				serverCommand: prev?.serverCommand ?? this._suggestedServerCommand(),
+				serverLabel: prev?.serverLabel,
+				persistentTerminalId: prev?.persistentTerminalId ?? persistentFromParams,
 			});
+			if (previewUrl) {
+				void this.ensurePreviewLive(threadId);
+			}
 			return;
 		}
 
 		// Dev server started
 		if (isDevServerCommand(command) || toolName === 'run_persistent_command') {
 			const previewUrl = url;
-			let previewOpenedInEditor = false;
-			if (previewUrl && (resolveReason.type === 'server_ready' || resolveReason.type === 'timeout')) {
-				previewOpenedInEditor = await this._openPreviewInEditor(previewUrl);
-			}
 			this._mergeDelivery(threadId, {
-				status: previewUrl && previewOpenedInEditor ? 'verified' : 'server_running',
+				status: previewUrl ? 'server_running' : 'server_running',
 				serverCommand: command,
 				serverLabel: shortCommandLabel(command),
 				previewUrl,
-				previewOpenedInEditor,
+				persistentTerminalId: persistentFromParams,
 			});
+			if (previewUrl) {
+				void this.ensurePreviewLive(threadId);
+			}
 			return;
 		}
 
@@ -263,22 +360,8 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 		const delivery = this._deliveryByThread.get(threadId);
 		if (!delivery) return;
 
-		if (delivery.previewUrl && !delivery.previewOpenedInEditor
-			&& (delivery.status === 'server_running' || delivery.status === 'verified' || delivery.status === 'build_succeeded')) {
-			void this._openPreviewInEditor(delivery.previewUrl).then(opened => {
-				if (opened) {
-					this._mergeDelivery(threadId, {
-						status: delivery.status,
-						previewOpenedInEditor: true,
-						previewUrl: delivery.previewUrl,
-					});
-				}
-			});
-			return;
-		}
-
-		if (delivery.status === 'server_running' && delivery.previewUrl && !delivery.previewOpenedInEditor) {
-			this._onDidChangeDelivery.fire({ threadId });
+		if (delivery.previewUrl) {
+			void this.ensurePreviewLive(threadId);
 		}
 	}
 
@@ -292,6 +375,7 @@ class AgentDeliveryService extends Disposable implements IAgentDeliveryService {
 			buildLabel: prev?.buildLabel,
 			serverLabel: prev?.serverLabel,
 			previewOpenedInEditor: prev?.previewOpenedInEditor ?? false,
+			persistentTerminalId: prev?.persistentTerminalId,
 			updatedAt: new Date().toISOString(),
 			pendingDiffCount,
 			filesChanged,

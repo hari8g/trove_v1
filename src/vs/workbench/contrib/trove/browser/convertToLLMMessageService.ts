@@ -8,6 +8,7 @@ import { IEditorService } from '../../../services/editor/common/editorService.js
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
 import { getIsReasoningEnabledState, getReservedOutputTokenSpace, getModelCapabilities } from '../common/modelCapabilities.js';
 import { reParsedToolXMLString, chat_systemMessage } from '../common/prompt/prompts.js';
+import { getEffectiveRepoProfileMode, isLightAgentEnabled } from '../common/lightAgent.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { AnthropicLLMChatMessage, AnthropicReasoning, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, OpenAILLMChatMessage, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 import { ITroveSettingsService } from '../common/troveSettingsService.js';
@@ -19,7 +20,7 @@ import { IMCPService } from '../common/mcpService.js';
 import { IContextGatheringService } from './contextGatheringService.js';
 import { trimChatMessagesForContextWindow } from './contextWindowTrim.js';
 import { compactStaleToolResults } from './toolResultCompaction.js';
-import { CHARS_PER_TOKEN, computeEffectiveOutputReserve, elideOldestToolResultsFirst } from './wireMessageTrim.js';
+import { AGGRESSIVE_WIRE_TRIM_RATIO, CHARS_PER_TOKEN, computeEffectiveOutputReserve, elideOldestToolResultsFirst } from './wireMessageTrim.js';
 
 export const EMPTY_MESSAGE = '(empty message)'
 
@@ -338,6 +339,7 @@ const prepareOpenAIOrAnthropicMessages = ({
 	supportsAnthropicReasoning,
 	contextWindow,
 	reservedOutputTokenSpace,
+	forceAggressiveTrim,
 }: {
 	messages: SimpleLLMMessage[],
 	systemMessage: string,
@@ -347,6 +349,7 @@ const prepareOpenAIOrAnthropicMessages = ({
 	supportsAnthropicReasoning: boolean,
 	contextWindow: number,
 	reservedOutputTokenSpace: number | null | undefined,
+	forceAggressiveTrim?: boolean,
 }): { messages: AnthropicOrOpenAILLMMessage[], separateSystemMessage: string | undefined } => {
 
 	const effectiveOutputReserve = computeEffectiveOutputReserve(reservedOutputTokenSpace)
@@ -368,10 +371,11 @@ const prepareOpenAIOrAnthropicMessages = ({
 		content: m.role !== 'tool' ? toPlainText(m.content).trim() : toPlainText(m.content),
 	}))
 
-	const charBudget = Math.max(
+	const baseCharBudget = Math.max(
 		(contextWindow - effectiveOutputReserve) * CHARS_PER_TOKEN,
 		5_000,
 	)
+	const charBudget = forceAggressiveTrim ? Math.floor(baseCharBudget * AGGRESSIVE_WIRE_TRIM_RATIO) : baseCharBudget
 	elideOldestToolResultsFirst(messages, charBudget)
 
 	// ================ system message hack ================
@@ -512,7 +516,8 @@ const prepareMessages = (params: {
 	supportsAnthropicReasoning: boolean,
 	contextWindow: number,
 	reservedOutputTokenSpace: number | null | undefined,
-	providerName: ProviderName
+	providerName: ProviderName,
+	forceAggressiveTrim?: boolean,
 }): { messages: LLMChatMessage[], separateSystemMessage: string | undefined } => {
 
 	const specialFormat = params.specialToolFormat // this is just for ts stupidness
@@ -535,7 +540,7 @@ export interface IConvertToLLMMessageService {
 	readonly _serviceBrand: undefined;
 	buildRunContext: (opts: { chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<string>
 	prepareLLMSimpleMessages: (opts: { simpleMessages: SimpleLLMMessage[], systemMessage: string, modelSelection: ModelSelection | null, featureName: FeatureName }) => { messages: LLMChatMessage[], separateSystemMessage: string | undefined }
-	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedSystemMessage?: string }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, contextWasTrimmed: boolean }>
+	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedSystemMessage?: string, agentTailHints?: string, forceAggressiveTrim?: boolean }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, contextWasTrimmed: boolean }>
 	prepareFIMMessage(opts: { messages: LLMFIMMessage, }): { prefix: string, suffix: string, stopTokens: string[] }
 }
 
@@ -572,8 +577,13 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const openedURIs = this.modelService.getModels().filter(m => m.isAttachedToEditor()).map(m => m.uri.fsPath) || [];
 		const activeURI = this.editorService.activeEditor?.resource?.fsPath;
 
+		const { globalSettings } = this.troveSettingsService.state
+		const lightweightDirectory = isLightAgentEnabled(globalSettings) && chatMode === 'agent'
+		const repoProfileMode = getEffectiveRepoProfileMode(chatMode, globalSettings)
+
 		const directoryStr = await this.directoryStrService.getAllDirectoriesStr({
 			openedURIs,
+			lightweight: lightweightDirectory,
 			cutOffMessage: chatMode === 'agent' || chatMode === 'gather' ?
 				`...Directories string cut off, use tools to read more...`
 				: `...Directories string cut off, ask user for more if necessary...`
@@ -588,9 +598,14 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		if (!repoProfile && workspaceFolders[0]) {
 			repoProfile = await this._repoIntelligenceService.getProfile(workspaceFolders[0])
 		}
+		if (repoProfile?.isStale && workspaceFolders[0]) {
+			void this._repoIntelligenceService
+				.refreshProfile(workspaceFolders[0])
+				.catch(() => { /* non-fatal */ });
+		}
 		const workspaceRules = this._repoIntelligenceService.getWorkspaceRules()
 		const userMemory = this._repoIntelligenceService.getUserMemory()
-		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory })
+		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode })
 		return systemMessage
 	}
 
@@ -660,6 +675,15 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		}
 	}
 
+	/** Append agent hints to the tail message so the cached system prefix stays byte-stable. */
+	private _appendAgentTailHintsToLatestMessage(messages: SimpleLLMMessage[], hints: string | undefined): void {
+		if (!hints?.trim() || messages.length === 0) {
+			return
+		}
+		const last = messages[messages.length - 1]
+		last.content = last.content + hints
+	}
+
 	prepareLLMSimpleMessages: IConvertToLLMMessageService['prepareLLMSimpleMessages'] = ({ simpleMessages, systemMessage, modelSelection, featureName }) => {
 		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined }
 
@@ -693,7 +717,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		})
 		return { messages, separateSystemMessage };
 	}
-	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedSystemMessage }) => {
+	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedSystemMessage, agentTailHints, forceAggressiveTrim }) => {
 		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined, contextWasTrimmed: false }
 
 		const { overridesOfModel } = this.troveSettingsService.state
@@ -717,6 +741,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			systemMessage,
 			aiInstructions,
 			contextWindow,
+			forceAggressiveTrim,
 		})
 
 		const modelSelectionOptions = this.troveSettingsService.state.optionsOfModelSelection['Chat'][modelSelection.providerName]?.[modelSelection.modelName]
@@ -726,6 +751,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const compactedChatMessages = compactStaleToolResults(trimmedChatMessages)
 		const llmMessages = this._chatMessagesToSimpleMessages(compactedChatMessages)
 		this._prependRecentlyViewedCodeToLatestUserMessage(llmMessages)
+		this._appendAgentTailHintsToLatestMessage(llmMessages, agentTailHints)
 
 		const { messages, separateSystemMessage } = prepareMessages({
 			messages: llmMessages,
@@ -737,6 +763,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			contextWindow,
 			reservedOutputTokenSpace,
 			providerName,
+			forceAggressiveTrim,
 		})
 		return { messages, separateSystemMessage, contextWasTrimmed };
 	}

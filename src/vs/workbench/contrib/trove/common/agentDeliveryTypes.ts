@@ -16,6 +16,8 @@ export type AgentDeliverySummary = {
 	buildLabel?: string;
 	serverLabel?: string;
 	previewOpenedInEditor: boolean;
+	/** Trove Agent terminal hosting the dev server (survives sandbox teardown). */
+	persistentTerminalId?: string;
 	updatedAt: string;
 	pendingDiffCount?: number;
 	filesChanged?: string[];

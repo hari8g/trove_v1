@@ -1,0 +1,39 @@
+name: Trove Unit Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/vs/workbench/contrib/trove/**'
+      - 'package.json'
+      - '.github/workflows/trove-tests.yml'
+  pull_request:
+    paths:
+      - 'src/vs/workbench/contrib/trove/**'
+      - 'package.json'
+      - '.github/workflows/trove-tests.yml'
+
+jobs:
+  trove-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Run Trove unit tests
+        run: npm run test-trove

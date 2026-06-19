@@ -8,6 +8,7 @@ import { ChatMessage, PlanMessage } from '../common/chatThreadServiceTypes.js';
 import { ChatMode, ModelSelection, ModelSelectionOptions, OverridesOfModel } from '../common/troveSettingsTypes.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
+import type { IUsageMeteringService } from './usageMeteringService.js';
 import { ToolCallParams, ToolName } from '../common/toolsServiceTypes.js';
 
 export const PLAN_OUTPUT_TOKEN_CAP = 300;
@@ -81,6 +82,8 @@ export const generateAgentPlan = async (opts: {
 	overridesOfModel: OverridesOfModel | undefined;
 	chatMode: ChatMode;
 	chatMessages: ChatMessage[];
+	threadId: string;
+	usageMeteringService?: IUsageMeteringService;
 }): Promise<PlanMessage | null> => {
 	const userTask = summarizeUserTask(opts.chatMessages);
 	const { messages, separateSystemMessage } = opts.convertToLLMMessageService.prepareLLMSimpleMessages({
@@ -105,7 +108,17 @@ export const generateAgentPlan = async (opts: {
 				overridesOfModel: planOverrides,
 				logging: { loggingName: 'Agent Plan' },
 				onText: () => { },
-				onFinalMessage: ({ fullText: text }) => resolve(text),
+				onFinalMessage: ({ fullText: text, usage }) => {
+					if (usage && opts.usageMeteringService) {
+						opts.usageMeteringService.recordTurn({
+							usage,
+							providerName: opts.modelSelection.providerName,
+							modelName: opts.modelSelection.modelName,
+							threadId: opts.threadId,
+						});
+					}
+					resolve(text);
+				},
 				onError: ({ message }) => reject(new Error(message)),
 				onAbort: () => reject(new Error('Plan generation aborted')),
 			});

@@ -759,13 +759,16 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 
 		// Phase 4: prepend related codebase chunks (imports + symbol under cursor → FTS search)
 		const workspaceRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? null
-		const relevantContext = await fetchCodebaseContextForAutocomplete({
-			model,
-			position,
-			workspaceRoot,
-			searchCodebase: (root, query, maxResults) => this._repoIntelligenceService.searchCodebase(root, query, maxResults),
-			getChunkCount: (root) => this._repoIntelligenceService.getChunkCount(root),
-		})
+		const useCodebaseContext = this._settingsService.state.globalSettings.enableAutocompleteCodebaseContext
+		const relevantContext = useCodebaseContext
+			? await fetchCodebaseContextForAutocomplete({
+				model,
+				position,
+				workspaceRoot,
+				searchCodebase: (root, query, maxResults) => this._repoIntelligenceService.searchCodebase(root, query, maxResults),
+				getChunkCount: (root) => this._repoIntelligenceService.getChunkCount(root),
+			})
+			: ''
 
 		const { shouldGenerate, predictionType, llmPrefix, llmSuffix, stopTokens } = getCompletionOptions(prefixAndSuffix, relevantContext, justAcceptedAutocompletion)
 

@@ -1,0 +1,33 @@
+/*--------------------------------------------------------------------------------------
+ *  Copyright 2025 Glass Devtools, Inc. All rights reserved.
+ *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
+ *--------------------------------------------------------------------------------------*/
+
+import assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { defaultGlobalSettings } from '../../common/troveSettingsTypes.js';
+import { getAgentLoopLimits } from '../agentLoopSettings.js';
+
+suite('Trove - agentLoopSettings', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('getAgentLoopLimits returns defaults', () => {
+		const limits = getAgentLoopLimits(defaultGlobalSettings);
+		assert.strictEqual(limits.maxAgentIterations, 25);
+		assert.strictEqual(limits.maxReadOnlyCalls, 12);
+		assert.strictEqual(limits.maxConsecutiveToolFails, 3);
+		assert.strictEqual(limits.llmStreamStallTimeoutMs, 60_000);
+	});
+
+	test('getAgentLoopLimits clamps out-of-range values', () => {
+		const limits = getAgentLoopLimits({
+			...defaultGlobalSettings,
+			maxAgentIterations: 500,
+			maxReadOnlyCalls: 0,
+			llmStreamStallTimeoutMs: 1_000,
+		});
+		assert.strictEqual(limits.maxAgentIterations, 100);
+		assert.strictEqual(limits.maxReadOnlyCalls, 1);
+		assert.strictEqual(limits.llmStreamStallTimeoutMs, 10_000);
+	});
+});

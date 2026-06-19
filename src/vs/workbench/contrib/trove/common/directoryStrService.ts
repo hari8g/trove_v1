@@ -11,6 +11,7 @@ import { FileChangeType, IFileService, IFileStat } from '../../../../platform/fi
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ShallowDirectoryItem, BuiltinToolCallParams, BuiltinToolResultType } from './toolsServiceTypes.js';
 import { MAX_CHILDREN_URIs_PAGE, MAX_DIRSTR_CHARS_TOTAL_BEGINNING, MAX_DIRSTR_CHARS_TOTAL_TOOL } from './prompt/prompts.js';
+import { LIGHT_AGENT_MAX_DIRSTR_CHARS } from './lightAgent.js';
 
 
 const MAX_FILES_TOTAL = 1000;
@@ -19,6 +20,9 @@ const MAX_FILES_TOTAL = 1000;
 const START_MAX_DEPTH = Infinity;
 const START_MAX_ITEMS_PER_DIR = Infinity; // Add start value as Infinity
 
+const LIGHT_MAX_DEPTH = 2;
+const LIGHT_MAX_ITEMS_PER_DIR = 2;
+
 const DEFAULT_MAX_DEPTH = 3;
 const DEFAULT_MAX_ITEMS_PER_DIR = 3;
 
@@ -26,7 +30,7 @@ export interface IDirectoryStrService {
 	readonly _serviceBrand: undefined;
 
 	getDirectoryStrTool(uri: URI): Promise<string>
-	getAllDirectoriesStr(opts: { cutOffMessage: string; openedURIs?: string[] }): Promise<string>
+	getAllDirectoriesStr(opts: { cutOffMessage: string; openedURIs?: string[]; lightweight?: boolean }): Promise<string>
 
 	invalidateCache(): void
 
@@ -476,9 +480,10 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 		return c
 	}
 
-	async getAllDirectoriesStr({ cutOffMessage, openedURIs }: { cutOffMessage: string; openedURIs?: string[] }) {
+	async getAllDirectoriesStr({ cutOffMessage, openedURIs, lightweight }: { cutOffMessage: string; openedURIs?: string[]; lightweight?: boolean }) {
 		const workspaceKey = await this._getWorkspaceCacheKey(openedURIs);
-		if (this._cachedDirectoryStr !== null && this._cachedWorkspaceKey === workspaceKey) {
+		const cacheKey = `${workspaceKey}:${lightweight ? 'light' : 'full'}`;
+		if (this._cachedDirectoryStr !== null && this._cachedWorkspaceKey === cacheKey) {
 			return this._cachedDirectoryStrWasCutOff
 				? `${this._cachedDirectoryStr.trimEnd()}\n${cutOffMessage}`
 				: this._cachedDirectoryStr;
@@ -490,8 +495,11 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 		if (folders.length === 0)
 			return '(NO WORKSPACE OPEN)';
 
-		// Use START_MAX_ITEMS_PER_DIR if not specified
-		const startMaxItemsPerDir = START_MAX_ITEMS_PER_DIR;
+		const maxCharsTotal = lightweight ? LIGHT_AGENT_MAX_DIRSTR_CHARS : MAX_DIRSTR_CHARS_TOTAL_BEGINNING;
+		const startMaxItemsPerDir = lightweight ? LIGHT_MAX_ITEMS_PER_DIR : START_MAX_ITEMS_PER_DIR;
+		const startMaxDepth = lightweight ? LIGHT_MAX_DEPTH : START_MAX_DEPTH;
+		const fallbackMaxDepth = lightweight ? LIGHT_MAX_DEPTH : DEFAULT_MAX_DEPTH;
+		const fallbackMaxItemsPerDir = lightweight ? LIGHT_MAX_ITEMS_PER_DIR : DEFAULT_MAX_ITEMS_PER_DIR;
 
 		for (let i = 0; i < folders.length; i += 1) {
 			if (i > 0) str += '\n';
@@ -504,13 +512,12 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 			const eRoot = await this.fileService.resolve(rootURI)
 			if (!eRoot) continue;
 
-			// First try with START_MAX_DEPTH and startMaxItemsPerDir
 			const { content: initialContent, wasCutOff: initialCutOff } = await computeAndStringifyDirectoryTree(
 				eRoot,
 				this.fileService,
-				MAX_DIRSTR_CHARS_TOTAL_BEGINNING - str.length,
+				maxCharsTotal - str.length,
 				{ count: 0 },
-				{ maxDepth: START_MAX_DEPTH, currentDepth: 0, maxItemsPerDir: startMaxItemsPerDir }
+				{ maxDepth: startMaxDepth, currentDepth: 0, maxItemsPerDir: startMaxItemsPerDir }
 			);
 
 			// If cut off, try again with DEFAULT_MAX_DEPTH and DEFAULT_MAX_ITEMS_PER_DIR
@@ -519,9 +526,9 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 				const result = await computeAndStringifyDirectoryTree(
 					eRoot,
 					this.fileService,
-					MAX_DIRSTR_CHARS_TOTAL_BEGINNING - str.length,
+					maxCharsTotal - str.length,
 					{ count: 0 },
-					{ maxDepth: DEFAULT_MAX_DEPTH, currentDepth: 0, maxItemsPerDir: DEFAULT_MAX_ITEMS_PER_DIR }
+					{ maxDepth: fallbackMaxDepth, currentDepth: 0, maxItemsPerDir: fallbackMaxItemsPerDir }
 				);
 				content = result.content;
 				wasCutOff = result.wasCutOff;
@@ -539,7 +546,7 @@ class DirectoryStrService extends Disposable implements IDirectoryStrService {
 
 		this._cachedDirectoryStr = str;
 		this._cachedDirectoryStrWasCutOff = cutOff;
-		this._cachedWorkspaceKey = workspaceKey;
+		this._cachedWorkspaceKey = cacheKey;
 		return cutOff ? `${str.trimEnd()}\n${cutOffMessage}` : str
 	}
 }

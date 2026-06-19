@@ -6,7 +6,7 @@
 import React, { ButtonHTMLAttributes, FormEvent, FormHTMLAttributes, Fragment, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 
-import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useSettingsState, useActiveURI, useFullChatThreadsStreamState, useAgentDelivery } from '../util/services.js';
+import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useSettingsState, useActiveURI, useFullChatThreadsStreamState, useAgentDelivery, useMessageQueue } from '../util/services.js';
 import { ScrollType } from '../../../../../../../editor/common/editorCommon.js';
 
 import { ChatMarkdownRender, ChatMessageLocation, getApplyBoxId } from '../markdown/ChatMarkdownRender.js';
@@ -41,6 +41,7 @@ import { formatEditStreamPhaseLabel, parseStreamingEditProgress } from '../../..
 import { PlanView } from './PlanView.js';
 import { ChatInlineDiffView, computeChatDiff } from './ChatInlineDiffView.js';
 import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
+import { ContextDocPanel } from './ContextDocPanel.js';
 
 
 
@@ -391,15 +392,21 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 				<div className="flex items-center gap-1.5 shrink-0">
 
 					{isStreaming ? (
-						<span className="text-[10px] text-trove-fg-4 italic max-w-[min(420px,45vw)] truncate" title={streamingStatusText ?? 'Working…'}>
-							{streamingStatusText ?? 'Working…'}
-						</span>
-					) : null}
-
-					{isStreaming && loadingIcon}
-
-					{isStreaming ? (
-						<ButtonStop onClick={onAbort} />
+						<>
+							<span className="text-[10px] text-trove-fg-4 italic max-w-[min(420px,45vw)] truncate" title={streamingStatusText ?? 'Working…'}>
+								{streamingStatusText ?? 'Working…'}
+							</span>
+							{loadingIcon}
+							<ButtonStop onClick={onAbort} />
+							{!isDisabled ? (
+								<ButtonSubmit
+									onClick={onSubmit}
+									disabled={false}
+									title="Queue for next"
+									aria-label="Queue message for next"
+								/>
+							) : null}
+						</>
 					) : (
 						<ButtonSubmit
 							onClick={onSubmit}
@@ -453,6 +460,41 @@ export const ButtonStop = ({ className, ...props }: ButtonHTMLAttributes<HTMLBut
 }
 
 
+
+const MessageQueuePanel = ({ threadId }: { threadId: string }) => {
+	const accessor = useAccessor()
+	const chatThreadsService = accessor.get('IChatThreadService')
+	const queue = useMessageQueue(threadId)
+
+	if (queue.length === 0) return null
+
+	return (
+		<div className="mx-2 mb-1.5 flex flex-col gap-1 rounded-lg border border-trove-border-3/40 bg-trove-bg-2/50 px-2.5 py-2">
+			<p className="text-[10px] font-semibold uppercase tracking-wider text-trove-fg-4">
+				Queued · {queue.length}
+			</p>
+			{queue.map((item, index) => (
+				<div
+					key={item.id}
+					className="flex items-center gap-2 rounded-md border border-trove-border-3/30 bg-trove-bg-1/60 px-2 py-1.5"
+				>
+					<span className="shrink-0 text-[10px] font-mono text-trove-fg-4">{index + 1}</span>
+					<span className="min-w-0 flex-1 truncate text-[12px] text-trove-fg-2" title={item.userMessage}>
+						{item.displayMessage ?? item.userMessage}
+					</span>
+					<button
+						type="button"
+						className="shrink-0 rounded p-0.5 text-trove-fg-4 hover:bg-trove-bg-3/80 hover:text-trove-fg-2"
+						aria-label="Remove queued message"
+						onClick={() => chatThreadsService.removeQueuedMessage(threadId, item.id)}
+					>
+						<X size={12} />
+					</button>
+				</div>
+			))}
+		</div>
+	)
+}
 
 const scrollToBottom = (divRef: { current: HTMLElement | null }) => {
 	if (divRef.current) {
@@ -2882,11 +2924,10 @@ export const SidebarChat = () => {
 	const onSubmit = useCallback(async (_forceSubmit?: string) => {
 
 		if (isDisabled && !_forceSubmit) return
-		if (isRunning) return
 
 		const threadId = chatThreadsService.state.currentThreadId
 
-		// send message to LLM
+		// send message to LLM (or queue when agent is running)
 		const userMessage = _forceSubmit || textAreaRef.current?.value || ''
 
 		try {
@@ -2899,7 +2940,7 @@ export const SidebarChat = () => {
 		textAreaFnsRef.current?.setValue('')
 		textAreaRef.current?.focus() // focus input after submit
 
-	}, [chatThreadsService, isDisabled, isRunning, textAreaRef, textAreaFnsRef, setSelections, settingsState])
+	}, [chatThreadsService, isDisabled, textAreaRef, textAreaFnsRef, setSelections])
 
 	const onAbort = async () => {
 		const threadId = currentThread.id
@@ -3067,30 +3108,33 @@ export const SidebarChat = () => {
 		}
 	}, [onSubmit, onAbort, isRunning])
 
-	const inputChatArea = <TroveChatArea
-		featureName='Chat'
-		onSubmit={() => onSubmit()}
-		onAbort={onAbort}
-		isStreaming={!!isRunning}
-		streamingStatusText={streamingStatusText}
-		isDisabled={isDisabled}
-		onClickAnywhere={() => { textAreaRef.current?.focus() }}
-	>
-		<TroveInputBox2
-			enableAtToMention
-			inlineSelections={selections}
-			setInlineSelections={setSelections}
-			className={`min-h-[44px] px-0 py-0 text-[13px] leading-[1.45]`}
-			placeholder="Ask Trove anything…"
-			onChangeText={onChangeText}
-			onKeyDown={onKeyDown}
-			onFocus={() => { chatThreadsService.setCurrentlyFocusedMessageIdx(undefined) }}
-			ref={textAreaRef}
-			fnsRef={textAreaFnsRef}
-			multiline={true}
-		/>
+	const inputChatArea = <>
+		<MessageQueuePanel threadId={threadId} />
+		<TroveChatArea
+			featureName='Chat'
+			onSubmit={() => onSubmit()}
+			onAbort={onAbort}
+			isStreaming={!!isRunning}
+			streamingStatusText={streamingStatusText}
+			isDisabled={isDisabled}
+			onClickAnywhere={() => { textAreaRef.current?.focus() }}
+		>
+			<TroveInputBox2
+				enableAtToMention
+				inlineSelections={selections}
+				setInlineSelections={setSelections}
+				className={`min-h-[44px] px-0 py-0 text-[13px] leading-[1.45]`}
+				placeholder={isRunning ? 'Queue a follow-up…' : 'Ask Trove anything…'}
+				onChangeText={onChangeText}
+				onKeyDown={onKeyDown}
+				onFocus={() => { chatThreadsService.setCurrentlyFocusedMessageIdx(undefined) }}
+				ref={textAreaRef}
+				fnsRef={textAreaFnsRef}
+				multiline={true}
+			/>
 
-	</TroveChatArea>
+		</TroveChatArea>
+	</>
 
 
 	const isLandingPage = previousMessages.length === 0
@@ -3129,6 +3173,9 @@ export const SidebarChat = () => {
 		className='w-full h-full max-h-full flex flex-col overflow-auto px-4'
 	>
 		<ErrorBoundary>
+			<ContextDocPanel />
+		</ErrorBoundary>
+		<ErrorBoundary>
 			{landingPageInput}
 		</ErrorBoundary>
 
@@ -3163,7 +3210,9 @@ export const SidebarChat = () => {
 		ref={sidebarRef}
 		className='w-full h-full flex flex-col overflow-hidden'
 	>
-
+		<ErrorBoundary>
+			<ContextDocPanel />
+		</ErrorBoundary>
 		<ErrorBoundary>
 			{messagesHTML}
 		</ErrorBoundary>

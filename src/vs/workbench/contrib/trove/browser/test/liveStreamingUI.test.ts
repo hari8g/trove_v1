@@ -16,7 +16,7 @@ suite('Trove - live streaming UI helpers', () => {
 	});
 
 	test('extractStreamingIntentLine captures next-step phrasing', () => {
-		const text = 'Now I have context. I\'ll now update style.css with the Nike neon palette.';
+		const text = 'Now I have context. I\'ll update style.css with the Nike neon palette.';
 		assert.strictEqual(
 			extractStreamingIntentLine(text),
 			'update style.css with the Nike neon palette',

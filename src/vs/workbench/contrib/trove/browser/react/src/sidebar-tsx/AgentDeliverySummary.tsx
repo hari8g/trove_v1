@@ -8,7 +8,6 @@ import { Check, ExternalLink, FileCode2, Globe, Sparkles } from 'lucide-react';
 import { AgentDeliverySummary, AgentDeliveryStatus } from '../../../../common/agentDeliveryTypes.js';
 import { useAccessor } from '../util/services.js';
 import { IAgentDeliveryService } from '../../../agentDeliveryService.js';
-import { TROVE_OPEN_WORKSPACE_PREVIEW_ACTION_ID } from '../../../openWorkspacePreviewAction.js';
 
 type StatusTheme = {
 	title: string;
@@ -115,7 +114,6 @@ const OutputActionButtons = ({
 
 export const AgentDeliverySummaryCard = ({ delivery, threadId }: { delivery: AgentDeliverySummary; threadId: string }) => {
 	const accessor = useAccessor();
-	const commandService = accessor.get('ICommandService');
 	const commandBarService = accessor.get('ITroveCommandBarService');
 	const agentDeliveryService = accessor.get('IAgentDeliveryService');
 
@@ -140,8 +138,8 @@ export const AgentDeliverySummaryCard = ({ delivery, threadId }: { delivery: Age
 
 	const openPreview = useCallback(async () => {
 		if (!delivery.previewUrl) return;
-		await commandService.executeCommand(TROVE_OPEN_WORKSPACE_PREVIEW_ACTION_ID, delivery.previewUrl);
-	}, [commandService, delivery.previewUrl]);
+		await agentDeliveryService.ensurePreviewLive(threadId);
+	}, [agentDeliveryService, delivery.previewUrl, threadId]);
 
 	const displayLine = useMemo(() => {
 		if (delivery.previewUrl) return delivery.previewUrl;
@@ -151,9 +149,9 @@ export const AgentDeliverySummaryCard = ({ delivery, threadId }: { delivery: Age
 	}, [delivery]);
 
 	const previewHint = delivery.previewOpenedInEditor
-		? 'Preview open in editor'
+		? 'Preview open in editor · served from Trove Agent terminal'
 		: delivery.previewUrl
-			? 'Click to open preview'
+			? 'Click to open — Trove will start the dev server if needed'
 			: undefined;
 
 	if (!delivery.previewUrl && !showDiffActions && !displayLine) {

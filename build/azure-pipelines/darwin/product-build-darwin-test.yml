@@ -23,6 +23,9 @@ steps:
       - script: npm run test-node
         displayName: Run unit tests (node.js)
         timeoutInMinutes: 15
+      - script: npm run test-trove
+        displayName: Run Trove unit tests
+        timeoutInMinutes: 10
       - script: npm run test-browser-no-install -- --browser webkit --tfs "Browser Unit Tests"
         env:
           DEBUG: "*browser*"

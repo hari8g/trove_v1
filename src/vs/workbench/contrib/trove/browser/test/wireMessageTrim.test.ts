@@ -23,9 +23,12 @@ suite('Trove - wireMessageTrim', () => {
 	test('elideOldestToolResultsFirst omits oldest tool bodies first', () => {
 		const messages = [
 			{ role: 'system', content: 'sys' },
-			{ role: 'user', content: 'u1' },
+			{ role: 'user', content: 'older user turn' },
 			{ role: 'tool', content: 'old tool output '.repeat(100) },
-			{ role: 'assistant', content: 'a1' },
+			{ role: 'assistant', content: 'a0' },
+			{ role: 'user', content: 'u1' },
+			{ role: 'tool', content: 'mid tool 1' },
+			{ role: 'tool', content: 'mid tool 2' },
 			{ role: 'user', content: 'u2' },
 			{ role: 'tool', content: 'recent tool' },
 		];
@@ -33,7 +36,7 @@ suite('Trove - wireMessageTrim', () => {
 		const budget = totalBefore - 500;
 		elideOldestToolResultsFirst(messages, budget);
 		assert.strictEqual(messages[2].content, TOOL_OUTPUT_OMISSION);
-		assert.strictEqual(messages[5].content, 'recent tool');
+		assert.strictEqual(messages[8].content, 'recent tool');
 	});
 
 	test('CHARS_PER_TOKEN is 4', () => {

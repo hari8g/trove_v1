@@ -125,4 +125,66 @@ suite('Trove - toolResultCompaction', () => {
 			assert.ok(lastRead.content.includes('line\nline'));
 		}
 	});
+
+	test('compactStaleToolResults keeps only latest read per file in agent turn', () => {
+		const clockUri = URI.file('/proj/clock.js');
+		const otherUri = URI.file('/proj/other.ts');
+		const contentA = 'a\n'.repeat(50);
+		const contentB = 'b\n'.repeat(50);
+		const messages: ChatMessage[] = [
+			{
+				role: 'user',
+				content: 'fix clock',
+				displayContent: 'fix clock',
+				selections: null,
+				state: { stagingSelections: [], isBeingEdited: false },
+			},
+			{
+				role: 'tool',
+				type: 'success',
+				name: 'read_file',
+				content: contentA,
+				id: 't1',
+				rawParams: {},
+				mcpServerName: undefined,
+				compactable: true,
+				params: { uri: clockUri, startLine: 1, endLine: 120, pageNumber: 1 },
+				result: { fileContents: contentA, totalFileLen: contentA.length, totalNumLines: 50, hasNextPage: false },
+			},
+			{
+				role: 'tool',
+				type: 'success',
+				name: 'read_file',
+				content: contentB,
+				id: 't2',
+				rawParams: {},
+				mcpServerName: undefined,
+				compactable: true,
+				params: { uri: clockUri, startLine: 270, endLine: 380, pageNumber: 1 },
+				result: { fileContents: contentB, totalFileLen: contentB.length, totalNumLines: 50, hasNextPage: false },
+			},
+			{
+				role: 'tool',
+				type: 'success',
+				name: 'read_file',
+				content: 'export const x = 1;\n',
+				id: 't3',
+				rawParams: {},
+				mcpServerName: undefined,
+				compactable: true,
+				params: { uri: otherUri, startLine: 1, endLine: 1, pageNumber: 1 },
+				result: { fileContents: 'export const x = 1;\n', totalFileLen: 18, totalNumLines: 1, hasNextPage: false },
+			},
+		];
+
+		const compacted = compactStaleToolResults(messages);
+		const firstClock = compacted[1];
+		const secondClock = compacted[2];
+		assert.strictEqual(firstClock.role, 'tool');
+		assert.strictEqual(secondClock.role, 'tool');
+		if (firstClock.role === 'tool' && secondClock.role === 'tool') {
+			assert.ok(!firstClock.content.includes('a\na'));
+			assert.ok(secondClock.content.includes('b\nb'));
+		}
+	});
 });

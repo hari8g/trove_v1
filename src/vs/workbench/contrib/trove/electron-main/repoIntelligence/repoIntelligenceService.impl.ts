@@ -60,7 +60,17 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		super();
 		const dbPath = getRepoIntelligenceDbPath(this._environmentService.userDataPath);
 		this._db = new RepoIntelligenceDb(dbPath);
-		this._db.init().catch(err => console.error('[RepoIntelligence] DB init failed:', err));
+		this._db.init()
+			.then(() => {
+				this._metricsService.capture('RepoIntelligence DB Ready', { dbPath });
+			})
+			.catch(err => {
+				console.error('[RepoIntelligence] DB init failed:', err);
+				this._metricsService.capture('RepoIntelligence DB Init Failed', {
+					message: err instanceof Error ? err.message : String(err),
+					dbPath,
+				});
+			});
 		this._memoryFilePath = getTroveMemoryFilePath(this._environmentService.userDataPath);
 		this._loadUserMemory().catch(err => console.error('[RepoIntelligence] Memory load failed:', err));
 	}
@@ -136,6 +146,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		const chunks = buildChunksForWorkspace(workspaceRoot, hash, scan.fileMeta);
 		await this._db.replaceChunks(hash, chunks);
 		console.log(`[RepoIntelligence] Indexed ${chunks.length} chunks in ${Date.now() - chunkStart}ms`);
+		this._metricsService.capture('RepoIntelligence Chunks Indexed', { chunkCount: chunks.length, workspaceRoot });
 
 		const existing = await this._db.getProfile(hash);
 		if (existing?.projectPurpose && existing?.architectureSummary) {
@@ -173,6 +184,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			const chunks = buildChunksForWorkspace(workspaceRoot, hash, fileMeta);
 			await this._db.replaceChunks(hash, chunks);
 			console.log(`[RepoIntelligence] Backfilled ${chunks.length} chunks in ${Date.now() - chunkStart}ms`);
+			this._metricsService.capture('RepoIntelligence Chunks Backfilled', { chunkCount: chunks.length, workspaceRoot });
 			return;
 		}
 

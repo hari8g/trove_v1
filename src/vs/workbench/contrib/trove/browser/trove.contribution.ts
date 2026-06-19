@@ -70,6 +70,9 @@ import './troveSCMService.js'
 import './repoIntelligenceService.js'
 import './webSearchService.js'
 import './repoIntelligenceStatusContribution.js'
+import './riafAgentService.js'
+import './analyseRepositoryAction.js'
+import './usageMeteringService.js'
 
 // ---------- common (unclear if these actually need to be imported, because they're already imported wherever they're used) ----------
 

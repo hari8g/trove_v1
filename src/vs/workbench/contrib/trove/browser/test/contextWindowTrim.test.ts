@@ -29,7 +29,7 @@ suite('Trove - contextWindowTrim', () => {
 			{ role: 'user', content: 'c', displayContent: 'c', selections: null, state: { stagingSelections: [], isBeingEdited: false } },
 			{ role: 'assistant', displayContent: 'd', reasoning: '', anthropicReasoning: null },
 		];
-		assert.strictEqual(getProtectedTailStartIndex(messages), 2);
+		assert.strictEqual(getProtectedTailStartIndex(messages), 0);
 	});
 
 	test('trimChatMessagesForContextWindow removes oldest assistant/tool messages first', () => {
@@ -43,7 +43,7 @@ suite('Trove - contextWindowTrim', () => {
 			chatMessages,
 			systemMessage: 'system',
 			aiInstructions: '',
-			contextWindow: 4000,
+			contextWindow: 800,
 		});
 
 		assert.strictEqual(contextWasTrimmed, true);

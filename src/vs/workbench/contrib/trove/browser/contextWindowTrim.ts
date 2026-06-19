@@ -6,6 +6,7 @@
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
 
 export const CONTEXT_WINDOW_USE_RATIO = 0.85;
+export const AGGRESSIVE_CONTEXT_WINDOW_USE_RATIO = 0.70;
 
 /** Fast token estimate — ~4 characters per token. */
 export const estimateTokens = (text: string | null | undefined): number => {
@@ -76,8 +77,10 @@ export const trimChatMessagesForContextWindow = (opts: {
 	systemMessage: string;
 	aiInstructions: string;
 	contextWindow: number;
+	forceAggressiveTrim?: boolean;
 }): { messages: ChatMessage[]; contextWasTrimmed: boolean } => {
-	const tokenBudget = Math.floor(opts.contextWindow * CONTEXT_WINDOW_USE_RATIO);
+	const useRatio = opts.forceAggressiveTrim ? AGGRESSIVE_CONTEXT_WINDOW_USE_RATIO : CONTEXT_WINDOW_USE_RATIO;
+	const tokenBudget = Math.floor(opts.contextWindow * useRatio);
 	const messages = [...opts.chatMessages];
 
 	if (estimateChatHistoryTokens({ ...opts, chatMessages: messages }) <= tokenBudget) {

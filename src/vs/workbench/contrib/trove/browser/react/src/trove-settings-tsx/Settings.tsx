@@ -23,6 +23,7 @@ import { MCPServer } from '../../../../common/mcpServiceTypes.js';
 import { useMCPServiceState } from '../util/services.js';
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js';
 import { StorageScope, StorageTarget } from '../../../../../../../platform/storage/common/storage.js';
+import { UsageDashboard } from './UsageDashboard.js';
 
 type Tab =
 	| 'models'
@@ -31,6 +32,7 @@ type Tab =
 	| 'featureOptions'
 	| 'mcp'
 	| 'general'
+	| 'usage'
 	| 'all';
 
 
@@ -42,6 +44,28 @@ const ButtonLeftTextRightOption = ({ text, leftButton }: { text: string, leftBut
 			{text}
 		</span>
 	</div>
+}
+
+const AgentLoopLimitInput = ({ label, value, onChange, min, max }: {
+	label: string;
+	value: number;
+	onChange: (value: number) => void;
+	min: number;
+	max: number;
+}) => {
+	return <label className='flex flex-col gap-0.5 text-xs text-trove-fg-3'>
+		<span>{label}</span>
+		<TroveSimpleInputBox
+			value={String(value)}
+			onChangeValue={(newVal) => {
+				const parsed = parseInt(newVal, 10);
+				if (!Number.isNaN(parsed)) {
+					onChange(Math.min(max, Math.max(min, parsed)));
+				}
+			}}
+			compact={true}
+		/>
+	</label>
 }
 
 // models
@@ -1041,6 +1065,7 @@ export const Settings = () => {
 		{ tab: 'providers', label: 'Main Providers' },
 		{ tab: 'featureOptions', label: 'Feature Options' },
 		{ tab: 'general', label: 'General' },
+		{ tab: 'usage', label: 'Usage' },
 		{ tab: 'mcp', label: 'MCP' },
 		{ tab: 'all', label: 'All Settings' },
 	];
@@ -1251,6 +1276,14 @@ export const Settings = () => {
 														<div className={`my-2 ${!settingsState.globalSettings.enableAutocomplete ? 'hidden' : ''}`}>
 															<ModelDropdown featureName={'Autocomplete'} className='text-xs text-trove-fg-3 bg-trove-bg-1 border border-trove-border-1 rounded p-0.5 px-1' />
 														</div>
+														<div className={`flex items-center gap-x-2 my-2 ${!settingsState.globalSettings.enableAutocomplete ? 'hidden' : ''}`}>
+															<TroveSwitch
+																size='xs'
+																value={settingsState.globalSettings.enableAutocompleteCodebaseContext}
+																onChange={(newVal) => troveSettingsService.setGlobalSetting('enableAutocompleteCodebaseContext', newVal)}
+															/>
+															<span className='text-trove-fg-3 text-xs pointer-events-none'>Include indexed codebase snippets in autocomplete</span>
+														</div>
 													</ErrorBoundary>
 
 												</div>
@@ -1307,6 +1340,14 @@ export const Settings = () => {
 													<div className='flex items-center gap-x-2 my-2'>
 														<TroveSwitch
 															size='xs'
+															value={settingsState.globalSettings.enableLightAgent}
+															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableLightAgent', newVal)}
+														/>
+														<span className='text-trove-fg-3 text-xs pointer-events-none'>Light agent (skip plan, parallel reads, smaller context)</span>
+													</div>
+													<div className='flex items-center gap-x-2 my-2'>
+														<TroveSwitch
+															size='xs'
 															value={settingsState.globalSettings.enableAgentPlan}
 															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableAgentPlan', newVal)}
 														/>
@@ -1327,6 +1368,37 @@ export const Settings = () => {
 															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableParallelReadBatching', newVal)}
 														/>
 														<span className='text-trove-fg-3 text-xs pointer-events-none'>Parallel read-only tool batching</span>
+													</div>
+													<div className='mt-3 mb-1 text-xs text-trove-fg-3 font-medium'>Agent loop limits</div>
+													<div className='grid grid-cols-2 gap-2 my-2'>
+														<AgentLoopLimitInput
+															label='Max agent steps'
+															value={settingsState.globalSettings.maxAgentIterations}
+															onChange={(v) => troveSettingsService.setGlobalSetting('maxAgentIterations', v)}
+															min={1}
+															max={100}
+														/>
+														<AgentLoopLimitInput
+															label='Max read/search calls'
+															value={settingsState.globalSettings.maxReadOnlyCalls}
+															onChange={(v) => troveSettingsService.setGlobalSetting('maxReadOnlyCalls', v)}
+															min={1}
+															max={50}
+														/>
+														<AgentLoopLimitInput
+															label='Max consecutive tool fails'
+															value={settingsState.globalSettings.maxConsecutiveToolFails}
+															onChange={(v) => troveSettingsService.setGlobalSetting('maxConsecutiveToolFails', v)}
+															min={1}
+															max={10}
+														/>
+														<AgentLoopLimitInput
+															label='Stream stall timeout (sec)'
+															value={Math.round(settingsState.globalSettings.llmStreamStallTimeoutMs / 1000)}
+															onChange={(v) => troveSettingsService.setGlobalSetting('llmStreamStallTimeoutMs', v * 1000)}
+															min={10}
+															max={300}
+														/>
 													</div>
 													<div className='flex items-center gap-x-2 my-2'>
 														<TroveSwitch
@@ -1580,6 +1652,17 @@ Alternatively, place a \`.troverules\` file in the root of your workspace.
 							</div>
 
 
+
+							{/* Usage section */}
+							<div className={shouldShowTab('usage') ? '' : 'hidden'}>
+								<ErrorBoundary>
+									<h2 className='text-3xl mb-2'>Usage</h2>
+									<h4 className='text-trove-fg-3 mb-4'>
+										Track estimated LLM spend and set a session budget cap.
+									</h4>
+									<UsageDashboard />
+								</ErrorBoundary>
+							</div>
 
 							{/* MCP section */}
 							<div className={shouldShowTab('mcp') ? `` : 'hidden'}>

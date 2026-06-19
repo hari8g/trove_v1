@@ -5,6 +5,7 @@
 
 export const CHARS_PER_TOKEN = 4;
 export const OUTPUT_RESERVE_SAFETY_MARGIN = 2_000;
+export const AGGRESSIVE_WIRE_TRIM_RATIO = 0.75;
 export const TOOL_OUTPUT_OMISSION = '[earlier tool output omitted to fit context]';
 
 type WireMessage = { role: string; content: string };

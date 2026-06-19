@@ -27,9 +27,9 @@ export const extractStreamingIntentLine = (text: string | null | undefined): str
 	const trimmed = text?.trim();
 	if (!trimmed) return undefined;
 	const intentPatterns = [
-		/(?:I'll|I will|Next,? I'll|Now I'll|Let me)\s+(.+?)(?:\.|$)/i,
-		/(?:I'm going to|I am going to)\s+(.+?)(?:\.|$)/i,
-		/(?:Next(?:,|:)?\s+)(.+?)(?:\.|$)/i,
+		/(?:I'll|I will|Next,? I'll|Now I'll|Let me)\s+(.+?)(?:\.\s|\.$|$)/i,
+		/(?:I'm going to|I am going to)\s+(.+?)(?:\.\s|\.$|$)/i,
+		/(?:Next(?:,|:)?\s+)(.+?)(?:\.\s|\.$|$)/i,
 	];
 	for (const pattern of intentPatterns) {
 		const match = trimmed.match(pattern);

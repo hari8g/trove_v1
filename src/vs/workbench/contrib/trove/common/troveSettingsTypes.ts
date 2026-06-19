@@ -453,10 +453,16 @@ export type GlobalSettings = {
 	disableSystemMessage: boolean;
 	autoAcceptLLMChanges: boolean;
 	enableAgentPlan: boolean;
+	enableLightAgent: boolean;
 	enablePromptCache: boolean;
 	enableParallelReadBatching: boolean;
 	enableWebSearch: boolean;
 	webSearchApiKey: string;
+	maxAgentIterations: number;
+	maxReadOnlyCalls: number;
+	maxConsecutiveToolFails: number;
+	llmStreamStallTimeoutMs: number;
+	enableAutocompleteCodebaseContext: boolean;
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
@@ -474,10 +480,16 @@ export const defaultGlobalSettings: GlobalSettings = {
 	disableSystemMessage: false,
 	autoAcceptLLMChanges: false,
 	enableAgentPlan: true,
+	enableLightAgent: false,
 	enablePromptCache: true,
 	enableParallelReadBatching: true,
 	enableWebSearch: true,
 	webSearchApiKey: '',
+	maxAgentIterations: 25,
+	maxReadOnlyCalls: 12,
+	maxConsecutiveToolFails: 3,
+	llmStreamStallTimeoutMs: 60_000,
+	enableAutocompleteCodebaseContext: true,
 }
 
 export type GlobalSettingName = keyof GlobalSettings

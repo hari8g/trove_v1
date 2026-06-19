@@ -3,6 +3,7 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -10,10 +11,13 @@ import { debounce } from '../../../../base/common/decorators.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { openWorkspaceSimpleBrowser, reloadWorkspaceSimpleBrowser } from './simpleBrowserOpen.js';
+
+const PROBE_TIMEOUT_MS = 4_000;
 
 const WEB_ASSET_PATTERN = /\.(html?|css|scss|sass|less|jsx?|tsx?|vue|svelte|json|svg|png|jpe?g|gif|webp|woff2?|ttf|eot|ico|map)$/i;
 
@@ -23,6 +27,8 @@ export interface IWorkspacePreviewService {
 	getActivePreviewUrl(): string | undefined;
 	openPreview(url: string): Promise<boolean>;
 	reloadPreview(): Promise<boolean>;
+	/** True when the URL responds (uses Node request — not browser fetch; workbench CSP blocks localhost). */
+	probePreviewUrl(url: string, timeoutMs?: number): Promise<boolean>;
 	/** Open when dev-server output first shows a localhost URL (idempotent per URL). */
 	tryOpenFromTerminalOutput(output: string, command?: string): Promise<boolean>;
 	/** Debounced reload after web asset edits while preview is open. */
@@ -44,6 +50,7 @@ class WorkspacePreviewService extends Disposable implements IWorkspacePreviewSer
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IRequestService private readonly _requestService: IRequestService,
 	) {
 		super();
 		this._register(this._fileService.onDidFilesChange(e => {
@@ -95,6 +102,24 @@ class WorkspacePreviewService extends Disposable implements IWorkspacePreviewSer
 			this._onDidChangePreviewUrl.fire(url);
 		}
 		return reloaded;
+	}
+
+	async probePreviewUrl(url: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+		const normalized = url.trim();
+		if (!normalized) {
+			return false;
+		}
+		try {
+			const context = await this._requestService.request({
+				type: 'GET',
+				url: normalized,
+				timeout: timeoutMs,
+			}, CancellationToken.None);
+			const status = context.res.statusCode ?? 0;
+			return status >= 200 && status < 500;
+		} catch {
+			return false;
+		}
 	}
 
 	async tryOpenFromTerminalOutput(output: string, command?: string): Promise<boolean> {

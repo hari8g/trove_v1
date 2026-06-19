@@ -11,6 +11,7 @@ import { SelectBox } from '../../../../../../../base/browser/ui/selectBox/select
 import { IconWarning } from '../sidebar-tsx/SidebarChat.js'
 import { TROVE_OPEN_SETTINGS_ACTION_ID, TROVE_TOGGLE_SETTINGS_ACTION_ID } from '../../../troveSettingsPane.js'
 import { modelFilterOfFeatureName, ModelOption } from '../../../../../../../workbench/contrib/trove/common/troveSettingsService.js'
+import { getModelCapabilities } from '../../../../../../../workbench/contrib/trove/common/modelCapabilities.js'
 import { WarningBox } from './WarningBox.js'
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js'
 
@@ -95,5 +96,19 @@ export const ModelDropdown = ({ featureName, className }: { featureName: Feature
 
 	return <ErrorBoundary>
 		<MemoizedModelDropdown featureName={featureName} className={className} />
+		<UnrecognizedModelWarning featureName={featureName} />
 	</ErrorBoundary>
+}
+
+const UnrecognizedModelWarning = ({ featureName }: { featureName: FeatureName }) => {
+	const settingsState = useSettingsState()
+	const selection = settingsState.modelSelectionOfFeature[featureName]
+	if (!selection) {
+		return null
+	}
+	const caps = getModelCapabilities(selection.providerName, selection.modelName, settingsState.overridesOfModel)
+	if (!caps.isUnrecognizedModel) {
+		return null
+	}
+	return <WarningBox text={`${selection.modelName} uses default capabilities (4k context). Override context window in model settings if needed.`} />
 }

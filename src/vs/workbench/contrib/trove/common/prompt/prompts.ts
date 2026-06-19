@@ -12,7 +12,7 @@ import { os } from '../helpers/systemInfo.js';
 import { RawToolParamsObj } from '../sendLLMMessageTypes.js';
 import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, BuiltinToolResultType, ToolName } from '../toolsServiceTypes.js';
 import { ChatMode } from '../troveSettingsTypes.js';
-import type { WorkspaceProfile } from '../repoIntelligenceTypes.js';
+import { REPO_PROFILE_MAX_CHARS, type WorkspaceProfile } from '../repoIntelligenceTypes.js';
 
 // Triple backtick wrapper used throughout the prompts for code blocks
 export const tripleTick = ['```', '```']
@@ -503,25 +503,72 @@ const systemToolsXMLPrompt = (chatMode: ChatMode, mcpTools: InternalToolInfo[] |
 // ======================================================== chat (normal, gather, agent) ========================================================
 
 
-export function buildRepoContextBlock(profile: WorkspaceProfile | null): string {
+export function serializeWorkspaceProfileForPrompt(
+	profile: WorkspaceProfile | null,
+	mode: ChatMode,
+): string {
 	if (!profile) return '';
+
 	const projectName = profile.workspaceRoot.split('/').at(-1) ?? profile.workspaceRoot;
-	const build = profile.buildCommands.find(c => c.purpose === 'build')?.command ?? profile.buildCommands[0]?.command
-	const start = profile.buildCommands.find(c => c.purpose === 'start')?.command
-	return `
-<repository_context>
-Project: ${projectName}
-Languages: ${profile.languageStack.join(', ') || 'unknown'}
-Frameworks: ${profile.frameworks.map(f => f.name).join(', ') || 'none detected'}
-Purpose: ${profile.projectPurpose ?? 'unknown'}
-Architecture: ${profile.architectureSummary ?? 'unknown'}
-Build: ${build ?? 'none detected'}
-Start (dev server): ${start ?? 'none detected'}
-Test: ${profile.testCommands[0]?.command ?? 'none detected'}
-Lint: ${profile.lintCommands[0]?.command ?? 'none detected'}
-Typecheck: ${profile.typecheckCommands[0]?.command ?? 'none detected'}
-</repository_context>
-`.trim();
+	const staleNote = profile.isStale ? ' [stale — being refreshed in background]' : '';
+
+	const lines: string[] = [
+		`Project: ${projectName}${staleNote}`,
+		`Languages: ${profile.languageStack.join(', ') || 'unknown'}`,
+		`Frameworks: ${profile.frameworks.map(f =>
+			f.version ? `${f.name}@${f.version}` : f.name
+		).join(', ') || 'none detected'}`,
+		`Package managers: ${profile.packageManagers.join(', ') || 'unknown'}`,
+	];
+
+	if (profile.projectPurpose) {
+		lines.push(`Purpose: ${profile.projectPurpose}`);
+	}
+
+	const buildCmd = profile.buildCommands.find(c => c.purpose === 'build')?.command
+		?? profile.buildCommands[0]?.command;
+	const startCmd = profile.buildCommands.find(c => c.purpose === 'start')?.command;
+	const testCmd = profile.testCommands[0]?.command;
+	const lintCmd = profile.lintCommands[0]?.command;
+	const checkCmd = profile.typecheckCommands[0]?.command;
+
+	if (buildCmd) lines.push(`Build command: ${buildCmd}`);
+	if (startCmd) lines.push(`Dev server:    ${startCmd}`);
+	if (testCmd) lines.push(`Test command:  ${testCmd}`);
+	if (lintCmd) lines.push(`Lint command:  ${lintCmd}`);
+	if (checkCmd) lines.push(`Typecheck:     ${checkCmd}`);
+
+	if (mode === 'agent' || mode === 'gather') {
+		lines.push(`File count: ${profile.fileCount.toLocaleString()}`);
+		lines.push(`Total LOC:  ${profile.totalLoc.toLocaleString()}`);
+
+		if (profile.architectureSummary) {
+			const summary = profile.architectureSummary.length > 400
+				? profile.architectureSummary.slice(0, 400) + '…'
+				: profile.architectureSummary;
+			lines.push(`Architecture summary: ${summary}`);
+		}
+
+		const allBuild = profile.buildCommands
+			.filter(c => c.purpose !== 'build' && c.purpose !== 'start' && c.confidence !== 'low')
+			.slice(0, 3);
+		if (allBuild.length > 0) {
+			lines.push(`Other commands: ${allBuild.map(c => `${c.purpose}: ${c.command}`).join(' · ')}`);
+		}
+	}
+
+	const body = lines.join('\n');
+	const cap = REPO_PROFILE_MAX_CHARS[mode] ?? REPO_PROFILE_MAX_CHARS.normal;
+	const capped = body.length > cap ? body.slice(0, cap) + '\n…[profile truncated]' : body;
+
+	return `<repository_context>\n${capped}\n</repository_context>`;
+}
+
+export function buildRepoContextBlock(
+	profile: WorkspaceProfile | null,
+	mode: ChatMode = 'agent',
+): string {
+	return serializeWorkspaceProfileForPrompt(profile, mode);
 }
 
 export function buildWorkspaceRulesBlock(workspaceRules: string | null): string {
@@ -568,7 +615,7 @@ export function buildVerificationReminder(profile: WorkspaceProfile | null): str
 }
 
 
-export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, repoProfile?: WorkspaceProfile | null, workspaceRules?: string | null, userMemory?: string | null }) => {
+export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, repoProfile?: WorkspaceProfile | null, workspaceRules?: string | null, userMemory?: string | null, repoProfileMode?: ChatMode }) => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -670,7 +717,8 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 
 	// return answer
 	const ansStrs: string[] = []
-	const repoContext = buildRepoContextBlock(repoProfile)
+	const profileMode = repoProfileMode ?? mode
+	const repoContext = serializeWorkspaceProfileForPrompt(repoProfile, profileMode)
 	if (repoContext) ansStrs.push(repoContext)
 	const rulesBlock = buildWorkspaceRulesBlock(workspaceRules ?? null)
 	if (rulesBlock) ansStrs.push(rulesBlock)

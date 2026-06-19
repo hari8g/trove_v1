@@ -53,7 +53,10 @@ import { ISearchService } from '../../../../../../services/search/common/search.
 import { IExtensionManagementService } from '../../../../../../../platform/extensionManagement/common/extensionManagement.js'
 import { IMCPService } from '../../../../common/mcpService.js';
 import { IAgentDeliveryService } from '../../../agentDeliveryService.js';
+import { IRiafAgentService } from '../../../../common/riaf/riafTypes.js';
+import { IUsageMeteringService } from '../../../usageMeteringService.js';
 import { AgentDeliverySummary } from '../../../../common/agentDeliveryTypes.js';
+import type { QueuedUserMessage } from '../../../../common/chatMessageQueueTypes.js';
 import { IStorageService, StorageScope } from '../../../../../../../platform/storage/common/storage.js'
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js'
 
@@ -87,6 +90,9 @@ const mcpListeners: Set<() => void> = new Set()
 
 let agentDeliveryByThread: Record<string, AgentDeliverySummary | undefined> = {}
 const agentDeliveryListeners: Set<(threadId: string) => void> = new Set()
+
+let messageQueueByThread: Record<string, readonly QueuedUserMessage[]> = {}
+const messageQueueListeners: Set<(threadId: string) => void> = new Set()
 
 
 // must call this before you can use any of the hooks below
@@ -199,6 +205,23 @@ export const _registerServices = (accessor: ServicesAccessor) => {
 		})
 	)
 
+	const syncMessageQueue = (threadId: string) => {
+		messageQueueByThread = {
+			...messageQueueByThread,
+			[threadId]: chatThreadsStateService.getMessageQueue(threadId),
+		}
+		messageQueueListeners.forEach(l => l(threadId))
+	}
+	syncMessageQueue(chatThreadsStateService.state.currentThreadId)
+	disposables.push(
+		chatThreadsStateService.onDidChangeMessageQueue(({ threadId }) => syncMessageQueue(threadId))
+	)
+	disposables.push(
+		chatThreadsStateService.onDidChangeCurrentThread(() => {
+			syncMessageQueue(chatThreadsStateService.state.currentThreadId)
+		})
+	)
+
 
 	return disposables
 }
@@ -252,6 +275,8 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IMCPService: accessor.get(IMCPService),
 		IStorageService: accessor.get(IStorageService),
 		IAgentDeliveryService: accessor.get(IAgentDeliveryService),
+		IRiafAgentService: accessor.get(IRiafAgentService),
+		IUsageMeteringService: accessor.get(IUsageMeteringService),
 
 	} as const
 	return reactAccessor
@@ -438,6 +463,19 @@ export const useAgentDelivery = (threadId: string): AgentDeliverySummary | undef
 		return () => { agentDeliveryListeners.delete(listener) }
 	}, [threadId])
 	return delivery
+}
+
+export const useMessageQueue = (threadId: string): readonly QueuedUserMessage[] => {
+	const [queue, setQueue] = useState<readonly QueuedUserMessage[]>(() => messageQueueByThread[threadId] ?? [])
+	useEffect(() => {
+		setQueue(messageQueueByThread[threadId] ?? [])
+		const listener = (id: string) => {
+			if (id === threadId) setQueue(messageQueueByThread[threadId] ?? [])
+		}
+		messageQueueListeners.add(listener)
+		return () => { messageQueueListeners.delete(listener) }
+	}, [threadId])
+	return queue
 }
 
 
