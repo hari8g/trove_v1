@@ -23,6 +23,7 @@ import { IWebSearchService } from '../common/webSearchTypes.js'
 import { buildVerificationReminder } from '../common/prompt/prompts.js'
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js'
 import { generateUuid } from '../../../../base/common/uuid.js'
+import { errorEditDiagnostic, logEditDiagnostic, uriPathForLog } from './agentEditDiagnostics.js'
 
 
 // tool use for AI
@@ -448,8 +449,10 @@ export class ToolsService implements IToolsService {
 			},
 
 			rewrite_file: async ({ uri, newContent }) => {
+				logEditDiagnostic('tool_execute_start', { toolName: 'rewrite_file', uri: uriPathForLog(uri), contentLen: newContent.length })
 				await troveModelService.initializeModel(uri)
 				if (this.commandBarService.getStreamState(uri) === 'streaming') {
+					errorEditDiagnostic('tool_execute_error', { toolName: 'rewrite_file', uri: uriPathForLog(uri), error: 'file already streaming' })
 					throw new Error(`Another LLM is currently making changes to this file. Please stop streaming for now and ask the user to resume later.`)
 				}
 				await editCodeService.callBeforeApplyOrEdit(uri)
@@ -464,8 +467,10 @@ export class ToolsService implements IToolsService {
 			},
 
 			edit_file: async ({ uri, searchReplaceBlocks }) => {
+				logEditDiagnostic('tool_execute_start', { toolName: 'edit_file', uri: uriPathForLog(uri), blocksLen: searchReplaceBlocks.length })
 				await troveModelService.initializeModel(uri)
 				if (this.commandBarService.getStreamState(uri) === 'streaming') {
+					errorEditDiagnostic('tool_execute_error', { toolName: 'edit_file', uri: uriPathForLog(uri), error: 'file already streaming' })
 					throw new Error(`Another LLM is currently making changes to this file. Please stop streaming for now and ask the user to resume later.`)
 				}
 				await editCodeService.callBeforeApplyOrEdit(uri)

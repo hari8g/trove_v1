@@ -25,12 +25,40 @@ import { isCompactableToolName } from './toolResultCompaction.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { completeRemainingPlanItems, findLatestPlanMessageIdx, generateAgentPlan, markPlanItemDoneForTool, skipRemainingPlanItems } from './agentPlan.js';
 import { getAgentLoopLimits } from './agentLoopSettings.js';
+import { getLlmStreamStallTimeoutMs } from './agentLoopLimits.js';
 import { shouldGenerateAgentPlan, shouldUseParallelReadBatching } from '../common/lightAgent.js';
-import { shouldSkipDuplicateFileRead } from './fileReadDedup.js';
-import { buildRepeatEditHint, trackFileEdit } from './agentEditHints.js';
+import { shouldSkipDuplicateFileRead, buildRepeatFileReadHint, recordFileReadSize } from './fileReadDedup.js';
+import { buildRepeatEditHint, buildLargeFileEditHint, trackFileEdit } from './agentEditHints.js';
 import { buildAgentTailHints, buildExplorationBudgetHint, buildRepeatReadHint, createReadOnlyCallCounts, trackReadOnlyCall } from './agentReadHints.js';
-import { buildRepeatFileReadHint } from './fileReadDedup.js';
-import { getLLMRetryDelayMs, getMaxLLMRetryAttempts, isRateLimitLLMError, shouldForceAggressiveTrimOnRetry } from './llmRateLimit.js';
+import {
+	buildSandboxVerificationHint,
+	createSandboxVerificationTracker,
+	markSandboxCodeChange,
+	markSandboxVerified,
+	MAX_SANDBOX_VERIFICATION_NUDGES,
+	needsSandboxVerification,
+	type SandboxVerificationTracker,
+} from './agentVerificationHints.js';
+import {
+	buildEditCompletionHint,
+	createEditCompletionTracker,
+	isEditToolName,
+	isMissingEditContentError,
+	markInterruptedEditTool,
+	markTruncatedEditTool,
+	needsEditCompletion,
+	MAX_EDIT_COMPLETION_NUDGES,
+} from './agentEditCompletionHints.js';
+import { AGENT_ANTHROPIC_OUTPUT_TOKENS, isLikelyOutputTruncated } from '../common/agentOutputTokenLimits.js';
+import {
+	errorEditDiagnostic,
+	logEditDiagnostic,
+	shouldTraceEditToolCall,
+	summarizeEditToolCall,
+	uriPathForLog,
+	warnEditDiagnostic,
+} from './agentEditDiagnostics.js';
+import { getLLMRetryDelayMs, getMaxLLMRetryAttempts, isRateLimitLLMError, isStreamStallLLMError, shouldForceAggressiveTrimOnRetry, getProviderRateLimitCooldownMs, recordProviderRateLimitHit, formatRateLimitCooldownMessage, clearProviderRateLimitCooldown } from './llmRateLimit.js';
 import { QueuedUserMessage } from '../common/chatMessageQueueTypes.js';
 import { extractRememberIntent, isRememberOnlyMessage, MEMORY_SAVED_CONFIRMATION } from './chatMemoryIntent.js';
 import { addUsageToRunTotals, emptyAgentRunTokenTotals, formatAgentRunTokenSummary } from '../common/llmMessageUsage.js';
@@ -707,7 +735,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		toolName: ToolName,
 		toolId: string,
 		mcpServerName: string | undefined,
-		opts: ({ preapproved: true, unvalidatedToolParams: RawToolParamsObj, validatedParams: ToolCallParams<ToolName> } | { preapproved: false, unvalidatedToolParams: RawToolParamsObj }) & { batchInsert?: boolean; fileEditCounts?: Map<string, number>; readOnlyCallCounts?: ReturnType<typeof createReadOnlyCallCounts> },
+		opts: ({ preapproved: true, unvalidatedToolParams: RawToolParamsObj, validatedParams: ToolCallParams<ToolName> } | { preapproved: false, unvalidatedToolParams: RawToolParamsObj }) & { batchInsert?: boolean; fileEditCounts?: Map<string, number>; readOnlyCallCounts?: ReturnType<typeof createReadOnlyCallCounts>; sandboxVerificationTracker?: SandboxVerificationTracker },
 	): Promise<ToolCallLoopResult> => {
 
 		// compute these below
@@ -732,12 +760,27 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			}
 			catch (error) {
 				const errorMessage = getErrorMessage(error)
+				if (isEditToolName(toolName)) {
+					errorEditDiagnostic('tool_validate_fail', {
+						toolName,
+						toolId,
+						error: errorMessage,
+						rawParamKeys: Object.keys(opts.unvalidatedToolParams).join(','),
+					})
+				}
 				this._addMessageToThread(threadId, { role: 'tool', type: 'invalid_params', rawParams: opts.unvalidatedToolParams, result: null, name: toolName, content: errorMessage, id: toolId, mcpServerName })
 				return { status: 'invalid_params' }
 			}
 			// once validated, add checkpoint for edit
 			if (toolName === 'edit_file') { this._addToolEditCheckpoint({ threadId, uri: (toolParams as BuiltinToolCallParams['edit_file']).uri }) }
 			if (toolName === 'rewrite_file') { this._addToolEditCheckpoint({ threadId, uri: (toolParams as BuiltinToolCallParams['rewrite_file']).uri }) }
+			if (isEditToolName(toolName)) {
+				logEditDiagnostic('tool_validate_ok', {
+					toolName,
+					toolId,
+					uri: uriPathForLog((toolParams as { uri?: URI }).uri),
+				})
+			}
 
 			// 2. if tool requires approval, break from the loop, awaiting approval
 
@@ -747,6 +790,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				// add a tool_request because we use it for UI if a tool is loading (this should be improved in the future)
 				this._addMessageToThread(threadId, { role: 'tool', type: 'tool_request', content: '(Awaiting user permission...)', result: null, name: toolName, params: toolParams, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName })
 				if (!autoApprove) {
+					if (isEditToolName(toolName)) {
+						warnEditDiagnostic('tool_approval_blocked', { toolName, toolId, approvalType })
+					}
 					return { awaitingUserApproval: true }
 				}
 			}
@@ -782,6 +828,14 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		// this._setStreamState(threadId, { isRunning: 'tool' }, 'merge')
 		const runningTool = { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content: toolName === 'run_command' || toolName === 'run_persistent_command' ? '(starting terminal sandbox…)' : '(value not received yet...)', result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName } as const
 		this._updateLatestTool(threadId, runningTool, { batchInsert: opts.batchInsert })
+
+		if (isEditToolName(toolName)) {
+			logEditDiagnostic('tool_dispatch', {
+				toolName,
+				toolId,
+				uri: uriPathForLog((toolParams as { uri?: URI }).uri),
+			})
+		}
 
 
 		let interrupted = false
@@ -855,6 +909,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			if (interrupted) { return { interrupted: true } } // the tool result is added where we interrupt, not here
 
 			const errorMessage = getErrorMessage(error)
+			if (isEditToolName(toolName)) {
+				errorEditDiagnostic('tool_execute_error', { toolName, toolId, error: errorMessage })
+			}
 			this._updateLatestTool(threadId, { role: 'tool', type: 'tool_error', params: toolParams, result: errorMessage, name: toolName, content: errorMessage, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName }, { batchInsert: opts.batchInsert })
 			return { status: 'error' }
 		}
@@ -895,6 +952,19 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			compactable: isCompactableToolName(toolName),
 		}, { batchInsert: opts.batchInsert })
 
+		if (toolName === 'read_file' && opts.readOnlyCallCounts && toolResult && typeof toolResult === 'object' && 'totalFileLen' in toolResult) {
+			const readParams = toolParams as BuiltinToolCallParams['read_file']
+			recordFileReadSize(opts.readOnlyCallCounts.fileReads, readParams.uri, (toolResult as { totalFileLen: number }).totalFileLen)
+		}
+
+		if (isEditToolName(toolName)) {
+			logEditDiagnostic('tool_execute_done', {
+				toolName,
+				toolId,
+				uri: uriPathForLog((toolParams as { uri?: URI }).uri),
+			})
+		}
+
 		if (DIRECTORY_TREE_INVALIDATING_TOOLS.has(toolName)) {
 			this._directoryStringService.invalidateCache()
 		}
@@ -903,17 +973,30 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 		if (opts.fileEditCounts && (toolName === 'edit_file' || toolName === 'rewrite_file')) {
 			trackFileEdit(opts.fileEditCounts, toolName, toolParams as Record<string, unknown>)
+			if (opts.sandboxVerificationTracker) {
+				markSandboxCodeChange(opts.sandboxVerificationTracker)
+			}
 			if (this._workspacePreviewService.getActivePreviewUrl()) {
 				this._workspacePreviewService.scheduleReloadAfterWebChange()
+			}
+		} else if (opts.sandboxVerificationTracker && toolName === 'create_file_or_folder') {
+			const createParams = toolParams as BuiltinToolCallParams['create_file_or_folder']
+			if (!createParams.isFolder) {
+				markSandboxCodeChange(opts.sandboxVerificationTracker)
 			}
 		}
 
 		if (toolName === 'run_command') {
+			const runParams = toolParams as BuiltinToolCallParams['run_command']
+			const runResult = toolResult as { result: string; resolveReason: TerminalResolveReason; autoPersistentTerminalId?: string }
+			if (opts.sandboxVerificationTracker) {
+				markSandboxVerified(opts.sandboxVerificationTracker, runParams.command, runResult.result, runResult.resolveReason)
+			}
 			void this._agentDeliveryService.handleTerminalToolResult(
 				threadId,
 				'run_command',
-				toolParams as BuiltinToolCallParams['run_command'],
-				toolResult as { result: string; resolveReason: TerminalResolveReason; autoPersistentTerminalId?: string },
+				runParams,
+				runResult,
 			)
 		} else if (toolName === 'run_persistent_command') {
 			void this._agentDeliveryService.handleTerminalToolResult(
@@ -1025,12 +1108,17 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const runTokenTotals = emptyAgentRunTokenTotals()
 		const fileEditCounts = new Map<string, number>()
 		const readOnlyCallCounts = createReadOnlyCallCounts()
+		const sandboxVerificationTracker = createSandboxVerificationTracker()
+		const editCompletionTracker = createEditCompletionTracker()
+		let sandboxVerificationHint = ''
+		let editCompletionHint = ''
+		let lastLlmOutputTokens: number | undefined
 		let consecutiveToolFails = 0
 
 		try {
 		// before enter loop, call tool
 		if (callThisToolFirst) {
-			const { interrupted } = await this._runToolCall(threadId, callThisToolFirst.name, callThisToolFirst.id, callThisToolFirst.mcpServerName, { preapproved: true, unvalidatedToolParams: callThisToolFirst.rawParams, validatedParams: callThisToolFirst.params, fileEditCounts, readOnlyCallCounts })
+			const { interrupted } = await this._runToolCall(threadId, callThisToolFirst.name, callThisToolFirst.id, callThisToolFirst.mcpServerName, { preapproved: true, unvalidatedToolParams: callThisToolFirst.rawParams, validatedParams: callThisToolFirst.params, fileEditCounts, readOnlyCallCounts, sandboxVerificationTracker })
 			if (interrupted) {
 				this._setStreamState(threadId, undefined)
 				this._addUserCheckpoint({ threadId })
@@ -1096,8 +1184,13 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				repeatEditHint: buildRepeatEditHint(fileEditCounts),
 				repeatReadHint: buildRepeatReadHint(readOnlyCallCounts),
 				repeatFileReadHint: buildRepeatFileReadHint(readOnlyCallCounts.fileReads),
+				largeFileEditHint: chatMode === 'agent' ? buildLargeFileEditHint(readOnlyCallCounts.fileReads) : '',
 				explorationBudgetHint: buildExplorationBudgetHint(readOnlyCallCounts, agentLoopLimits.maxReadOnlyCalls, globalSettings),
+				sandboxVerificationHint,
+				editCompletionHint,
 			})
+			sandboxVerificationHint = ''
+			editCompletionHint = ''
 
 			let messages: Awaited<ReturnType<IConvertToLLMMessageService['prepareLLMChatMessages']>>['messages'] = []
 			let separateSystemMessage: string | undefined
@@ -1109,13 +1202,27 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					chatMode,
 					precomputedSystemMessage,
 					agentTailHints,
-					forceAggressiveTrim,
+					forceAggressiveTrim: forceAggressiveTrim || (chatMode === 'agent' && nMessagesSent > 2),
 				})
 				messages = prepared.messages
 				separateSystemMessage = prepared.separateSystemMessage
 				contextWasTrimmed = prepared.contextWasTrimmed
 			}
 			await prepareMessagesForTurn()
+
+			if (modelSelection) {
+				const cooldownMs = getProviderRateLimitCooldownMs(modelSelection.providerName, modelSelection.modelName)
+				if (cooldownMs > 0) {
+					this._setStreamState(threadId, {
+						isRunning: undefined,
+						error: {
+							message: formatRateLimitCooldownMessage(cooldownMs),
+							fullError: null,
+						},
+					})
+					break
+				}
+			}
 
 			if (nMessagesSent === 1 && modelSelection) {
 				this._metricsService.capture('Prompt Cache Config', {
@@ -1160,6 +1267,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				const messageIsDonePromise = new Promise<ResTypes>((res) => { resolveMessage = res })
 				let stallTimer: ReturnType<typeof setTimeout> | undefined
 				let messageResolved = false
+				let editStreamStarted = false
 				const resolveMessageOnce = (res: ResTypes) => {
 					if (messageResolved) {
 						return
@@ -1174,13 +1282,23 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					if (stallTimer) {
 						clearTimeout(stallTimer)
 					}
+					const stallTimeoutMs = getLlmStreamStallTimeoutMs(agentLoopLimits.llmStreamStallTimeoutMs, editStreamStarted)
 					stallTimer = setTimeout(() => {
-						this._metricsService.capture('LLM Stream Stall', { nMessagesSent, chatMode })
+						this._metricsService.capture('LLM Stream Stall', { nMessagesSent, chatMode, editToolStreaming: editStreamStarted })
+						// Resolve BEFORE abort so onAbort does not win the race and kill the agent loop.
+						resolveMessageOnce({
+							type: 'llmError',
+							error: {
+								message: editStreamStarted
+									? 'Edit generation stalled — no tokens received for an extended period. Retrying…'
+									: 'Model stream stalled — no tokens received for 60 seconds.',
+								fullError: null,
+							},
+						})
 						if (llmCancelToken) {
 							this._llmMessageService.abort(llmCancelToken)
 						}
-						resolveMessageOnce({ type: 'llmError', error: { message: 'Model stream stalled — no tokens received for 60 seconds.', fullError: null } })
-					}, agentLoopLimits.llmStreamStallTimeoutMs)
+					}, stallTimeoutMs)
 				}
 
 				this._setIdleStatus(
@@ -1193,6 +1311,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				)
 
 				let llmCancelToken: string | null = null
+				let lastEditStreamSignature = ''
 				llmCancelToken = this._llmMessageService.sendLLMMessage({
 					messagesType: 'chatMessages',
 					chatMode,
@@ -1204,10 +1323,37 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					separateSystemMessage: separateSystemMessage,
 					onText: ({ fullText, fullReasoning, toolCall }) => {
 						resetStallTimer()
+						if (shouldTraceEditToolCall(toolCall)) {
+							const signature = `${toolCall!.name}|${toolCall!.isDone}|${toolCall!.doneParams.join(',')}|${Object.keys(toolCall!.rawParams).join(',')}`
+							if (signature !== lastEditStreamSignature) {
+								const stage = editStreamStarted ? 'stream_progress' : 'stream_start'
+								editStreamStarted = true
+								lastEditStreamSignature = signature
+								logEditDiagnostic(stage, { turn: nMessagesSent, ...summarizeEditToolCall(toolCall) })
+							}
+						}
 						this._setStreamState(threadId, { isRunning: 'LLM', llmInfo: { displayContentSoFar: fullText, reasoningSoFar: fullReasoning, toolCallSoFar: toolCall ?? null }, interrupt: Promise.resolve(() => { if (llmCancelToken) this._llmMessageService.abort(llmCancelToken) }), contextWasTrimmed })
 					},
 					onFinalMessage: async ({ fullText, fullReasoning, toolCall, anthropicReasoning, usage }) => {
+						if (toolCall && isEditToolName(toolCall.name)) {
+							logEditDiagnostic('llm_final', {
+								turn: nMessagesSent,
+								textLen: fullText.length,
+								outputTokens: usage?.outputTokens,
+								...summarizeEditToolCall(toolCall),
+							})
+						} else if (lastEditStreamSignature) {
+							warnEditDiagnostic('llm_final', {
+								turn: nMessagesSent,
+								textLen: fullText.length,
+								outputTokens: usage?.outputTokens,
+								hadStreamedEdit: true,
+								hasToolCall: false,
+								lastStreamSignature: lastEditStreamSignature,
+							})
+						}
 						addUsageToRunTotals(runTokenTotals, usage)
+						lastLlmOutputTokens = usage?.outputTokens
 						if (usage && modelSelection) {
 							this._usageMeteringService.recordTurn({
 								usage,
@@ -1219,9 +1365,24 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 						resolveMessageOnce({ type: 'llmDone', toolCall, info: { fullText, fullReasoning, anthropicReasoning } })
 					},
 					onError: async (error) => {
+						if (editStreamStarted) {
+							errorEditDiagnostic('llm_final', {
+								turn: nMessagesSent,
+								phase: 'error',
+								error: error.message,
+								hadStreamedEdit: true,
+							})
+						}
 						resolveMessageOnce({ type: 'llmError', error: error })
 					},
 					onAbort: () => {
+						if (editStreamStarted) {
+							warnEditDiagnostic('llm_final', {
+								turn: nMessagesSent,
+								phase: 'aborted',
+								hadStreamedEdit: true,
+							})
+						}
 						resolveMessageOnce({ type: 'llmAborted' })
 						this._metricsService.capture('Agent Loop Done (Aborted)', { nMessagesSent, chatMode })
 					},
@@ -1250,17 +1411,25 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				// llm res error
 				else if (llmRes.type === 'llmError') {
 					const { error } = llmRes
+					if (editStreamStarted && error && isStreamStallLLMError(error)) {
+						const toolCallSoFar = this.streamState[threadId]?.llmInfo?.toolCallSoFar
+						if (toolCallSoFar && isEditToolName(toolCallSoFar.name)) {
+							markInterruptedEditTool(editCompletionTracker)
+						}
+					}
+					if (error && isRateLimitLLMError(error) && modelSelection) {
+						recordProviderRateLimitHit(modelSelection.providerName, error, modelSelection.modelName)
+					}
 					const maxRetries = error ? getMaxLLMRetryAttempts(error) : CHAT_RETRIES
 					if (nAttempts < maxRetries) {
 						shouldRetryLLM = true
 						if (error && shouldForceAggressiveTrimOnRetry(error)) {
 							await prepareMessagesForTurn(true)
-							this._metricsService.capture('Context Trim Retry', { nMessagesSent, chatMode, nAttempts })
-							continue
+							this._metricsService.capture('Context Trim Retry', { nMessagesSent, chatMode, nAttempts, reason: isRateLimitLLMError(error) ? 'rate_limit' : 'overflow' })
 						}
 						const retryDelayMs = error ? getLLMRetryDelayMs(error, nAttempts, RETRY_DELAY) : RETRY_DELAY
 						const retryReason = error && isRateLimitLLMError(error)
-							? `Rate limit — waiting ${Math.ceil(retryDelayMs / 1000)}s before retry`
+							? `Rate limit — waiting ${Math.ceil(retryDelayMs / 1000)}s (context trimmed)`
 							: `Attempt ${nAttempts + 1} of ${maxRetries} after a transient error`
 						this._setIdleStatus(
 							threadId,
@@ -1277,11 +1446,32 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					}
 					else {
 						const { error } = llmRes
+						if (error && isRateLimitLLMError(error) && modelSelection) {
+							recordProviderRateLimitHit(modelSelection.providerName, error, modelSelection.modelName)
+						}
+						// Stream stall during edit generation — nudge retry instead of ending the run.
+						if (editStreamStarted && error && isStreamStallLLMError(error)
+							&& editCompletionTracker.nudgeCount < MAX_EDIT_COMPLETION_NUDGES
+						) {
+							const toolCallSoFar = this.streamState[threadId].llmInfo.toolCallSoFar
+							if (toolCallSoFar && isEditToolName(toolCallSoFar.name)) {
+								this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: toolCallSoFar.name, mcpServerName: this._computeMCPServerOfToolName(toolCallSoFar.name) })
+							}
+							editCompletionTracker.nudgeCount += 1
+							editCompletionTracker.interruptedEditTool = true
+							editCompletionHint = buildEditCompletionHint({ interruptedEditTool: true })
+							shouldSendAnotherMessage = true
+							warnEditDiagnostic('completion_nudge', { turn: nMessagesSent, reason: 'stream_stall_exhausted' })
+							break
+						}
 						const { displayContentSoFar, reasoningSoFar, toolCallSoFar } = this.streamState[threadId].llmInfo
 						this._addMessageToThread(threadId, { role: 'assistant', displayContent: displayContentSoFar, reasoning: reasoningSoFar, anthropicReasoning: null })
 						if (toolCallSoFar) this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: toolCallSoFar.name, mcpServerName: this._computeMCPServerOfToolName(toolCallSoFar.name) })
 
-						this._setStreamState(threadId, { isRunning: undefined, error })
+						const userMessage = error && isRateLimitLLMError(error)
+							? `${error.message}\n\n${formatRateLimitCooldownMessage(getProviderRateLimitCooldownMs(modelSelection?.providerName ?? '', modelSelection?.modelName))}`
+							: error?.message
+						this._setStreamState(threadId, { isRunning: undefined, error: { message: userMessage ?? 'Model request failed.', fullError: error?.fullError ?? null } })
 						this._addUserCheckpoint({ threadId })
 						return
 					}
@@ -1289,10 +1479,26 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 				// llm res success
 				const { toolCall, info } = llmRes
+				if (modelSelection) {
+					clearProviderRateLimitCooldown(modelSelection.providerName, modelSelection.modelName)
+				}
 
 				this._addMessageToThread(threadId, { role: 'assistant', displayContent: info.fullText, reasoning: info.fullReasoning, anthropicReasoning: info.anthropicReasoning })
 
 				this._setIdleStatus(threadId, 'Processing model response', toolCall ? 'Preparing tool call' : 'Finishing turn')
+
+				// Model streamed edit_file/rewrite_file ("Generating edit…") but finalMessage had no tool call
+				if (!toolCall) {
+					const toolCallSoFar = this.streamState[threadId]?.llmInfo?.toolCallSoFar
+					if (toolCallSoFar && isEditToolName(toolCallSoFar.name)) {
+						warnEditDiagnostic('stream_interrupted', {
+							turn: nMessagesSent,
+							...summarizeEditToolCall(toolCallSoFar),
+						})
+						this._addMessageToThread(threadId, { role: 'interrupted_streaming_tool', name: toolCallSoFar.name, mcpServerName: this._computeMCPServerOfToolName(toolCallSoFar.name) })
+						markInterruptedEditTool(editCompletionTracker)
+					}
+				}
 
 				// call tool if there is one
 				if (toolCall) {
@@ -1312,7 +1518,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 						})
 					} else {
 						const mcpTool = mcpTools?.find(t => t.name === toolCall.name)
-						toolResult = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams, fileEditCounts, readOnlyCallCounts })
+						toolResult = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams, fileEditCounts, readOnlyCallCounts, sandboxVerificationTracker })
 					}
 
 					if (toolResult.interrupted) {
@@ -1322,6 +1528,22 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					if (toolResult.awaitingUserApproval) {
 						isRunningWhenEnd = 'awaiting_user'
 					} else if (toolResult.status === 'error' || toolResult.status === 'invalid_params') {
+						if (toolResult.status === 'invalid_params' && isEditToolName(toolCall.name)) {
+							const lastToolMsg = this.state.allThreads[threadId]?.messages.filter(m => m.role === 'tool').at(-1)
+							const validateError = lastToolMsg?.role === 'tool' && lastToolMsg.type === 'invalid_params' ? lastToolMsg.content : ''
+							if (isMissingEditContentError(toolCall.name, validateError)
+								|| isLikelyOutputTruncated(lastLlmOutputTokens, AGENT_ANTHROPIC_OUTPUT_TOKENS)
+								|| isLikelyOutputTruncated(lastLlmOutputTokens, 8192)
+							) {
+								markTruncatedEditTool(editCompletionTracker)
+								editCompletionHint = buildEditCompletionHint({ interruptedEditTool: false, truncatedEditTool: true })
+								warnEditDiagnostic('completion_nudge', {
+									turn: nMessagesSent,
+									reason: 'truncated_edit_params',
+									outputTokens: lastLlmOutputTokens,
+								})
+							}
+						}
 						consecutiveToolFails += 1
 						if (consecutiveToolFails >= agentLoopLimits.maxConsecutiveToolFails) {
 							this._addMessageToThread(threadId, {
@@ -1340,6 +1562,56 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					}
 
 					this._setIdleStatus(threadId, 'Continuing agent', 'Tools finished · preparing next model call')
+				} else {
+					const lastUserMessage = [...chatMessages].reverse().find(m => m.role === 'user')
+					const userMessageText = lastUserMessage?.role === 'user' ? lastUserMessage.content : ''
+					const inRateLimitCooldown = modelSelection && getProviderRateLimitCooldownMs(modelSelection.providerName, modelSelection.modelName) > 0
+
+					if (
+						!inRateLimitCooldown
+						&& needsEditCompletion({
+							tracker: editCompletionTracker,
+							fileEditCounts,
+							readOnlyCallCount: readOnlyCallCounts.total,
+							userMessage: userMessageText,
+							chatMode,
+						})
+					) {
+						const interrupted = editCompletionTracker.interruptedEditTool
+						const truncated = editCompletionTracker.truncatedEditTool
+						editCompletionTracker.nudgeCount += 1
+						editCompletionTracker.interruptedEditTool = false
+						editCompletionTracker.truncatedEditTool = false
+						editCompletionHint = buildEditCompletionHint({ interruptedEditTool: interrupted, truncatedEditTool: truncated })
+						shouldSendAnotherMessage = true
+						logEditDiagnostic('completion_nudge', {
+							turn: nMessagesSent,
+							nudgeCount: editCompletionTracker.nudgeCount,
+							interruptedEditTool: interrupted,
+							readOnlyCalls: readOnlyCallCounts.total,
+						})
+						this._metricsService.capture('Agent Loop Edit Completion Nudge', {
+							nMessagesSent,
+							nudgeCount: editCompletionTracker.nudgeCount,
+							interruptedEditTool: interrupted,
+							readOnlyCalls: readOnlyCallCounts.total,
+						})
+						this._setIdleStatus(threadId, 'Edit required', interrupted ? 'Previous edit was interrupted — retrying' : 'Exploration done — file edit still required')
+					} else if (
+						chatMode === 'agent'
+						&& needsSandboxVerification(sandboxVerificationTracker, fileEditCounts, this._repoIntelligenceService.getProfileSync())
+						&& sandboxVerificationTracker.nudgeCount < MAX_SANDBOX_VERIFICATION_NUDGES
+						&& !inRateLimitCooldown
+					) {
+						sandboxVerificationTracker.nudgeCount += 1
+						sandboxVerificationHint = buildSandboxVerificationHint(this._repoIntelligenceService.getProfileSync())
+						shouldSendAnotherMessage = true
+						this._metricsService.capture('Agent Loop Verification Nudge', {
+							nMessagesSent,
+							nudgeCount: sandboxVerificationTracker.nudgeCount,
+						})
+						this._setIdleStatus(threadId, 'Sandbox verification required', 'Code changes need build/test/preview in terminal sandbox')
+					}
 				}
 
 			} // end while (attempts)

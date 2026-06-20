@@ -52,6 +52,7 @@ import { IInstantiationService, ServicesAccessor } from '../../platform/instanti
 import { ServiceCollection } from '../../platform/instantiation/common/serviceCollection.js';
 import { IProcessMainService } from '../../platform/process/common/process.js';
 import { ProcessMainService } from '../../platform/process/electron-main/processMainService.js';
+import { IRequestService } from '../../platform/request/common/request.js';
 import { IKeyboardLayoutMainService, KeyboardLayoutMainService } from '../../platform/keyboardLayout/electron-main/keyboardLayoutMainService.js';
 import { ILaunchMainService, LaunchMainService } from '../../platform/launch/electron-main/launchMainService.js';
 import { ILifecycleMainService, LifecycleMainPhase, ShutdownReason } from '../../platform/lifecycle/electron-main/lifecycleMainService.js';
@@ -130,6 +131,7 @@ import { ITroveUpdateService } from '../../workbench/contrib/trove/common/troveU
 import { MetricsMainService } from '../../workbench/contrib/trove/electron-main/metricsMainService.js';
 import { TroveMainUpdateService } from '../../workbench/contrib/trove/electron-main/troveUpdateMainService.js';
 import { LLMMessageChannel } from '../../workbench/contrib/trove/electron-main/sendLLMMessageChannel.js';
+import { PreviewProbeChannel } from '../../workbench/contrib/trove/electron-main/previewProbeChannel.js';
 import { TroveSCMService } from '../../workbench/contrib/trove/electron-main/troveSCMMainService.js';
 import { ITroveSCMService } from '../../workbench/contrib/trove/common/troveSCMTypes.js';
 import { MCPChannel } from '../../workbench/contrib/trove/electron-main/mcpChannel.js';
@@ -1261,6 +1263,9 @@ export class CodeApplication extends Disposable {
 
 		const sendLLMMessageChannel = new LLMMessageChannel(accessor.get(IMetricsService));
 		mainProcessElectronServer.registerChannel('trove-channel-llmMessage', sendLLMMessageChannel);
+
+		const previewProbeChannel = new PreviewProbeChannel(accessor.get(IRequestService));
+		mainProcessElectronServer.registerChannel('trove-channel-previewProbe', previewProbeChannel);
 
 		// Trove added this
 		const voidSCMChannel = ProxyChannel.fromService(accessor.get(ITroveSCMService), disposables);

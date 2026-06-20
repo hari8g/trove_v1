@@ -112,6 +112,7 @@ export class LLMMessageChannel implements IServerChannel {
 		}
 		const p = sendLLMMessage(mainThreadParams, this.metricsService);
 		this._infoOfRunningRequest[requestId].waitForSend = p
+		void p.catch(() => { /* abort / late rejections — handled via onError or ignored after abort */ })
 	}
 
 	private async _callAbort(params: MainLLMMessageAbortParams) {

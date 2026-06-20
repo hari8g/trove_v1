@@ -19,6 +19,7 @@ import { usageFromAnthropicResponse, usageFromGeminiMetadata, usageFromOpenAIRes
 import { applyRoutedAnthropicPromptCache } from '../../common/promptCache.js';
 import { ChatMode, displayInfoOfProviderName, ModelSelectionOptions, OverridesOfModel, ProviderName, SettingsOfProvider } from '../../common/troveSettingsTypes.js';
 import { getSendableReasoningInfo, getModelCapabilities, getProviderCapabilities, defaultProviderSettings, getReservedOutputTokenSpace } from '../../common/modelCapabilities.js';
+import { getAnthropicBetaHeaders, getEffectiveMaxOutputTokens } from '../../common/agentOutputTokenLimits.js';
 import { extractReasoningWrapper, extractXMLToolsWrapper } from './extractGrammar.js';
 import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
@@ -269,6 +270,48 @@ const rawToolCallObjOfAnthropicParams = (toolBlock: Anthropic.Messages.ToolUseBl
 	return { id, name, rawParams, doneParams: Object.keys(rawParams), isDone: true }
 }
 
+// Rebuild a tool call from the raw streamed input-json deltas when the SDK's structured tool input
+// is empty/missing. Only accepts a COMPLETE, valid JSON object — truncated params are rejected so we
+// never apply a half-written edit. Returns null if nothing usable can be recovered.
+const salvageStreamedAnthropicToolCall = (name: string, streamedParamsStr: string, id: string | undefined): RawToolCallObj | null => {
+	const trimmed = (streamedParamsStr ?? '').trim()
+	if (!trimmed) return null
+	let parsed: unknown
+	try { parsed = JSON.parse(trimmed) }
+	catch { return null }
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+	const rawParams = parsed as RawToolParamsObj
+	if (Object.keys(rawParams).length === 0) return null
+	return { id: id ?? 'salvaged-tool-call', name, rawParams, doneParams: Object.keys(rawParams), isDone: true }
+}
+
+/** Best-effort parse of in-progress Anthropic tool input JSON for streaming UI updates. */
+const tryParseStreamingToolParamsJson = (jsonStr: string): RawToolParamsObj | null => {
+	const trimmed = jsonStr.trim()
+	if (!trimmed) return null
+	try {
+		const parsed = JSON.parse(trimmed)
+		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+		return parsed as RawToolParamsObj
+	} catch {
+		return null
+	}
+}
+
+const pickBestAnthropicToolCall = (
+	name: string,
+	streamedParamsStr: string,
+	toolBlock: Anthropic.Messages.ToolUseBlock | undefined,
+): RawToolCallObj | null => {
+	const fromStructured = toolBlock ? rawToolCallObjOfAnthropicParams(toolBlock) : null
+	const fromStreamed = salvageStreamedAnthropicToolCall(name, streamedParamsStr, toolBlock?.id)
+
+	if (fromStreamed && (!fromStructured || Object.keys(fromStructured.rawParams).length === 0)) {
+		return fromStreamed
+	}
+	return fromStructured ?? fromStreamed
+}
+
 
 // ------------ OPENAI-COMPATIBLE ------------
 
@@ -489,8 +532,9 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	const reasoningInfo = getSendableReasoningInfo('Chat', providerName, modelName_, modelSelectionOptions, overridesOfModel) // user's modelName_ here
 	const includeInPayload = providerReasoningIOSettings?.input?.includeInPayload?.(reasoningInfo) || {}
 
-	// anthropic-specific - max tokens
-	const maxTokens = getReservedOutputTokenSpace(providerName, modelName_, { isReasoningEnabled: !!reasoningInfo?.isReasoningEnabled, overridesOfModel })
+	// anthropic-specific - max tokens (agent mode needs headroom for large edit_file payloads)
+	const baseMaxTokens = getReservedOutputTokenSpace(providerName, modelName_, { isReasoningEnabled: !!reasoningInfo?.isReasoningEnabled, overridesOfModel })
+	const maxTokens = getEffectiveMaxOutputTokens(providerName, chatMode, baseMaxTokens)
 
 	// tools
 	const potentialTools = anthropicTools(chatMode, mcpTools, enablePromptCache)
@@ -500,11 +544,16 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 
 
 	// instance
+	const anthropicBeta = getAnthropicBetaHeaders({ enablePromptCache, chatMode })
 	const anthropic = new Anthropic({
 		apiKey: thisConfig.apiKey,
 		dangerouslyAllowBrowser: true,
-		...(enablePromptCache ? { defaultHeaders: { 'anthropic-beta': 'prompt-caching-2024-07-31' } } : {}),
+		...(anthropicBeta ? { defaultHeaders: { 'anthropic-beta': anthropicBeta } } : {}),
 	});
+
+	if (chatMode === 'agent') {
+		console.info('[Trove edit] main_llm_request', { chatMode, maxTokens, anthropicBeta: anthropicBeta ?? null })
+	}
 
 	const stream = anthropic.messages.stream({
 		system: separateSystemMessage
@@ -515,6 +564,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		messages: messages as AnthropicLLMChatMessage[],
 		model: modelName,
 		max_tokens: maxTokens ?? 4_096, // anthropic requires this
+		...(anthropicBeta ? { headers: { 'anthropic-beta': anthropicBeta } } : {}),
 		...includeInPayload,
 		...nativeToolsObj,
 
@@ -536,10 +586,17 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 
 
 	const runOnText = () => {
+		const partialParams = tryParseStreamingToolParamsJson(fullToolParams)
 		onText({
 			fullText,
 			fullReasoning,
-			toolCall: !fullToolName ? undefined : { name: fullToolName, rawParams: {}, isDone: false, doneParams: [], id: 'dummy' },
+			toolCall: !fullToolName ? undefined : {
+				name: fullToolName,
+				rawParams: partialParams ?? {},
+				isDone: false,
+				doneParams: partialParams ? Object.keys(partialParams) : [],
+				id: 'dummy',
+			},
 		})
 	}
 	// there are no events for tool_use, it comes in at the end
@@ -591,7 +648,26 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		const tools = response.content.filter(c => c.type === 'tool_use')
 		// console.log('TOOLS!!!!!!', JSON.stringify(tools, null, 2))
 		// console.log('TOOLS!!!!!!', JSON.stringify(response, null, 2))
-		const toolCall = tools[0] && rawToolCallObjOfAnthropicParams(tools[0])
+		let toolCall = tools[0] ? rawToolCallObjOfAnthropicParams(tools[0]) : null
+
+		// Salvage from streamed input-json deltas when structured input is empty/missing.
+		if (fullToolName) {
+			const best = pickBestAnthropicToolCall(fullToolName, fullToolParams, tools[0])
+			if (best) {
+				toolCall = best
+			}
+			if (fullToolName === 'edit_file' || fullToolName === 'rewrite_file') {
+				console.info('[Trove edit] main_llm_final', {
+					toolName: fullToolName,
+					streamedParamsLen: fullToolParams.length,
+					hasStructuredTool: Boolean(tools[0]),
+					structuredParamKeys: tools[0] && typeof tools[0].input === 'object' && tools[0].input ? Object.keys(tools[0].input as object).join(',') : '',
+					hasFinalToolCall: Boolean(toolCall),
+					finalParamKeys: toolCall ? Object.keys(toolCall.rawParams).join(',') : '',
+				})
+			}
+		}
+
 		const toolCallObj = toolCall ? { toolCall } : {}
 		const usage = usageFromAnthropicResponse(response.usage)
 
@@ -599,13 +675,32 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	})
 	// on error
 	stream.on('error', (error) => {
+		if (isAbortError(error)) {
+			return
+		}
 		if (error instanceof Anthropic.APIError && error.status === 401) { onError({ message: invalidApiKeyMessage(providerName), fullError: error }) }
 		else if (error instanceof Anthropic.APIError && error.status === 429) {
 			onError({ message: `Rate limit reached. ${error.message}`, fullError: error })
 		}
 		else { onError({ message: error + '', fullError: error }) }
 	})
+	// User-initiated abort: swallow silently (the agent loop handles onAbort separately).
+	stream.on('abort', () => { /* no-op — prevents unhandled abort surfacing as a main-process crash */ })
 	_setAborter(() => stream.controller.abort())
+
+	// The SDK drives the stream via an internal promise (MessageStream._createMessage) that rejects
+	// on abort/error. If nothing awaits it, the rejection escapes as an uncaught main-process exception.
+	// Absorb it here — real errors are already routed through stream.on('error').
+	void stream.done().catch(() => { /* handled via on('error') / on('abort') */ })
+}
+
+const isAbortError = (error: unknown): boolean => {
+	if (!(error instanceof Error)) {
+		return false
+	}
+	const message = error.message.toLowerCase()
+	return message.includes('aborted') || message.includes('abort')
+		|| error.name === 'AbortError' || error.name === 'APIUserAbortError'
 }
 
 

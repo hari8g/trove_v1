@@ -9,6 +9,7 @@ import { RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 export type FileReadRecord = {
 	count: number;
 	ranges: string[];
+	totalFileLen?: number;
 };
 
 export const readFileUriKey = (uri: URI | string): string => {
@@ -46,6 +47,7 @@ export const trackFileRead = (
 	uri: URI | string,
 	startLine: number | null | undefined,
 	endLine: number | null | undefined,
+	totalFileLen?: number,
 ): void => {
 	const key = readFileUriKey(uri);
 	const range = formatReadFileRange(startLine, endLine);
@@ -54,6 +56,26 @@ export const trackFileRead = (
 	if (!prev.ranges.includes(range)) {
 		prev.ranges.push(range);
 	}
+	if (totalFileLen != null && totalFileLen > 0) {
+		prev.totalFileLen = Math.max(prev.totalFileLen ?? 0, totalFileLen);
+	}
+	fileReads.set(key, prev);
+};
+
+export const recordFileReadSize = (
+	fileReads: Map<string, FileReadRecord>,
+	uri: URI | string,
+	totalFileLen: number,
+): void => {
+	if (!totalFileLen || totalFileLen <= 0) {
+		return;
+	}
+	const key = readFileUriKey(uri);
+	const prev = fileReads.get(key);
+	if (!prev) {
+		return;
+	}
+	prev.totalFileLen = Math.max(prev.totalFileLen ?? 0, totalFileLen);
 	fileReads.set(key, prev);
 };
 

@@ -82,7 +82,10 @@ export const buildAgentTailHints = (opts: {
 	repeatEditHint: string;
 	repeatReadHint: string;
 	repeatFileReadHint: string;
+	largeFileEditHint?: string;
 	explorationBudgetHint: string;
+	sandboxVerificationHint?: string;
+	editCompletionHint?: string;
 }): string => {
-	return (opts.repeatEditHint + opts.repeatReadHint + opts.repeatFileReadHint + opts.explorationBudgetHint).trim();
+	return (opts.repeatEditHint + opts.repeatReadHint + opts.repeatFileReadHint + (opts.largeFileEditHint ?? '') + opts.explorationBudgetHint + (opts.sandboxVerificationHint ?? '') + (opts.editCompletionHint ?? '')).trim();
 };

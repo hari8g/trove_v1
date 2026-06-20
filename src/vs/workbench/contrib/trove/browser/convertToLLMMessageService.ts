@@ -18,9 +18,10 @@ import { ITerminalToolService } from './terminalToolService.js';
 import { ToolName } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
 import { IContextGatheringService } from './contextGatheringService.js';
-import { trimChatMessagesForContextWindow } from './contextWindowTrim.js';
+import { trimChatMessagesForContextWindow, getAgentEffectiveContextWindow } from './contextWindowTrim.js';
 import { compactStaleToolResults } from './toolResultCompaction.js';
 import { AGGRESSIVE_WIRE_TRIM_RATIO, CHARS_PER_TOKEN, computeEffectiveOutputReserve, elideOldestToolResultsFirst } from './wireMessageTrim.js';
+import { appendAgentTailHintsToMessages, ensureAnthropicConversationEndsWithUser } from './anthropicConversationWire.js';
 
 export const EMPTY_MESSAGE = '(empty message)'
 
@@ -449,6 +450,10 @@ const prepareOpenAIOrAnthropicMessages = ({
 		}
 	}
 
+	if (supportsAnthropicReasoning) {
+		ensureAnthropicConversationEndsWithUser(llmMessages);
+	}
+
 	return {
 		messages: llmMessages,
 		separateSystemMessage: separateSystemMessageStr,
@@ -677,11 +682,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 	/** Append agent hints to the tail message so the cached system prefix stays byte-stable. */
 	private _appendAgentTailHintsToLatestMessage(messages: SimpleLLMMessage[], hints: string | undefined): void {
-		if (!hints?.trim() || messages.length === 0) {
-			return
-		}
-		const last = messages[messages.length - 1]
-		last.content = last.content + hints
+		appendAgentTailHintsToMessages(messages, hints);
 	}
 
 	prepareLLMSimpleMessages: IConvertToLLMMessageService['prepareLLMSimpleMessages'] = ({ simpleMessages, systemMessage, modelSelection, featureName }) => {
@@ -736,11 +737,18 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 		const aiInstructions = this._getGlobalAIInstructions();
 
+		const effectiveContextWindow = getAgentEffectiveContextWindow({
+			chatMode,
+			providerName,
+			contextWindow,
+			forceAggressiveTrim,
+		});
+
 		const { messages: trimmedChatMessages, contextWasTrimmed } = trimChatMessagesForContextWindow({
 			chatMessages,
 			systemMessage,
 			aiInstructions,
-			contextWindow,
+			contextWindow: effectiveContextWindow,
 			forceAggressiveTrim,
 		})
 
@@ -760,7 +768,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			supportsSystemMessage,
 			specialToolFormat,
 			supportsAnthropicReasoning: providerName === 'anthropic',
-			contextWindow,
+			contextWindow: effectiveContextWindow,
 			reservedOutputTokenSpace,
 			providerName,
 			forceAggressiveTrim,

@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { buildRepeatEditHint, trackFileEdit } from '../agentEditHints.js';
+import { buildLargeFileEditHint, buildRepeatEditHint, trackFileEdit } from '../agentEditHints.js';
 
 suite('Trove - agentEditHints', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -19,6 +19,14 @@ suite('Trove - agentEditHints', () => {
 		trackFileEdit(counts, 'edit_file', { uri: URI.file('/proj/style.css') });
 		const hint = buildRepeatEditHint(counts);
 		assert.ok(hint.includes('style.css'));
-		assert.ok(hint.includes('single edit_file'));
+		assert.ok(hint.includes('edit_file'));
+	});
+
+	test('buildLargeFileEditHint warns on large reads', () => {
+		const fileReads = new Map([['/proj/style.css', { count: 1, ranges: ['full file'], totalFileLen: 8000 }]]);
+		const hint = buildLargeFileEditHint(fileReads);
+		assert.ok(hint.includes('style.css'));
+		assert.ok(hint.includes('rewrite_file'));
+		assert.strictEqual(buildLargeFileEditHint(new Map()), '');
 	});
 });

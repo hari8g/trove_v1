@@ -10,6 +10,80 @@ type SerializedApiError = {
 	headers?: Record<string, string | string[] | undefined>;
 };
 
+/** Per-provider agent input caps — keeps requests under common org TPM limits (e.g. Anthropic 30k/min). */
+export const AGENT_INPUT_TOKEN_CAPS: Readonly<Record<string, number>> = {
+	anthropic: 22_000,
+};
+
+export const getAgentInputTokenCap = (providerName: string): number | undefined =>
+	AGENT_INPUT_TOKEN_CAPS[providerName];
+
+const rateLimitCooldownUntilByProvider = new Map<string, number>();
+
+const providerKey = (providerName: string, modelName?: string): string =>
+	modelName ? `${providerName}:${modelName}` : providerName;
+
+export const recordProviderRateLimitHit = (
+	providerName: string,
+	error: LLMErrorLike,
+	modelName?: string,
+): void => {
+	const untilMs = parseRateLimitCooldownUntilMs(error);
+	if (untilMs > Date.now()) {
+		rateLimitCooldownUntilByProvider.set(providerKey(providerName, modelName), untilMs);
+	}
+};
+
+export const getProviderRateLimitCooldownMs = (
+	providerName: string,
+	modelName?: string,
+): number => {
+	const until = rateLimitCooldownUntilByProvider.get(providerKey(providerName, modelName));
+	if (!until) {
+		return 0;
+	}
+	return Math.max(0, until - Date.now());
+};
+
+export const clearProviderRateLimitCooldown = (providerName: string, modelName?: string): void => {
+	rateLimitCooldownUntilByProvider.delete(providerKey(providerName, modelName));
+};
+
+/** Parse retry-after (seconds) or Anthropic reset timestamp from error headers. */
+export const parseRateLimitCooldownUntilMs = (error: LLMErrorLike): number => {
+	const serialized = getSerializedError(error.fullError);
+	const headers = serialized?.headers;
+	if (!headers) {
+		return Date.now() + 90_000;
+	}
+
+	const retryAfterRaw = headers['retry-after'];
+	const retryAfterHeader = Array.isArray(retryAfterRaw) ? retryAfterRaw[0] : retryAfterRaw;
+	if (retryAfterHeader) {
+		const seconds = parseInt(retryAfterHeader, 10);
+		if (!Number.isNaN(seconds) && seconds > 0) {
+			return Date.now() + seconds * 1000 + 500;
+		}
+	}
+
+	const resetRaw = headers['anthropic-ratelimit-input-tokens-reset']
+		?? headers['x-ratelimit-reset-requests'];
+	const resetHeader = Array.isArray(resetRaw) ? resetRaw[0] : resetRaw;
+	if (resetHeader) {
+		const resetMs = Date.parse(resetHeader);
+		if (!Number.isNaN(resetMs)) {
+			return resetMs + 500;
+		}
+	}
+
+	return Date.now() + 90_000;
+};
+
+export const formatRateLimitCooldownMessage = (cooldownMs: number): string => {
+	const seconds = Math.ceil(cooldownMs / 1000);
+	return `Anthropic rate limit reached (30k input tokens/min). Wait ${seconds}s for the limit to reset, then send your message again. Tip: start a new chat thread to reduce context size.`;
+};
+
 const getSerializedError = (fullError: Error | null): SerializedApiError | null => {
 	if (!fullError || typeof fullError !== 'object') {
 		return null;
@@ -84,7 +158,7 @@ export const getMaxLLMRetryAttempts = (error: LLMErrorLike): number => {
 };
 
 export const shouldForceAggressiveTrimOnRetry = (error: LLMErrorLike): boolean => {
-	return isContextOverflowLLMError(error);
+	return isContextOverflowLLMError(error) || isRateLimitLLMError(error);
 };
 
 /** Prefer provider retry-after header; otherwise exponential backoff for rate limits. */

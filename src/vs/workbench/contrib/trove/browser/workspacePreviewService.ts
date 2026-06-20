@@ -3,7 +3,6 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
-import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -11,7 +10,7 @@ import { debounce } from '../../../../base/common/decorators.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { IRequestService } from '../../../../platform/request/common/request.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -50,7 +49,7 @@ class WorkspacePreviewService extends Disposable implements IWorkspacePreviewSer
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
-		@IRequestService private readonly _requestService: IRequestService,
+		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 	) {
 		super();
 		this._register(this._fileService.onDidFilesChange(e => {
@@ -110,13 +109,7 @@ class WorkspacePreviewService extends Disposable implements IWorkspacePreviewSer
 			return false;
 		}
 		try {
-			const context = await this._requestService.request({
-				type: 'GET',
-				url: normalized,
-				timeout: timeoutMs,
-			}, CancellationToken.None);
-			const status = context.res.statusCode ?? 0;
-			return status >= 200 && status < 500;
+			return await this._mainProcessService.getChannel('trove-channel-previewProbe').call<boolean>('probe', [normalized, timeoutMs]);
 		} catch {
 			return false;
 		}

@@ -7,6 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { defaultGlobalSettings } from '../../common/troveSettingsTypes.js';
 import { getAgentLoopLimits } from '../agentLoopSettings.js';
+import { EDIT_LLM_STREAM_STALL_TIMEOUT_MS, getLlmStreamStallTimeoutMs } from '../agentLoopLimits.js';
 
 suite('Trove - agentLoopSettings', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -29,5 +30,10 @@ suite('Trove - agentLoopSettings', () => {
 		assert.strictEqual(limits.maxAgentIterations, 100);
 		assert.strictEqual(limits.maxReadOnlyCalls, 1);
 		assert.strictEqual(limits.llmStreamStallTimeoutMs, 10_000);
+	});
+
+	test('getLlmStreamStallTimeoutMs extends timeout while edit tool is streaming', () => {
+		assert.strictEqual(getLlmStreamStallTimeoutMs(60_000, false), 60_000);
+		assert.strictEqual(getLlmStreamStallTimeoutMs(60_000, true), EDIT_LLM_STREAM_STALL_TIMEOUT_MS);
 	});
 });

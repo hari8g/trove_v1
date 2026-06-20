@@ -4,9 +4,26 @@
  *--------------------------------------------------------------------------------------*/
 
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
+import type { ChatMode } from '../common/troveSettingsTypes.js';
+import { getAgentInputTokenCap } from './llmRateLimit.js';
 
 export const CONTEXT_WINDOW_USE_RATIO = 0.85;
 export const AGGRESSIVE_CONTEXT_WINDOW_USE_RATIO = 0.70;
+/** Extra-tight ratio when agent hits provider TPM caps or retries after rate limit. */
+export const TPM_CAP_CONTEXT_WINDOW_USE_RATIO = 0.55;
+
+export const getAgentEffectiveContextWindow = (opts: {
+	chatMode: ChatMode;
+	providerName: string;
+	contextWindow: number;
+	forceAggressiveTrim?: boolean;
+}): number => {
+	const cap = opts.chatMode === 'agent' ? getAgentInputTokenCap(opts.providerName) : undefined;
+	if (!cap) {
+		return opts.contextWindow;
+	}
+	return Math.min(opts.contextWindow, cap);
+};
 
 /** Fast token estimate — ~4 characters per token. */
 export const estimateTokens = (text: string | null | undefined): number => {
@@ -79,7 +96,9 @@ export const trimChatMessagesForContextWindow = (opts: {
 	contextWindow: number;
 	forceAggressiveTrim?: boolean;
 }): { messages: ChatMessage[]; contextWasTrimmed: boolean } => {
-	const useRatio = opts.forceAggressiveTrim ? AGGRESSIVE_CONTEXT_WINDOW_USE_RATIO : CONTEXT_WINDOW_USE_RATIO;
+	const useRatio = opts.forceAggressiveTrim
+		? (opts.contextWindow <= 25_000 ? TPM_CAP_CONTEXT_WINDOW_USE_RATIO : AGGRESSIVE_CONTEXT_WINDOW_USE_RATIO)
+		: CONTEXT_WINDOW_USE_RATIO;
 	const tokenBudget = Math.floor(opts.contextWindow * useRatio);
 	const messages = [...opts.chatMessages];
 

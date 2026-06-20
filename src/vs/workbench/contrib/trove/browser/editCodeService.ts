@@ -43,6 +43,7 @@ import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { FeatureName } from '../common/troveSettingsTypes.js';
 import { ITroveModelService } from '../common/troveModelService.js';
 import { deepClone } from '../../../../base/common/objects.js';
+import { errorEditDiagnostic, logEditDiagnostic, uriPathForLog, warnEditDiagnostic } from './agentEditDiagnostics.js';
 import { acceptBg, acceptBorder, buttonFontSize, buttonTextColor, rejectBg, rejectBorder } from '../common/helpers/colors.js';
 import { DiffArea, Diff, CtrlKZone, VoidFileSnapshot, DiffAreaSnapshotEntry, diffAreaSnapshotKeys, DiffZone, TrackingZone, ComputedDiff } from '../common/editCodeServiceTypes.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
@@ -1162,6 +1163,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 
 	public instantlyApplySearchReplaceBlocks({ uri, searchReplaceBlocks }: { uri: URI, searchReplaceBlocks: string }) {
+		logEditDiagnostic('apply_start', { toolName: 'edit_file', uri: uriPathForLog(uri), blocksLen: searchReplaceBlocks.length })
 		// start diffzone
 		const res = this._startStreamingDiffZone({
 			uri,
@@ -1170,7 +1172,10 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			linkedCtrlKZone: null,
 			onWillUndo: () => { },
 		})
-		if (!res) return
+		if (!res) {
+			warnEditDiagnostic('apply_diffzone_skip', { toolName: 'edit_file', uri: uriPathForLog(uri), reason: '_startStreamingDiffZone returned null' })
+			return
+		}
 		const { diffZone, onFinishEdit } = res
 
 
@@ -1180,15 +1185,18 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			this._refreshStylesAndDiffsInURI(uri)
 			onFinishEdit()
 
-			// auto accept
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges) {
+			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
+			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
+				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
+				logEditDiagnostic('auto_accept', { toolName: 'edit_file', uri: uriPathForLog(uri) })
 				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
 			}
+			logEditDiagnostic('apply_done', { toolName: 'edit_file', uri: uriPathForLog(uri) })
 		}
 
 
 		const onError = (e: { message: string; fullError: Error | null; }) => {
-			// this._notifyError(e)
+			errorEditDiagnostic('apply_error', { toolName: 'edit_file', uri: uriPathForLog(uri), error: e.message })
 			onDone()
 			this._undoHistory(uri)
 			throw e.fullError || new Error(e.message)
@@ -1206,6 +1214,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 
 	public instantlyRewriteFile({ uri, newContent }: { uri: URI, newContent: string }) {
+		logEditDiagnostic('apply_start', { toolName: 'rewrite_file', uri: uriPathForLog(uri), contentLen: newContent.length })
 		// start diffzone
 		const res = this._startStreamingDiffZone({
 			uri,
@@ -1214,7 +1223,10 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			linkedCtrlKZone: null,
 			onWillUndo: () => { },
 		})
-		if (!res) return
+		if (!res) {
+			warnEditDiagnostic('apply_diffzone_skip', { toolName: 'rewrite_file', uri: uriPathForLog(uri), reason: '_startStreamingDiffZone returned null' })
+			return
+		}
 		const { diffZone, onFinishEdit } = res
 
 
@@ -1224,10 +1236,13 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			this._refreshStylesAndDiffsInURI(uri)
 			onFinishEdit()
 
-			// auto accept
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges) {
+			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
+			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
+				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
+				logEditDiagnostic('auto_accept', { toolName: 'rewrite_file', uri: uriPathForLog(uri) })
 				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
 			}
+			logEditDiagnostic('apply_done', { toolName: 'rewrite_file', uri: uriPathForLog(uri) })
 		}
 
 		this._writeURIText(uri, newContent, 'wholeFileRange', { shouldRealignDiffAreas: true })
@@ -1459,8 +1474,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			this._refreshStylesAndDiffsInURI(uri)
 			onFinishEdit()
 
-			// auto accept
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges) {
+			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
+			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
+				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
 				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
 			}
 		}
@@ -1615,6 +1631,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 	private _instantlyApplySRBlocks(uri: URI, blocksStr: string) {
 		const blocks = extractSearchReplaceBlocks(blocksStr)
+		logEditDiagnostic('apply_blocks', { uri: uriPathForLog(uri), blockCount: blocks.length })
 		if (blocks.length === 0) throw new Error(`No Search/Replace blocks were received!`)
 
 		const { model } = this._troveModelService.getModel(uri)
@@ -1748,8 +1765,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 			onFinishEdit()
 
-			// auto accept
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges) {
+			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
+			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
+				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
 				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
 			}
 		}
