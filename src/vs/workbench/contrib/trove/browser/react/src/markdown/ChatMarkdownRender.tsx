@@ -12,6 +12,7 @@ import { useAccessor } from '../util/services.js'
 import { URI } from '../../../../../../../base/common/uri.js'
 import { isAbsolute } from '../../../../../../../base/common/path.js'
 import { separateOutFirstLine, stripEmojis } from '../../../../common/helpers/util.js'
+import { normalizeAssistantMarkdown } from './assistantMarkdownNormalize.js'
 import { BlockCode } from '../util/inputs.js'
 import { CodespanLocationLink } from '../../../../common/chatThreadServiceTypes.js'
 import { getBasename, getRelative, voidOpenFileFn } from '../sidebar-tsx/SidebarChat.js'
@@ -544,7 +545,7 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 
 
 export const ChatMarkdownRender = ({ string, inPTag = false, chatMessageLocation, ...options }: { string: string, inPTag?: boolean, codeURI?: URI, chatMessageLocation: ChatMessageLocation | undefined } & RenderTokenOptions) => {
-	string = stripEmojis(string.replaceAll('\n•', '\n\n•'))
+	string = normalizeAssistantMarkdown(stripEmojis(string.replaceAll('\n•', '\n\n•')))
 	const tokens = marked.lexer(string); // https://marked.js.org/using_pro#renderer
 	return (
 		<>

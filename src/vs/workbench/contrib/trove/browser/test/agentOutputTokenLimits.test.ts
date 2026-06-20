@@ -23,7 +23,7 @@ suite('Trove - agentOutputTokenLimits', () => {
 	test('getAnthropicBetaHeaders includes extended output for agent', () => {
 		const beta = getAnthropicBetaHeaders({ enablePromptCache: true, chatMode: 'agent' });
 		assert.ok(beta?.includes('output-128k-2025-02-19'));
-		assert.ok(beta?.includes('prompt-caching-2024-07-31'));
+		assert.strictEqual(beta?.includes('prompt-caching-2024-07-31'), false);
 	});
 
 	test('isLikelyOutputTruncated detects output at cap', () => {

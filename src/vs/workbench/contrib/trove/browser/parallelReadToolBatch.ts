@@ -19,6 +19,9 @@ export const READ_ONLY_BATCH_TOOL_NAMES: ReadonlySet<BuiltinToolName> = new Set(
 	'search_for_files',
 	'search_in_file',
 	'search_codebase',
+	'get_file_outline',
+	'get_symbol',
+	'search_symbols',
 	'search_web',
 ]);
 

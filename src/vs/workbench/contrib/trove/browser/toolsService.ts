@@ -227,6 +227,23 @@ export class ToolsService implements IToolsService {
 				const maxResults = validateNumber(maxResultsUnknown, { default: 10 }) ?? 10
 				return { query, maxResults: Math.min(Math.max(maxResults, 1), 50) }
 			},
+			get_file_outline: (params: RawToolParamsObj) => {
+				const { uri: uriUnknown } = params
+				const uri = validateURI(uriUnknown)
+				return { uri }
+			},
+			get_symbol: (params: RawToolParamsObj) => {
+				const { uri: uriUnknown, symbol_name: symbolNameUnknown } = params
+				const uri = validateURI(uriUnknown)
+				const symbolName = validateStr('symbolName', symbolNameUnknown)
+				return { uri, symbolName }
+			},
+			search_symbols: (params: RawToolParamsObj) => {
+				const { query: queryUnknown, max_results: maxResultsUnknown } = params
+				const query = validateStr('query', queryUnknown)
+				const maxResults = validateNumber(maxResultsUnknown, { default: 15 }) ?? 15
+				return { query, maxResults: Math.min(Math.max(maxResults, 1), 50) }
+			},
 			search_web: (params: RawToolParamsObj) => {
 				const { query: queryUnknown, max_results: maxResultsUnknown } = params
 				const query = validateStr('query', queryUnknown)
@@ -403,6 +420,87 @@ export class ToolsService implements IToolsService {
 				}))
 				return { result: { results, query } }
 			},
+			get_file_outline: async ({ uri }) => {
+				const folders = workspaceContextService.getWorkspace().folders
+				if (folders.length === 0) {
+					throw new Error('No workspace folder open.')
+				}
+				const workspaceRoot = folders[0].uri.fsPath
+				const symbols = await this.repoIntelligenceService.getFileOutline(workspaceRoot, uri.fsPath)
+
+				if (symbols.length === 0) {
+					return {
+						result: {
+							outline: `No indexed symbols found in ${uri.fsPath}.\n` +
+								`The file may not be indexed yet, or may use an unsupported language.\n` +
+								`Try read_file instead, or wait for indexing to complete.`,
+						},
+					}
+				}
+
+				const lines = symbols.map(s => {
+					const exportTag = s.isExported ? 'export ' : '       ';
+					const range = `L${s.startLine}–${s.endLine}`.padEnd(12);
+					const sig = (s.signature || `${s.kind} ${s.name}`).slice(0, 80);
+					return `  ${range} ${exportTag}${s.kind.padEnd(10)} ${sig}`;
+				});
+
+				return {
+					result: {
+						outline: `File outline: ${uri.fsPath}\n${'─'.repeat(60)}\n${lines.join('\n')}`,
+					},
+				}
+			},
+			get_symbol: async ({ uri, symbolName }) => {
+				const folders = workspaceContextService.getWorkspace().folders
+				if (folders.length === 0) {
+					throw new Error('No workspace folder open.')
+				}
+				const workspaceRoot = folders[0].uri.fsPath
+				const sym = await this.repoIntelligenceService.getSymbol(workspaceRoot, uri.fsPath, symbolName)
+
+				if (!sym) {
+					return {
+						result: {
+							error: `Symbol '${symbolName}' not found in ${uri.fsPath}.\n` +
+								`Use get_file_outline to see all available symbols.`,
+						},
+					}
+				}
+
+				const fileContent = await fileService.readFile(uri)
+				const allLines = fileContent.value.toString().split('\n')
+				const slice = allLines.slice(sym.startLine - 1, sym.endLine).join('\n')
+				const header = sym.docstring ? `// ${sym.docstring}\n` : ''
+
+				return {
+					result: {
+						source: `// ${uri.fsPath} — ${symbolName} (L${sym.startLine}–${sym.endLine})\n` +
+							'```\n' + header + slice + '\n```',
+						startLine: sym.startLine,
+						endLine: sym.endLine,
+					},
+				}
+			},
+			search_symbols: async ({ query, maxResults }) => {
+				const folders = workspaceContextService.getWorkspace().folders
+				if (folders.length === 0) {
+					throw new Error('No workspace folder open.')
+				}
+				const workspaceRoot = folders[0].uri.fsPath
+				const found = await this.repoIntelligenceService.searchSymbols(workspaceRoot, query, maxResults)
+
+				if (found.length === 0) {
+					return { result: { results: `No symbols found matching '${query}'.` } }
+				}
+
+				const lines = found.map(s =>
+					`  ${s.kind.padEnd(10)} ${s.name.padEnd(30)} ` +
+					`${s.filePath}:${s.startLine}` +
+					(s.docstring ? `\n              ${s.docstring.slice(0, 80)}` : '')
+				)
+				return { result: { results: `Symbols matching '${query}' (${found.length}):\n${lines.join('\n')}` } }
+			},
 			search_web: async ({ query, maxResults }) => {
 				const results = await this.webSearchService.search(query, maxResults)
 				return { result: { results, query } }
@@ -558,6 +656,18 @@ export class ToolsService implements IToolsService {
 					return `${i + 1}. ${r.filePath}:${r.startLine}-${r.endLine}\n\`\`\`\n${r.snippet}\n\`\`\``
 				})
 				return `Codebase search results for "${result.query}" (${result.results.length} matches):\n\n${lines.join('\n\n')}`
+			},
+			get_file_outline: (_params, result) => {
+				return result.outline
+			},
+			get_symbol: (_params, result) => {
+				if (result.error) {
+					return result.error
+				}
+				return result.source ?? ''
+			},
+			search_symbols: (_params, result) => {
+				return result.results
 			},
 			search_web: (params, result) => {
 				if (result.results.length === 0) {

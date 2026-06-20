@@ -692,8 +692,18 @@
 	padding-bottom: 0.25em;
 	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
 }
-.trove-assistant-summary-prose h1:first-child,
-.trove-assistant-summary-prose h2:first-child,
+.trove-assistant-summary-prose h3 {
+	font-size: 12px;
+	font-weight: 600;
+	margin-top: 1.1em;
+	margin-bottom: 0.5em;
+	padding: 6px 10px;
+	border-bottom: none;
+	border-radius: 6px;
+	border-left: 3px solid color-mix(in srgb, var(--vscode-focusBorder, #007acc) 65%, transparent);
+	background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+	letter-spacing: 0.01em;
+}
 .trove-assistant-summary-prose h3:first-child {
 	margin-top: 0;
 }
@@ -719,6 +729,23 @@
 }
 .trove-assistant-summary-prose a {
 	color: var(--trove-link-color);
+}
+
+/* Step headers while streaming (SmallProseWrapper uses prose-sm) */
+.prose-sm h3 {
+	font-size: 12px;
+	font-weight: 600;
+	margin-top: 1.1em;
+	margin-bottom: 0.5em;
+	padding: 6px 10px;
+	border-radius: 6px;
+	border-left: 3px solid color-mix(in srgb, var(--vscode-focusBorder, #007acc) 65%, transparent);
+	background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+	color: var(--trove-fg-1);
+	letter-spacing: 0.01em;
+}
+.prose-sm h3:first-child {
+	margin-top: 0;
 }
 
 .trove-turn-complete-summary {

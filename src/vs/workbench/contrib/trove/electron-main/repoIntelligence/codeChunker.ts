@@ -6,7 +6,7 @@
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { CodeChunk, CodeChunkType, FileMetadataEntry } from '../../common/repoIntelligenceTypes.js';
+import { CodeChunk, CodeChunkType, ExtractedSymbol, FileMetadataEntry } from '../../common/repoIntelligenceTypes.js';
 
 const MAX_FILE_CHARS = 300_000;
 const MAX_CHUNK_LINES = 80;
@@ -18,6 +18,48 @@ const FALLBACK_FILE_LINES = 120;
 const SKIP_LANGUAGES = new Set([
 	'Markdown', 'JSON', 'YAML', 'TOML', 'XML', 'HTML', 'CSS', 'SCSS', 'Sass', 'Less',
 ]);
+
+export { SKIP_LANGUAGES };
+
+type SymbolPattern = {
+	nameRegex: RegExp;
+	kind: ExtractedSymbol['kind'];
+	exportRegex: RegExp;
+};
+
+const SYMBOL_PATTERNS: Record<string, SymbolPattern[]> = {
+	TypeScript: [
+		{ nameRegex: /^(?:export\s+)?(?:async\s+)?function\s+(\w+)/m, kind: 'function', exportRegex: /^export\s/ },
+		{ nameRegex: /^(?:export\s+)?class\s+(\w+)/m, kind: 'class', exportRegex: /^export\s/ },
+		{ nameRegex: /^(?:export\s+)?interface\s+(\w+)/m, kind: 'interface', exportRegex: /^export\s/ },
+		{ nameRegex: /^(?:export\s+)?type\s+(\w+)\s*=/m, kind: 'type', exportRegex: /^export\s/ },
+		{ nameRegex: /^(?:export\s+)?enum\s+(\w+)/m, kind: 'enum', exportRegex: /^export\s/ },
+		{ nameRegex: /^export\s+const\s+(\w+)/m, kind: 'const', exportRegex: /^export\s/ },
+	],
+	JavaScript: [
+		{ nameRegex: /^(?:export\s+)?(?:async\s+)?function\s+(\w+)/m, kind: 'function', exportRegex: /^export\s/ },
+		{ nameRegex: /^(?:export\s+)?class\s+(\w+)/m, kind: 'class', exportRegex: /^export\s/ },
+		{ nameRegex: /^export\s+const\s+(\w+)/m, kind: 'const', exportRegex: /^export\s/ },
+	],
+	Python: [
+		{ nameRegex: /^def\s+(\w+)/m, kind: 'function', exportRegex: /^(?!_)/ },
+		{ nameRegex: /^class\s+(\w+)/m, kind: 'class', exportRegex: /^(?!_)/ },
+	],
+	Go: [
+		{ nameRegex: /^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)/m, kind: 'function', exportRegex: /^func\s+[A-Z]/ },
+		{ nameRegex: /^type\s+(\w+)\s+struct/m, kind: 'class', exportRegex: /^type\s+[A-Z]/ },
+		{ nameRegex: /^type\s+(\w+)\s+interface/m, kind: 'interface', exportRegex: /^type\s+[A-Z]/ },
+	],
+	Rust: [
+		{ nameRegex: /^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/m, kind: 'function', exportRegex: /^pub\s/ },
+		{ nameRegex: /^(?:pub\s+)?struct\s+(\w+)/m, kind: 'class', exportRegex: /^pub\s/ },
+		{ nameRegex: /^(?:pub\s+)?trait\s+(\w+)/m, kind: 'interface', exportRegex: /^pub\s/ },
+	],
+};
+
+export const supportsSymbolExtraction = (language: string | null | undefined): boolean => {
+	return !!language && !SKIP_LANGUAGES.has(language) && !!SYMBOL_PATTERNS[language];
+};
 
 type BoundaryPattern = { regex: RegExp; chunkType: CodeChunkType };
 
@@ -145,6 +187,74 @@ export const chunkFile = (
 		});
 	}
 	return chunks;
+};
+
+const extractLeadingDocstring = (lines: string[], startLineIdx: number, language: string): string => {
+	const commentChars = language === 'Python' ? ['#'] : ['//', '*', '/**', '/*'];
+	const result: string[] = [];
+	for (let i = startLineIdx - 1; i >= Math.max(0, startLineIdx - 8); i--) {
+		const line = lines[i].trim();
+		const isComment = commentChars.some(c => line.startsWith(c)) || line === '*/';
+		if (!isComment && line !== '') {
+			break;
+		}
+		if (isComment) {
+			result.unshift(line.replace(/^[/*#\s]+/, '').replace(/\*+\/$/, '').trim());
+		}
+	}
+	return result.filter(Boolean).join(' ').slice(0, 150);
+};
+
+export const extractSymbolsFromFile = (
+	workspaceHash: string,
+	filePath: string,
+	content: string,
+	language: string | null,
+): ExtractedSymbol[] => {
+	if (!supportsSymbolExtraction(language)) {
+		return [];
+	}
+
+	const patterns = SYMBOL_PATTERNS[language!];
+	const lines = content.split('\n');
+	const symbols: ExtractedSymbol[] = [];
+	const boundaries = findBoundaryLines(content, LANGUAGE_BOUNDARIES[language!] ?? []);
+
+	for (let b = 0; b < boundaries.length; b++) {
+		const startLineIdx = boundaries[b].line - 1;
+		const endLineIdx = b + 1 < boundaries.length
+			? boundaries[b + 1].line - 2
+			: lines.length - 1;
+		const line = lines[startLineIdx];
+
+		for (const pat of patterns) {
+			const match = pat.nameRegex.exec(line);
+			if (!match?.[1]) {
+				continue;
+			}
+
+			const name = match[1];
+			const isExported = pat.exportRegex.test(line);
+			const signature = line.trim().slice(0, 200);
+			const docstring = extractLeadingDocstring(lines, startLineIdx, language!);
+			const symbolText = lines.slice(startLineIdx, endLineIdx + 1).join('\n');
+			const contentHash = createHash('sha256').update(symbolText).digest('hex').slice(0, 16);
+
+			symbols.push({
+				name,
+				kind: pat.kind,
+				filePath,
+				startLine: startLineIdx + 1,
+				endLine: endLineIdx + 1,
+				signature,
+				docstring,
+				isExported,
+				contentHash,
+			});
+			break;
+		}
+	}
+	return symbols;
 };
 
 export const buildChunksForWorkspace = (

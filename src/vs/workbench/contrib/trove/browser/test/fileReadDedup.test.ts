@@ -25,14 +25,17 @@ import { defaultGlobalSettings } from '../../common/troveSettingsTypes.js';
 suite('Trove - fileReadDedup', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('shouldSkipDuplicateFileRead blocks second read of same file', () => {
+	test('shouldSkipDuplicateFileRead skips only when range is fully covered', () => {
 		const fileReads = new Map<string, { count: number; ranges: string[] }>();
 		const uri = URI.file('/proj/clock.js');
 		trackFileRead(fileReads, uri, 1, 120);
-		const skip = shouldSkipDuplicateFileRead(fileReads, uri, 270, 380);
-		assert.strictEqual(skip.skip, true);
-		assert.ok(skip.message?.includes('file-level dedup'));
-		assert.ok(skip.message?.includes('lines 1-120'));
+		const uncovered = shouldSkipDuplicateFileRead(fileReads, uri, 270, 380);
+		assert.strictEqual(uncovered.skip, false);
+
+		const covered = shouldSkipDuplicateFileRead(fileReads, uri, 50, 100);
+		assert.strictEqual(covered.skip, true);
+		assert.ok(covered.message?.includes('range already read'));
+		assert.ok(covered.message?.includes('lines 1-120'));
 	});
 
 	test('trackReadOnlyCall tracks file-level reads across ranges', () => {

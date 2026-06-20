@@ -25,6 +25,7 @@ export const applyRoutedAnthropicPromptCache = (
 	enablePromptCache: boolean,
 	providerName: ProviderName,
 	modelName: string,
+	volatileSystemMessage?: string,
 ): OpenAIWireMessage[] => {
 	if (!enablePromptCache || !isAnthropicRoutedModel(providerName, modelName)) {
 		return messages;
@@ -34,11 +35,18 @@ export const applyRoutedAnthropicPromptCache = (
 	const cacheBlock = (text: string) => ([{
 		type: 'text',
 		text,
-		cache_control: { type: 'ephemeral' },
+		cache_control: { type: 'ephemeral', ttl: '1h' },
 	}]);
 
-	if (separateSystemMessage) {
-		result.unshift({ role: 'system', content: cacheBlock(separateSystemMessage) });
+	if (separateSystemMessage || volatileSystemMessage) {
+		const content: { type: string; text: string; cache_control?: { type: string; ttl?: string } }[] = [];
+		if (separateSystemMessage) {
+			content.push(...cacheBlock(separateSystemMessage));
+		}
+		if (volatileSystemMessage) {
+			content.push({ type: 'text', text: volatileSystemMessage });
+		}
+		result.unshift({ role: 'system', content });
 		return result;
 	}
 

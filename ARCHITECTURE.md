@@ -56,8 +56,8 @@ All Trove code lives under `src/vs/workbench/contrib/trove/`.
 | Service | File | Responsibility |
 |---------|------|----------------|
 | Chat / agent loop | `chatThreadService.ts` | Thread state, `while` agent loop, tool dispatch, checkpoints, idle status, token totals |
-| LLM message prep | `convertToLLMMessageService.ts` | System prompt, history, provider wire format, context trim, compaction |
-| Tools | `toolsService.ts` | Validate, execute, stringify results for 16+ builtin tools |
+| LLM message prep | `convertToLLMMessageService.ts` | Stable/volatile system prompt split, history, provider wire format, context trim, compaction |
+| Tools | `toolsService.ts` | Validate, execute, stringify results for builtin tools (read/search/edit/terminal + symbol tools) |
 | Web search | `webSearchService.ts` | Tavily HTTP search for `search_web` tool |
 | Terminal tools | `terminalToolService.ts` | Shell integration, persistent terminals, exit codes |
 | Agent delivery | `agentDeliveryService.ts` | Post-run build/server/localhost detection |
@@ -70,14 +70,22 @@ All Trove code lives under `src/vs/workbench/contrib/trove/`.
 | Context trim | `contextWindowTrim.ts` | Token budget trimming for long threads |
 | Tool compaction | `toolResultCompaction.ts` | Replace stale read/search tool bodies with short refs |
 | Wire trim | `wireMessageTrim.ts` | Char-budget elision of oldest tool results on wire |
+| File read dedup | `fileReadDedup.ts` | Range-aware skip for duplicate `read_file` calls within a run |
+| Agent hints | `agentReadHints.ts`, `agentEditHints.ts`, `agentVerificationHints.ts`, `agentEditCompletionHints.ts` | Inject `<agent_hints>` tail messages when the agent repeats reads/edits or skips verification |
+| Anthropic wire | `anthropicConversationWire.ts` | Preflight conversation role order; safe hint injection without prefill violation |
+| Agent loop limits | `agentLoopLimits.ts`, `agentLoopSettings.ts` | Max iterations, read-only cap, consecutive fail cap, stream stall timeout |
+| Edit diagnostics | `agentEditDiagnostics.ts` | Structured `[Trove edit]` pipeline logging |
+| Rate limits | `llmRateLimit.ts` | Input token caps, retry-after parsing, backoff |
 | Memory intent | `chatMemoryIntent.ts` | Parse “remember that …” chat messages |
-| Workspace preview | `openWorkspacePreviewAction.ts`, `simpleBrowserOpen.ts` | Open localhost preview in Simple Browser |
+| RIAF | `riafAgentRunController.ts`, `riafAgentService.ts`, `analyseRepositoryAction.ts` | Deep repo analysis → `{repo}_context.md` |
+| Workspace preview | `workspacePreviewService.ts`, `openWorkspacePreviewAction.ts`, `simpleBrowserOpen.ts` | Open/reload localhost preview in Simple Browser |
 
 ### Key common modules (token economy)
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| Prompt cache helpers | `promptCache.ts` | `cache_control` blocks for routed Anthropic models |
+| Prompt cache helpers | `promptCache.ts` | `cache_control` blocks for routed Anthropic models; stable/volatile system split on OpenAI wire |
+| Agent output limits | `agentOutputTokenLimits.ts` | Agent-mode max output tokens; Anthropic beta headers (extended output) |
 | Token usage | `llmMessageUsage.ts` | Normalize provider usage; per-run totals and summary log |
 | Directory tree cache | `directoryStrService.ts` | Workspace tree string with invalidation on edits |
 
@@ -87,10 +95,11 @@ All Trove code lives under `src/vs/workbench/contrib/trove/`.
 |--------|------|----------------|
 | LLM IPC | `sendLLMMessageChannel.ts` | Routes streaming events by `requestId` |
 | LLM HTTP | `llmMessage/sendLLMMessage.impl.ts` | Provider-specific API calls, prompt caching headers |
-| Repo intelligence | `repoIntelligence/repoIntelligenceService.impl.ts` | Profile generation, chunk index, search |
-| SQLite schema | `repoIntelligence/repoIntelligenceDb.ts` | Workspace profiles, FTS5 `code_chunks` |
+| Preview probe | `previewProbeChannel.ts` | Main-process HTTP probe for localhost readiness (bypasses renderer CSP) |
+| Repo intelligence | `repoIntelligence/repoIntelligenceService.impl.ts` | Profile generation, chunk index, symbol index, search |
+| SQLite schema | `repoIntelligence/repoIntelligenceDb.ts` | Workspace profiles, FTS5 `code_chunks`, `symbols` + `symbols_fts`; legacy KG migration |
 | Workspace scan | `repoIntelligence/workspaceScanner.ts` | Detect stack, collect files |
-| Code chunker | `repoIntelligence/codeChunker.ts` | Split files for search index |
+| Code chunker | `repoIntelligence/codeChunker.ts` | Split files for search index; extract named symbols (functions, classes, etc.) |
 
 ---
 
@@ -129,11 +138,11 @@ sequenceDiagram
     User->>Chat: sendNewMessage()
     Chat->>Chat: remember intent? (skip LLM if memory-only)
     Chat->>Chat: generateAgentPlan() (optional)
-    Chat->>Convert: buildRunContext() once per run
+    Chat->>Convert: buildRunContext() once per run (stable + volatile blocks)
     loop while shouldSendAnotherMessage
-        Chat->>Convert: prepareLLMChatMessages(precomputedSystemMessage)
+        Chat->>Convert: prepareLLMChatMessages(precomputedRunContext)
         Convert->>Convert: compact stale tools + trim history + wire elision
-        Chat->>IPC: sendLLMMessage()
+        Chat->>IPC: sendLLMMessage(separateSystemMessage, volatileSystemMessage, threadId)
         IPC->>Main: IPC call (enablePromptCache)
         Main-->>IPC: onText / onFinalMessage + usage
         alt tool call returned
@@ -187,39 +196,54 @@ Defined in `common/chatThreadServiceTypes.ts`. The UI (`SidebarChat.tsx`) render
 
 Before each LLM call:
 
-1. **`buildRunContext`** (once per agent run) — builds the full system string: directory tree, repo profile, `.troverules`, memory, tool definitions.
-2. **`prepareLLMChatMessages`** (each loop turn) — reuses `precomputedSystemMessage` when provided.
+1. **`buildRunContext`** (once per agent run) — builds `{ stableBlock, volatileBlock }`:
+   - **Stable** (`chat_systemMessage_stable`): OS info, workspace folders, mode rules, tool definitions, repo profile, `.troverules`, user memory, file-reading policy. Cached across turns.
+   - **Volatile** (`chat_systemMessage_volatile`): active file, open files, persistent terminal IDs, directory tree. Rebuilt when workspace state changes but does not invalidate the cache prefix.
+2. **`prepareLLMChatMessages`** (each loop turn) — reuses `precomputedRunContext` when provided; combines both blocks for context-window trimming but passes them separately to the LLM layer.
 3. **`trimChatMessagesForContextWindow`** — structural history trim when over budget.
 4. **`compactStaleToolResults`** — replaces old read/search tool bodies outside the protected tail with one-line references.
 5. Convert internal `ChatMessage[]` to provider format (Anthropic / OpenAI / Gemini).
 6. **Wire trim** (`wireMessageTrim.ts`) — `elideOldestToolResultsFirst` drops oldest tool bodies to fit char budget; uses `computeEffectiveOutputReserve` instead of reserving half the context window for output.
 
-### 6.2 Prompt caching (`common/promptCache.ts`)
+Returns `separateSystemMessage` (stable only) and `volatileSystemMessage` for the main-process HTTP layer.
+
+### 6.2 Prompt caching (`common/promptCache.ts`, `sendLLMMessage.impl.ts`)
 
 When `enablePromptCache` is on (Trove Settings → Agent & token economy):
 
-- **Native Anthropic** — `cache_control: { type: 'ephemeral' }` on system, tools, and last user block; `anthropic-beta: prompt-caching-2024-07-31` header.
-- **Routed Claude** (OpenRouter, Bedrock, LiteLLM, Azure) — system content blocks with `cache_control` via `applyRoutedAnthropicPromptCache`.
+- **Native Anthropic** — three cache breakpoints with `cache_control: { type: 'ephemeral', ttl: '1h' }`:
+  1. **Stable system block** — tools, rules, repo profile (not invalidated by file switches).
+  2. **Tools array** — last tool definition block.
+  3. **Conversation prefix** — last content block of the second-to-last user message (`addConversationCacheBreakpoint`).
+  - Volatile system content (open files, directory tree) is sent as a **separate uncached** system block.
+  - Extended output uses `anthropic-beta: output-128k-2025-02-19` for agent mode only (prompt caching is GA; no caching beta header).
+- **Routed Claude** (OpenRouter, Bedrock, LiteLLM, Azure) — stable system block cached via `applyRoutedAnthropicPromptCache`; volatile block appended uncached.
+- **OpenAI** — `prompt_cache_key: trove:${threadId}:${modelName}` routes identical-prefix requests to the same backend shard for improved automatic prefix caching.
 
-### 6.3 Token usage (`common/llmMessageUsage.ts`)
+### 6.3 File read dedup (`fileReadDedup.ts`)
 
-Each `onFinalMessage` may include normalized `LLMMessageUsage` (input, output, cache read/write). `chatThreadService` accumulates per-run totals and logs `[Trove agent token usage] …` when the run completes.
+Within a single agent run, `shouldSkipDuplicateFileRead` skips `read_file` only when the requested line range is **fully covered** by a prior read of the same file — not on any second read regardless of range. This prevents redundant full-file reads while still allowing targeted range reads of unseen sections.
 
-### 6.4 IPC bridge (`common/sendLLMMessageService.ts`)
+### 6.4 Token usage (`common/llmMessageUsage.ts`)
+
+Each `onFinalMessage` may include normalized `LLMMessageUsage` (input, output, cache read/write). `chatThreadService` accumulates per-run totals and logs `[Trove agent token usage] …` when the run completes. Healthy multi-turn sessions should show 60–80% of input tokens served from cache after turn 2 when prompt caching is enabled.
+
+### 6.5 IPC bridge (`common/sendLLMMessageService.ts`)
 
 - Generates `requestId` per request.
 - Passes `enablePromptCache` from global settings.
+- Forwards `volatileSystemMessage` and `threadId` (OpenAI cache routing) on chat requests.
 - Stores callbacks in a local map (callbacks cannot cross IPC).
 - `channel.call('sendLLMMessage', params)` → main process.
 - Listens on `onText_sendLLMMessage`, `onFinalMessage_sendLLMMessage`, etc., filtered by `requestId`.
 
-### 6.5 Main process (`sendLLMMessageChannel.ts` + `sendLLMMessage.impl.ts`)
+### 6.6 Main process (`sendLLMMessageChannel.ts` + `sendLLMMessage.impl.ts`)
 
 - Emits streaming events with `requestId`.
 - Performs HTTP to configured provider using keys from `ITroveSettingsService`.
 - Returns usage metadata from provider responses.
 
-### 6.6 Providers (`common/troveSettingsTypes.ts`, `common/modelCapabilities.ts`)
+### 6.7 Providers (`common/troveSettingsTypes.ts`, `common/modelCapabilities.ts`)
 
 Supported providers include Anthropic, OpenAI, Gemini, Ollama, vLLM, LM Studio, LiteLLM, DeepSeek, OpenRouter, Groq, Mistral, xAI, Google Vertex, and OpenAI-compatible endpoints. Each feature (Chat, Autocomplete, Apply, SCM) can use a different model.
 
@@ -239,7 +263,10 @@ Tools are declared in `common/prompt/prompts.ts` (`builtinTools`) and implemente
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | File contents (optional line range) |
+| `read_file` | File contents (optional line range); range-aware dedup within a run |
+| `get_file_outline` | Structural outline of a file (symbols + line ranges, ~50 tokens) |
+| `get_symbol` | Source of one named symbol by line range (~100–300 tokens) |
+| `search_symbols` | FTS search for symbols across the workspace by name |
 | `ls_dir` | List directory |
 | `get_dir_tree` | Tree view of folder |
 | `search_pathnames_only` | Filename search |
@@ -248,6 +275,8 @@ Tools are declared in `common/prompt/prompts.ts` (`builtinTools`) and implemente
 | `search_in_file` | Line numbers matching query in one file |
 | `search_web` | Live web search via Tavily (`webSearchService.ts`) |
 | `read_lint_errors` | Linter diagnostics for a file |
+
+Agent mode includes a **file-reading policy** in the stable system prompt: for files >100 lines, prefer `get_file_outline` → `get_symbol` → ranged `read_file` before reading the whole file.
 
 **Edit**
 
@@ -273,9 +302,27 @@ MCP tools are merged at prompt time when `chatMode === 'agent'`.
 
 Destructive or sensitive tools require user approval (`toolsServiceTypes.ts`): edits, terminal commands, MCP invocations. Gather mode excludes these from the tool list entirely.
 
+---
+
+## 7a. Agent guardrails and hints
+
+When the agent shows unproductive patterns, Trove appends synthetic user messages containing `<agent_hints>…</agent_hints>` before the next LLM call. Hints are aggregated by `buildAgentTailHints()` in `agentReadHints.ts` and injected via `appendAgentTailHintsToMessages()` in `anthropicConversationWire.ts` so the wire format always ends on a user role (Anthropic requirement).
+
+| Hint module | Trigger |
+|-------------|---------|
+| `agentEditHints.ts` | Same file edited ≥2×; large file (≥3000 chars) targeted with `rewrite_file` |
+| `agentReadHints.ts` | Duplicate read-only tool signature; exploration budget exhausted |
+| `fileReadDedup.ts` | Same file read ≥2× (hint path, separate from skip logic) |
+| `agentVerificationHints.ts` | Edits applied but no sandbox verification command run |
+| `agentEditCompletionHints.ts` | Edit intent detected but no edits applied (truncation/interrupt) |
+
+Loop caps (`agentLoopLimits.ts`, settings in `troveSettingsTypes.ts`) stop runaway agents: max iterations (25), read-only calls (12; 6 in light agent), consecutive tool fails (3), LLM stream stall (60s; 300s during edit streaming).
+
+`agentEditDiagnostics.ts` logs edit pipeline stages (`stream_received`, `apply_start`, etc.) for debugging stuck edits.
+
 ### Parallel read batching (`parallelReadToolBatch.ts`)
 
-For read-only tools (including `search_web`), the agent may issue a lightweight discovery LLM call to collect up to 4 additional read calls, then execute the batch with `Promise.all` before the next main LLM turn.
+For read-only tools (including `search_web`, `get_file_outline`, `get_symbol`, `search_symbols`), the agent may issue a lightweight discovery LLM call to collect up to 4 additional read calls, then execute the batch with `Promise.all` before the next main LLM turn.
 
 ### Tool result compaction (`toolResultCompaction.ts`)
 
@@ -294,14 +341,28 @@ Workspace understanding is **main-process SQLite**, exposed via `trove-channel-r
 ### Lifecycle
 
 1. On workspace open, `workspaceScanner.ts` collects files, detects languages/frameworks/package managers/commands.
-2. `codeChunker.ts` splits files into chunks; FTS5 virtual table enables `search_codebase`.
-3. LLM generates `projectPurpose` and `architectureSummary` (cached).
-4. Profile keyed by SHA-256 hash of workspace root; expires after 24h or manual refresh.
+2. `codeChunker.ts` splits files into ~80-line chunks for FTS5 `search_codebase`.
+3. **`extractSymbolsFromFile`** (same chunker) extracts named symbols (functions, classes, interfaces, types, enums) with signatures, docstrings, and line ranges into the `symbols` table + `symbols_fts` index.
+4. **Incremental re-indexing** — per-file SHA-256 content hashes in `file_metadata.content_hash`; only changed files are re-chunked/re-symbolized on refresh.
+5. **`_migrateLegacyKnowledgeGraph`** — on startup, drops pre-v2 schemas (`symbol_id` PK, `symbol_edges`, `symbol_embeddings`, FTS without `workspace_hash`) before creating v2 `symbols` + `symbols_fts`.
+6. LLM generates `projectPurpose` and `architectureSummary` (cached).
+7. Profile keyed by SHA-256 hash of workspace root; expires after 24h or manual refresh.
+
+### SQLite schema (`repoIntelligenceDb.ts`)
+
+| Table | Purpose |
+|-------|---------|
+| `workspace_profiles` | Stack, frameworks, commands, LLM summaries |
+| `file_metadata` | Per-file language, mtime, size, `content_hash` |
+| `code_chunks` + `chunks_fts` | BM25 semantic search (`search_codebase`) |
+| `symbols` + `symbols_fts` | Named symbol index (`get_file_outline`, `get_symbol`, `search_symbols`) |
+
+DB path: `<userData>/User/globalStorage/trove-repo-intelligence.db`
 
 ### Browser-side additions
 
-- `repoIntelligenceService.ts` loads `.troverules` from workspace roots and watches for changes.
-- Profile and search results injected into system prompt and tool handlers.
+- `repoIntelligenceService.ts` loads `.troverules` from workspace roots and watches for changes; proxies symbol/outline/search methods to main process.
+- Profile and search results injected into the stable system prompt and tool handlers.
 
 ---
 
@@ -334,6 +395,8 @@ Produces `AgentDeliverySummary` (`build_succeeded` \| `server_running` \| `verif
 - No caption headline — content-first layout
 
 Preview opens via `trove.openWorkspacePreview` → `simpleBrowserOpen.ts` (activates built-in Simple Browser extension in the primary editor column).
+
+`workspacePreviewService.ts` debounces reload (250ms) when web assets (HTML/CSS/JS) change on disk. `previewProbeChannel.ts` in main process probes localhost URLs when renderer CSP would block fetch.
 
 ---
 
@@ -386,16 +449,30 @@ Natural-language remember requests are detected before the agent loop:
 
 ---
 
+## 14a. Repository Intelligence Analysis Flow (RIAF)
+
+RIAF is a dedicated deep-analysis workflow separate from normal agent chat:
+
+1. User triggers **Analyse Repository** (`analyseRepositoryAction.ts`, `Cmd+Shift+K`).
+2. `riafAgentRunController.ts` runs an agent loop with elevated limits (40 iterations, 50 read-only calls).
+3. Output is written to `{repo}_context.md` in the workspace.
+4. `ContextDocPanel.tsx` surfaces progress and the resulting document.
+
+Prompts and types live in `common/riaf/`. Service: `riafAgentService.ts`.
+
+---
+
 ## 15. IPC channel registry
 
 | Channel | Direction | Purpose |
 |---------|-----------|---------|
 | `trove-channel-llmMessage` | browser ↔ main | LLM send, abort, model list |
-| `trove-channel-repoIntelligence` | browser → main | Profile, refresh, codebase search |
+| `trove-channel-repoIntelligence` | browser → main | Profile, refresh, codebase search, symbol outline/search |
 | `trove-channel-scm` | browser → main | Git commit, branch helpers |
 | `trove-channel-metrics` | browser → main | Telemetry events |
 | `trove-channel-mcp` | browser ↔ main | MCP discovery and tool calls |
 | `trove-channel-update` | browser → main | Update check/install |
+| `trove-channel-previewProbe` | browser → main | Localhost readiness probe for workspace preview |
 
 **Convention:** add methods to existing channels rather than creating new channels when possible.
 
@@ -420,6 +497,8 @@ Built with React + Tailwind (`browser/react/`). Entry bundles:
 - **`glass-card` / `glass-panel`** — frosted glass morphism (`styles.css`)
 - **`trove-output-panel`** — delivery summary with approve/reject actions
 - **`trove-assistant-summary-prose`** — polished committed assistant markdown output
+- **`assistantMarkdownNormalize.ts`** — converts agent `**Step N — file:**` headers to styled `h3` headings (bundled in React, not external util)
+- **Streaming assistant markdown** — uncommitted messages use `ChatMarkdownRender` (not raw pre-wrap) so step headers render during streaming
 - **`CollapsibleCodeSnippet`** — expandable search/read results in chat
 - **`BackgroundActivityPanel`** — live idle/LLM activity with status text
 - **`AgentTurnCompleteSummaryCard`** — post-turn recap with color-coded activity chips (read/edit/search/run) and touched files
@@ -503,15 +582,16 @@ Never call Node or `fetch` for LLM from the browser. Never manipulate editor mod
 
 | Area | Location |
 |------|----------|
-| Trove unit tests | `browser/test/*.test.ts`, `electron-main/repoIntelligence/test/` |
-| Token economy tests | `wireMessageTrim.test.ts`, `toolResultCompaction.test.ts`, `promptCache.test.ts`, `llmMessageUsage.test.ts` |
+| Trove unit tests | `npm run test-trove` — 31 files under `browser/test/` and `electron-main/repoIntelligence/test/` |
+| Token economy tests | `wireMessageTrim.test.ts`, `toolResultCompaction.test.ts`, `promptCache.test.ts`, `llmMessageUsage.test.ts`, `fileReadDedup.test.ts`, `agentOutputTokenLimits.test.ts`, `llmRateLimit.test.ts` |
+| Agent guardrails | `agentEditHints.test.ts`, `agentEditCompletionHints.test.ts`, `agentEditDiagnostics.test.ts`, `agentReadHints.test.ts`, `agentVerificationHints.test.ts`, `agentLoopSettings.test.ts`, `anthropicConversationWire.test.ts` |
+| Symbol / DB | `codeChunker.test.ts` (includes legacy KG migration) |
+| RIAF | `riafAgentService.test.ts`, `riafIntegration.test.ts`, `riafPrompts.test.ts` |
 | Model settings merge | `modelSettingsMerge.test.ts` |
 | Agent plan tests | `agentPlan.test.ts` |
 | Memory intent tests | `chatMemoryIntent.test.ts` |
 | VS Code suite | `npm run test-node`, `npm run test-browser` |
 | Layer checker | `npm run valid-layers-check` |
-
-See also [TROVE_TEST_PLAN.md](TROVE_TEST_PLAN.md) for manual QA scenarios.
 
 ---
 
@@ -532,8 +612,7 @@ Trove-specific changes are concentrated in `contrib/trove/` plus channel registr
 | Document | Content |
 |----------|---------|
 | [README.md](README.md) | Build instructions, prerequisites, data paths |
-| [TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md](TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md) | Token economics problem analysis and phased implementation |
-| [TROVE_ARCHITECTURE_ANALYSIS.md](TROVE_ARCHITECTURE_ANALYSIS.md) | Gap analysis vs Cursor and incremental phase plan |
-| [TROVE_TEST_PLAN.md](TROVE_TEST_PLAN.md) | Manual test checklist |
+| [TROVE_FEATURES.md](TROVE_FEATURES.md) | Detailed feature reference (tools, token economy, UI, settings) |
+| [trove_v1_implementation_plan_kg_token.md](trove_v1_implementation_plan_kg_token.md) | Token optimization + symbol index implementation plan |
 | [browser/react/README.md](src/vs/workbench/contrib/trove/browser/react/README.md) | React build constraints |
 | [VS Code wiki](https://github.com/microsoft/vscode/wiki/How-to-Contribute) | Upstream compile/debug guidance |

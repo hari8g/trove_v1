@@ -28,9 +28,6 @@ export const getAnthropicBetaHeaders = (opts: {
 	chatMode: ChatMode | null | undefined;
 }): string | undefined => {
 	const betas: string[] = [];
-	if (opts.enablePromptCache) {
-		betas.push('prompt-caching-2024-07-31');
-	}
 	if (opts.chatMode === 'agent') {
 		betas.push(ANTHROPIC_EXTENDED_OUTPUT_BETA);
 	}

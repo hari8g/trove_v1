@@ -28,7 +28,7 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 	private readonly _onDidChangeUserMemory = this._register(new Emitter<void>());
 	readonly onDidChangeUserMemory = this._onDidChangeUserMemory.event;
 
-	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile' | 'searchCodebase' | 'getChunkCount' | 'getUserMemory' | 'appendToUserMemory'>;
+	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile' | 'searchCodebase' | 'getChunkCount' | 'getFileOutline' | 'getSymbol' | 'searchSymbols' | 'getUserMemory' | 'appendToUserMemory'>;
 	private _initInFlight: Promise<void> | null = null;
 	private _initAttempts = 0;
 
@@ -234,6 +234,18 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 
 	async getChunkCount(workspaceRoot: string): Promise<number> {
 		return this._mainProxy.getChunkCount(workspaceRoot);
+	}
+
+	async getFileOutline(workspaceRoot: string, filePath: string) {
+		return this._mainProxy.getFileOutline(workspaceRoot, filePath);
+	}
+
+	async getSymbol(workspaceRoot: string, filePath: string, symbolName: string) {
+		return this._mainProxy.getSymbol(workspaceRoot, filePath, symbolName);
+	}
+
+	async searchSymbols(workspaceRoot: string, query: string, maxResults?: number) {
+		return this._mainProxy.searchSymbols(workspaceRoot, query, maxResults);
 	}
 }
 

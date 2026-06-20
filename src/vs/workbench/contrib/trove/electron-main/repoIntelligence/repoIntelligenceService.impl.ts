@@ -4,19 +4,22 @@
  *--------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
 import { promises as fs } from 'fs';
+import { join } from 'path';
 import { IEnvironmentMainService } from '../../../../../platform/environment/electron-main/environmentMainService.js';
 import { IEncryptionMainService } from '../../../../../platform/encryption/common/encryptionService.js';
 import { IApplicationStorageMainService } from '../../../../../platform/storage/electron-main/storageMainService.js';
 import { StorageScope } from '../../../../../platform/storage/common/storage.js';
-import { CodebaseSearchResult, IRepoIntelligenceMainService, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, IRepoIntelligenceMainService, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 import { getTroveMemoryFilePath } from '../../common/troveMemoryPaths.js';
 import { TROVE_SETTINGS_STORAGE_KEY } from '../../common/storageKeys.js';
 import { TroveSettingsState } from '../../common/troveSettingsService.js';
 import { IMetricsService } from '../../common/metricsService.js';
 import { sendLLMMessage } from '../llmMessage/sendLLMMessage.js';
 import { detectCommands } from './commandDetector.js';
-import { buildChunksForWorkspace } from './codeChunker.js';
+import { buildChunksForWorkspace, extractSymbolsFromFile, supportsSymbolExtraction } from './codeChunker.js';
 import { getRepoIntelligenceDbPath, hashWorkspaceRoot, RepoIntelligenceDb } from './repoIntelligenceDb.js';
 import { RawScanResult, scanWorkspace } from './workspaceScanner.js';
 
@@ -148,6 +151,12 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		console.log(`[RepoIntelligence] Indexed ${chunks.length} chunks in ${Date.now() - chunkStart}ms`);
 		this._metricsService.capture('RepoIntelligence Chunks Indexed', { chunkCount: chunks.length, workspaceRoot });
 
+		try {
+			await this._indexSymbolsIncremental(workspaceRoot, hash, scan.fileMeta);
+		} catch (err) {
+			console.error('[RepoIntelligence] Symbol indexing failed:', err);
+		}
+
 		const existing = await this._db.getProfile(hash);
 		if (existing?.projectPurpose && existing?.architectureSummary) {
 			profile = { ...profile, projectPurpose: existing.projectPurpose, architectureSummary: existing.architectureSummary };
@@ -174,21 +183,71 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 
 	private async _ensureChunksIndexed(workspaceRoot: string, hash: string): Promise<void> {
 		const chunkCount = await this._db.getChunkCount(hash);
+		const fileMeta = await this._db.getFileMetadata(hash);
+
 		if (chunkCount > 0) {
+			if (fileMeta.length > 0) {
+				try {
+					await this._indexSymbolsIncremental(workspaceRoot, hash, fileMeta);
+				} catch (err) {
+					console.error('[RepoIntelligence] Symbol indexing failed:', err);
+				}
+			}
 			return;
 		}
 
-		const fileMeta = await this._db.getFileMetadata(hash);
 		if (fileMeta.length > 0) {
 			const chunkStart = Date.now();
 			const chunks = buildChunksForWorkspace(workspaceRoot, hash, fileMeta);
 			await this._db.replaceChunks(hash, chunks);
 			console.log(`[RepoIntelligence] Backfilled ${chunks.length} chunks in ${Date.now() - chunkStart}ms`);
 			this._metricsService.capture('RepoIntelligence Chunks Backfilled', { chunkCount: chunks.length, workspaceRoot });
+			try {
+				await this._indexSymbolsIncremental(workspaceRoot, hash, fileMeta);
+			} catch (err) {
+				console.error('[RepoIntelligence] Symbol indexing failed:', err);
+			}
 			return;
 		}
 
 		await this._ensureScan(workspaceRoot);
+	}
+
+	private async _indexSymbolsIncremental(
+		workspaceRoot: string,
+		workspaceHash: string,
+		fileMeta: FileMetadataEntry[],
+	): Promise<void> {
+		const storedHashes = await this._db.getFileHashes(workspaceHash);
+		let indexed = 0;
+
+		for (const file of fileMeta) {
+			if (!supportsSymbolExtraction(file.language)) {
+				continue;
+			}
+
+			const absPath = join(workspaceRoot, file.filePath);
+			let content: string;
+			try {
+				content = readFileSync(absPath, 'utf8');
+			} catch {
+				continue;
+			}
+
+			const currentHash = createHash('sha256').update(content).digest('hex').slice(0, 32);
+			if (storedHashes.get(file.filePath) === currentHash) {
+				continue;
+			}
+
+			const symbols = extractSymbolsFromFile(workspaceHash, file.filePath, content, file.language);
+			await this._db.replaceSymbolsForFile(workspaceHash, file.filePath, symbols);
+			await this._db.upsertFileHash(workspaceHash, file.filePath, currentHash);
+			indexed += 1;
+		}
+
+		if (indexed > 0) {
+			console.log(`[RepoIntelligence] Indexed symbols for ${indexed} changed files`);
+		}
 	}
 
 	async searchCodebase(workspaceRoot: string, query: string, maxResults = 10): Promise<CodebaseSearchResult[]> {
@@ -206,6 +265,31 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		await this._db.init();
 		const hash = hashWorkspaceRoot(workspaceRoot);
 		return this._db.getChunkCount(hash);
+	}
+
+	async getFileOutline(workspaceRoot: string, filePath: string): Promise<ExtractedSymbol[]> {
+		await this._db.init();
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this.getProfile(workspaceRoot);
+		return this._db.getFileOutline(hash, filePath);
+	}
+
+	async getSymbol(workspaceRoot: string, filePath: string, symbolName: string): Promise<ExtractedSymbol | null> {
+		await this._db.init();
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this.getProfile(workspaceRoot);
+		return this._db.getSymbol(hash, filePath, symbolName);
+	}
+
+	async searchSymbols(workspaceRoot: string, query: string, maxResults = 15): Promise<ExtractedSymbol[]> {
+		await this._db.init();
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this.getProfile(workspaceRoot);
+		const trimmed = query.trim();
+		if (!trimmed) {
+			return [];
+		}
+		return this._db.searchSymbols(hash, trimmed, maxResults);
 	}
 
 	private async _readVoidSettings(): Promise<TroveSettingsState | null> {

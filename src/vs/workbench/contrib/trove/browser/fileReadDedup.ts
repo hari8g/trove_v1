@@ -79,6 +79,39 @@ export const recordFileReadSize = (
 	fileReads.set(key, prev);
 };
 
+/** True if [start, end] is fully contained within any single prior range. */
+const isRangeCovered = (
+	priorRanges: string[],
+	startLine: number | null,
+	endLine: number | null,
+): boolean => {
+	if (priorRanges.includes('full file')) {
+		return true;
+	}
+	if (startLine === null && endLine === null) {
+		return priorRanges.includes('full file');
+	}
+
+	const reqStart = startLine ?? 1;
+	const reqEnd = endLine ?? Infinity;
+
+	for (const range of priorRanges) {
+		if (range === 'full file') {
+			return true;
+		}
+		const m = range.match(/^lines (\d+)-(\w+)$/);
+		if (!m) {
+			continue;
+		}
+		const rStart = parseInt(m[1], 10);
+		const rEnd = m[2] === 'end' ? Infinity : parseInt(m[2], 10);
+		if (rStart <= reqStart && rEnd >= reqEnd) {
+			return true;
+		}
+	}
+	return false;
+};
+
 export const shouldSkipDuplicateFileRead = (
 	fileReads: Map<string, FileReadRecord>,
 	uri: URI,
@@ -91,6 +124,10 @@ export const shouldSkipDuplicateFileRead = (
 		return { skip: false };
 	}
 
+	if (!isRangeCovered(record.ranges, startLine, endLine)) {
+		return { skip: false };
+	}
+
 	const path = uri.fsPath;
 	const requested = formatReadFileRange(startLine, endLine);
 	const prior = record.ranges.join(', ');
@@ -99,11 +136,9 @@ export const shouldSkipDuplicateFileRead = (
 		message: [
 			`${path}`,
 			'```',
-			`[read_file skipped — file-level dedup]`,
-			`This file was already read this agent run (${prior}).`,
-			`Use the content already in the conversation above to edit or answer.`,
-			`Requested again: ${requested}.`,
-			`If you need another section, read one wider range in a single call instead of multiple partial reads.`,
+			`[read_file skipped — range already read]`,
+			`Requested: ${requested}. Already have: ${prior}.`,
+			`Use content already in the conversation instead of re-reading.`,
 			'```',
 		].join('\n'),
 	};

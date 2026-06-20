@@ -119,3 +119,83 @@ suite('Trove - repoIntelligenceDb chunks', () => {
 		assert.strictEqual(count, 2);
 	});
 });
+
+suite('Trove - repoIntelligenceDb legacy migration', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('migrates legacy symbol_id schema and symbols_fts without workspace_hash', async () => {
+		const legacyPath = join(tmpdir(), `trove-legacy-test-${randomBytes(8).toString('hex')}.db`);
+		const sqlite3 = await import('@vscode/sqlite3');
+		const legacyDb = await new Promise<import('@vscode/sqlite3').Database>((resolve, reject) => {
+			const connection = new sqlite3.default.Database(legacyPath, (error) => error ? reject(error) : resolve(connection));
+		});
+		await new Promise<void>((resolve, reject) => {
+			legacyDb.exec(`
+				CREATE TABLE workspace_profiles (
+					workspace_hash TEXT PRIMARY KEY,
+					workspace_root TEXT NOT NULL,
+					last_scanned_at INTEGER NOT NULL,
+					language_stack TEXT NOT NULL,
+					frameworks TEXT NOT NULL,
+					package_managers TEXT NOT NULL,
+					build_commands TEXT NOT NULL,
+					test_commands TEXT NOT NULL,
+					lint_commands TEXT NOT NULL,
+					typecheck_commands TEXT NOT NULL,
+					project_purpose TEXT,
+					architecture_summary TEXT,
+					file_count INTEGER,
+					total_loc INTEGER,
+					stale INTEGER DEFAULT 0
+				);
+				CREATE TABLE file_metadata (
+					workspace_hash TEXT NOT NULL,
+					file_path TEXT NOT NULL,
+					language TEXT,
+					last_modified INTEGER NOT NULL,
+					size_bytes INTEGER,
+					PRIMARY KEY (workspace_hash, file_path)
+				);
+				INSERT INTO workspace_profiles VALUES ('wh', '/tmp/w', 1, '[]', '[]', '[]', '[]', '[]', '[]', '[]', NULL, NULL, 0, 0, 0);
+				INSERT INTO file_metadata VALUES ('wh', 'src/a.ts', 'TypeScript', 1, 100);
+				CREATE TABLE symbols (
+					symbol_id TEXT PRIMARY KEY,
+					workspace_hash TEXT NOT NULL,
+					file_path TEXT NOT NULL,
+					name TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					start_line INTEGER NOT NULL,
+					end_line INTEGER NOT NULL,
+					signature TEXT,
+					docstring TEXT,
+					is_exported INTEGER NOT NULL DEFAULT 0,
+					is_async INTEGER NOT NULL DEFAULT 0,
+					content_hash TEXT NOT NULL,
+					indexed_at INTEGER NOT NULL
+				);
+				CREATE VIRTUAL TABLE symbols_fts USING fts5(
+					name, signature, docstring, content='symbols', content_rowid='rowid'
+				);
+			`, (error) => error ? reject(error) : resolve());
+		});
+		legacyDb.close();
+
+		const db = new RepoIntelligenceDb(legacyPath);
+		await db.init();
+		await db.replaceSymbolsForFile('wh', 'src/a.ts', [{
+			name: 'foo',
+			kind: 'function',
+			filePath: 'src/a.ts',
+			startLine: 1,
+			endLine: 3,
+			signature: 'function foo()',
+			docstring: '',
+			isExported: true,
+			contentHash: 'abc123',
+		}]);
+		const outline = await db.getFileOutline('wh', 'src/a.ts');
+		assert.strictEqual(outline.length, 1);
+		assert.strictEqual(outline[0].name, 'foo');
+		db.close();
+	});
+});

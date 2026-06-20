@@ -17,15 +17,18 @@ Trove is a fork of VS Code OSS with AI capabilities integrated into the workbenc
 | **Agent chat** (`Ctrl+L`) | Multi-turn agent loop: LLM → tool calls → results → repeat until done |
 | **Quick edit** (`Ctrl+K`) | Inline edit selection with a focused LLM prompt |
 | **Autocomplete** | Fill-in-the-middle completions with optional codebase context |
-| **Built-in tools** | Read/search/edit files, run terminal commands, persistent dev-server terminals, **web search** |
+| **Built-in tools** | Read/search/edit files, **symbol tools** (`get_file_outline`, `get_symbol`, `search_symbols`), run terminal commands, persistent dev-server terminals, **web search** |
 | **Checkpoints** | Snapshot every user message and agent edit; rewind diffs per file |
-| **Repo intelligence** | SQLite-backed workspace profile (languages, frameworks, commands, LLM summaries) |
-| **Codebase search** | FTS5 semantic-ish search via `search_codebase` tool |
+| **Repo intelligence** | SQLite-backed workspace profile (languages, frameworks, commands, LLM summaries) + **symbol index** |
+| **Codebase search** | FTS5 semantic search via `search_codebase` tool |
+| **Symbol navigation** | Structural file outlines and cross-repo symbol search without reading whole files |
 | **Web search** | `search_web` tool (Tavily) for live documentation and external context |
 | **Agent delivery** | Detects build success, running dev servers, and localhost URLs; opens preview in workspace browser with **live reload** on web asset edits |
 | **Structured plans** | Pre-run checklist with smart tool-to-step matching; remaining items auto-complete when the run finishes |
-| **Token economy** | Prompt caching, per-run system context, stale tool compaction (including mid-run), smarter wire trimming, and **429 rate-limit** retry with `retry-after` |
+| **Agent guardrails** | Hints when the agent repeats reads/edits, skips verification, or hits exploration limits |
+| **Token economy** | Stable/volatile prompt split, Anthropic 1h cache breakpoints, OpenAI `prompt_cache_key`, stale tool compaction, range-aware read dedup, wire trimming, **429 rate-limit** retry |
 | **Natural memory** | “Remember that …” in chat saves to `trove-memory.md` without a full agent turn |
+| **RIAF** | Deep repository analysis → `{repo}_context.md` (Cmd+Shift+K) |
 | **MCP** | Model Context Protocol tools discovered and passed to the agent alongside builtins |
 | **Multi-provider** | Anthropic, OpenAI, Gemini, Ollama, vLLM, LM Studio, LiteLLM, DeepSeek, OpenRouter, Groq, Mistral, xAI, and OpenAI-compatible endpoints |
 
@@ -45,6 +48,7 @@ Trove is a fork of VS Code OSS with AI capabilities integrated into the workbenc
 
 - **Glass morphism** chat surfaces (input panel, tool cards, assistant output, delivery panel)
 - **Live streaming UX** — intent lines, reasoning/response tails, and per-block edit progress while the model writes (not just character counts)
+- **Elegant step headers** — agent “Step N — file” labels render as styled headings, not raw markdown asterisks
 - **Live activity** — idle/streaming status while the agent plans, reads, edits, and calls the model
 - **Workspace preview** — Simple Browser opens when a dev server reports ready; auto-reloads on HTML/CSS/JS edits (250ms debounce)
 - **Turn complete card** — post-turn recap with color-coded activity chips and touched files
@@ -158,7 +162,14 @@ Output lands under `../VSCode-<platform>-<arch>/` relative to the repo root (sib
 | `npm run eslint` | Lint |
 | `npm run hygiene` | Repo hygiene checks |
 
-Trove-specific unit tests live alongside Trove code, e.g.:
+Trove-specific unit tests:
+
+```bash
+npm run compile
+npm run test-trove    # 31 test files under contrib/trove/
+```
+
+Individual test files include:
 
 - `src/vs/workbench/contrib/trove/browser/test/agentPlan.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/contextWindowTrim.test.ts`
@@ -173,7 +184,10 @@ Trove-specific unit tests live alongside Trove code, e.g.:
 - `src/vs/workbench/contrib/trove/browser/test/promptCache.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/llmMessageUsage.test.ts`
 - `src/vs/workbench/contrib/trove/browser/test/modelSettingsMerge.test.ts`
-- `src/vs/workbench/contrib/trove/electron-main/repoIntelligence/test/`
+- `src/vs/workbench/contrib/trove/browser/test/fileReadDedup.test.ts`
+- `src/vs/workbench/contrib/trove/browser/test/anthropicConversationWire.test.ts`
+- `src/vs/workbench/contrib/trove/browser/test/agentVerificationHints.test.ts`
+- `src/vs/workbench/contrib/trove/electron-main/repoIntelligence/test/codeChunker.test.ts`
 
 ---
 
@@ -198,8 +212,9 @@ Repo intelligence SQLite DB and workspace profiles are managed in the Electron m
 3. For local models, configure **Ollama**, **vLLM**, or **LM Studio** endpoints.
 4. Add a **`.troverules`** file at the workspace root for project-specific instructions.
 5. Under **Feature Options → Agent & token economy**:
-   - **Prompt cache** — enables Anthropic `cache_control` breakpoints (OpenRouter, Bedrock, LiteLLM, Azure routes)
+   - **Prompt cache** — stable/volatile system split with Anthropic `cache_control` breakpoints (1h TTL); OpenAI prefix cache routing via `prompt_cache_key`
    - **Web search** — enables the `search_web` tool; add a [Tavily](https://tavily.com) API key
+   - **Loop limits** — max agent iterations, read-only calls, consecutive tool fails, stream stall timeout
 
 When the agent runs a dev server (`npm run start`, etc.), Trove opens the localhost URL in the workspace **Simple Browser** and reloads it after web file edits land on disk. The built-in Simple Browser extension supports in-place reload via `simpleBrowser.api.reload` for faster refresh.
 
@@ -212,8 +227,9 @@ You can also save facts in chat with natural language, e.g. *“Remember that th
 ```
 trove_v1/
 ├── product.json              # Product name, data folder, bundle IDs
-├── ARCHITECTURE.md           # Detailed system design
-├── TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md  # Token economics deep dive
+├── ARCHITECTURE.md           # System design (process boundaries, IPC, services)
+├── TROVE_FEATURES.md         # Detailed feature reference
+├── trove_v1_implementation_plan_kg_token.md  # Token + symbol index plan
 ├── src/vs/                   # VS Code + Trove source
 │   └── workbench/contrib/trove/   # ← all Trove-specific code
 ├── extensions/               # Built-in VS Code extensions
@@ -223,11 +239,21 @@ trove_v1/
 
 ---
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [TROVE_FEATURES.md](TROVE_FEATURES.md) | **Start here** for a complete feature walkthrough — tools, token economy, UI, settings |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Process boundaries, agent loop, IPC channels, extension guide |
+| [trove_v1_implementation_plan_kg_token.md](trove_v1_implementation_plan_kg_token.md) | Implementation plan for stable/volatile caching and symbol tools |
+
+---
+
 ## Architecture
 
 For process boundaries, the agent loop, token economy, IPC channels, services, tools, and extension points, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
-For the token-cost problem and implementation rationale, see **[TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md](TROVE_TOKEN_ARCHITECTURE_IMPLEMENTATION_GUIDE_v2.md)**.
+For a user-facing feature catalog with settings reference and data paths, see **[TROVE_FEATURES.md](TROVE_FEATURES.md)**.
 
 ---
 

@@ -66,12 +66,27 @@ export type CodebaseSearchResult = {
 	score: number;
 };
 
+export type ExtractedSymbol = {
+	name: string;
+	kind: 'function' | 'class' | 'interface' | 'type' | 'enum' | 'const';
+	filePath: string;
+	startLine: number;
+	endLine: number;
+	signature: string;
+	docstring: string;
+	isExported: boolean;
+	contentHash: string;
+};
+
 export interface IRepoIntelligenceMainService {
 	readonly _serviceBrand: undefined;
 	getProfile(workspaceRoot: string): Promise<WorkspaceProfile | null>;
 	refreshProfile(workspaceRoot: string): Promise<WorkspaceProfile>;
 	searchCodebase(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]>;
 	getChunkCount(workspaceRoot: string): Promise<number>;
+	getFileOutline(workspaceRoot: string, filePath: string): Promise<ExtractedSymbol[]>;
+	getSymbol(workspaceRoot: string, filePath: string, symbolName: string): Promise<ExtractedSymbol | null>;
+	searchSymbols(workspaceRoot: string, query: string, maxResults?: number): Promise<ExtractedSymbol[]>;
 	getUserMemory(): string | null;
 	appendToUserMemory(text: string): Promise<void>;
 }

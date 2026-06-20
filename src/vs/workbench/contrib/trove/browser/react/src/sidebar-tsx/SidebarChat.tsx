@@ -1332,8 +1332,15 @@ const AssistantMessageComponent = ({ chatMessage, isCheckpointGhost, isCommitted
 		{chatMessage.displayContent &&
 			<div className={`${isCheckpointGhost ? 'opacity-50' : ''}`}>
 				{!isCommitted ? (
-					<div className="text-trove-fg-2 text-[13px] leading-[1.5] whitespace-pre-wrap break-words !select-text">
-						{chatMessage.displayContent}
+					<div className="text-trove-fg-2 text-[13px] leading-[1.5] break-words !select-text">
+						<SmallProseWrapper>
+							<ChatMarkdownRender
+								string={chatMessage.displayContent}
+								chatMessageLocation={chatMessageLocation}
+								isApplyEnabled={false}
+								isLinkDetectionEnabled={true}
+							/>
+						</SmallProseWrapper>
 						<span className="inline-block w-[6px] ml-0.5 text-violet-400/90 animate-pulse">▍</span>
 					</div>
 				) : (

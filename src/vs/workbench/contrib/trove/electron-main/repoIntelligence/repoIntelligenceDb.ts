@@ -6,7 +6,9 @@
 import { createHash } from 'crypto';
 import { join } from 'path';
 import type { Database } from '@vscode/sqlite3';
-import { CommandEntry, CodeChunk, CodebaseSearchResult, FileMetadataEntry, FrameworkEntry, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { CommandEntry, CodeChunk, CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, FrameworkEntry, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS workspace_profiles (
@@ -62,7 +64,37 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 
 CREATE INDEX IF NOT EXISTS idx_code_chunks_workspace ON code_chunks(workspace_hash);
 CREATE INDEX IF NOT EXISTS idx_code_chunks_file ON code_chunks(workspace_hash, file_path);
+
+CREATE TABLE IF NOT EXISTS symbols (
+  workspace_hash  TEXT NOT NULL,
+  file_path       TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  kind            TEXT NOT NULL,
+  start_line      INTEGER NOT NULL,
+  end_line        INTEGER NOT NULL,
+  signature       TEXT,
+  docstring       TEXT,
+  is_exported     INTEGER NOT NULL DEFAULT 0,
+  content_hash    TEXT NOT NULL,
+  PRIMARY KEY (workspace_hash, file_path, name, kind),
+  FOREIGN KEY (workspace_hash, file_path)
+    REFERENCES file_metadata(workspace_hash, file_path) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(workspace_hash, name);
+CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(workspace_hash, file_path);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+  name,
+  signature,
+  docstring,
+  file_path UNINDEXED,
+  workspace_hash UNINDEXED,
+  start_line UNINDEXED,
+  end_line UNINDEXED
+);
 `;
+
+type ColumnInfo = { name: string };
 
 type WorkspaceProfileRow = {
 	workspace_hash: string;
@@ -104,6 +136,7 @@ export class RepoIntelligenceDb {
 			});
 		});
 		await this._exec(db, SCHEMA);
+		await this._migrate(db);
 		this._db = db;
 		console.log('[RepoIntelligence] DB initialized at', this._dbPath);
 	}
@@ -122,6 +155,146 @@ export class RepoIntelligenceDb {
 		return new Promise((resolve, reject) => {
 			db.exec(sql, (error) => error ? reject(error) : resolve());
 		});
+	}
+
+	private async _migrate(db: Database): Promise<void> {
+		const fileMetaColumns = await new Promise<ColumnInfo[]>((resolve, reject) => {
+			db.all(`PRAGMA table_info(file_metadata)`, (error, rows) => error ? reject(error) : resolve(rows as ColumnInfo[]));
+		});
+		if (!fileMetaColumns.some(c => c.name === 'content_hash')) {
+			await this._exec(db, `ALTER TABLE file_metadata ADD COLUMN content_hash TEXT`);
+		}
+
+		await this._migrateLegacyKnowledgeGraph(db);
+		await this._ensureCurrentSymbolsSchema(db);
+		await this._ensureFtsTable(
+			db,
+			'chunks_fts',
+			`CREATE VIRTUAL TABLE chunks_fts USING fts5(
+				chunk_text,
+				file_path UNINDEXED,
+				workspace_hash UNINDEXED,
+				start_line UNINDEXED,
+				end_line UNINDEXED,
+				chunk_type UNINDEXED
+			)`,
+			`INSERT INTO chunks_fts (chunk_text, file_path, workspace_hash, start_line, end_line, chunk_type)
+			 SELECT chunk_text, file_path, workspace_hash, start_line, end_line, chunk_type FROM code_chunks`,
+		);
+		await this._ensureFtsTable(
+			db,
+			'symbols_fts',
+			`CREATE VIRTUAL TABLE symbols_fts USING fts5(
+				name,
+				signature,
+				docstring,
+				file_path UNINDEXED,
+				workspace_hash UNINDEXED,
+				start_line UNINDEXED,
+				end_line UNINDEXED
+			)`,
+			`INSERT INTO symbols_fts (name, signature, docstring, file_path, workspace_hash, start_line, end_line)
+			 SELECT name, signature, docstring, file_path, workspace_hash, start_line, end_line FROM symbols`,
+		);
+
+		await this._exec(db, `PRAGMA user_version = ${SCHEMA_VERSION}`);
+	}
+
+	/** Drop pre-v2 knowledge-graph tables (symbol_id PK, content-backed FTS, edges/embeddings). */
+	private async _migrateLegacyKnowledgeGraph(db: Database): Promise<void> {
+		const hasLegacySymbols = await this._tableExists(db, 'symbols')
+			&& await this._tableHasColumn(db, 'symbols', 'symbol_id');
+		const hasLegacyFts = await this._tableExists(db, 'symbols_fts')
+			&& !(await this._ftsSupportsWorkspaceFilter(db, 'symbols_fts'));
+
+		if (!hasLegacySymbols && !hasLegacyFts) {
+			return;
+		}
+
+		console.warn('[RepoIntelligence] Migrating legacy symbol schema to v2 format');
+		await this._exec(db, `
+			DROP TABLE IF EXISTS symbol_embeddings;
+			DROP TABLE IF EXISTS symbol_edges;
+			DROP TABLE IF EXISTS file_change_log;
+			DROP TABLE IF EXISTS symbols_fts;
+			DROP TABLE IF EXISTS symbols;
+		`);
+	}
+
+	private async _ensureCurrentSymbolsSchema(db: Database): Promise<void> {
+		if (await this._tableExists(db, 'symbols')) {
+			return;
+		}
+		await this._exec(db, `
+			CREATE TABLE symbols (
+				workspace_hash  TEXT NOT NULL,
+				file_path       TEXT NOT NULL,
+				name            TEXT NOT NULL,
+				kind            TEXT NOT NULL,
+				start_line      INTEGER NOT NULL,
+				end_line        INTEGER NOT NULL,
+				signature       TEXT,
+				docstring       TEXT,
+				is_exported     INTEGER NOT NULL DEFAULT 0,
+				content_hash    TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, file_path, name, kind),
+				FOREIGN KEY (workspace_hash, file_path)
+					REFERENCES file_metadata(workspace_hash, file_path) ON DELETE CASCADE
+			);
+			CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(workspace_hash, name);
+			CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(workspace_hash, file_path);
+		`);
+	}
+
+	private async _tableExists(db: Database, tableName: string): Promise<boolean> {
+		const row = await new Promise<{ cnt: number } | undefined>((resolve, reject) => {
+			db.get(
+				`SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?`,
+				[tableName],
+				(error, result) => error ? reject(error) : resolve(result as { cnt: number } | undefined),
+			);
+		});
+		return (row?.cnt ?? 0) > 0;
+	}
+
+	private async _tableHasColumn(db: Database, tableName: string, columnName: string): Promise<boolean> {
+		const rows = await new Promise<ColumnInfo[]>((resolve, reject) => {
+			db.all(`PRAGMA table_info(${tableName})`, (error, result) => error ? reject(error) : resolve(result as ColumnInfo[]));
+		});
+		return rows.some(c => c.name === columnName);
+	}
+
+	private async _ftsSupportsWorkspaceFilter(db: Database, tableName: string): Promise<boolean> {
+		try {
+			await new Promise<void>((resolve, reject) => {
+				db.run(`DELETE FROM ${tableName} WHERE workspace_hash IS NULL`, (error) => error ? reject(error) : resolve());
+			});
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private async _ensureFtsTable(
+		db: Database,
+		tableName: string,
+		createSql: string,
+		backfillSql: string,
+	): Promise<void> {
+		const exists = await this._tableExists(db, tableName);
+		if (exists && await this._ftsSupportsWorkspaceFilter(db, tableName)) {
+			return;
+		}
+		if (exists) {
+			console.warn(`[RepoIntelligence] Recreating ${tableName} — missing workspace_hash column`);
+			await this._exec(db, `DROP TABLE IF EXISTS ${tableName}`);
+		}
+		await this._exec(db, createSql);
+		try {
+			await this._exec(db, backfillSql);
+		} catch (err) {
+			console.warn(`[RepoIntelligence] ${tableName} backfill skipped:`, err);
+		}
 	}
 
 	private _run(sql: string, params: unknown[] = []): Promise<void> {
@@ -186,6 +359,157 @@ export class RepoIntelligenceDb {
 			lastModified: row.last_modified,
 			sizeBytes: row.size_bytes ?? 0,
 		}));
+	}
+
+	async getFileHashes(workspaceHash: string): Promise<Map<string, string>> {
+		const rows = await this._all<{ file_path: string; content_hash: string }>(
+			`SELECT file_path, content_hash FROM file_metadata
+			 WHERE workspace_hash = ? AND content_hash IS NOT NULL`,
+			[workspaceHash],
+		);
+		return new Map(rows.map(r => [r.file_path, r.content_hash]));
+	}
+
+	async upsertFileHash(workspaceHash: string, filePath: string, contentHash: string): Promise<void> {
+		await this._run(
+			`UPDATE file_metadata SET content_hash = ? WHERE workspace_hash = ? AND file_path = ?`,
+			[contentHash, workspaceHash, filePath],
+		);
+	}
+
+	async replaceSymbolsForFile(workspaceHash: string, filePath: string, symbols: ExtractedSymbol[]): Promise<void> {
+		await this._run(`DELETE FROM symbols WHERE workspace_hash = ? AND file_path = ?`, [workspaceHash, filePath]);
+		await this._run(`DELETE FROM symbols_fts WHERE workspace_hash = ? AND file_path = ?`, [workspaceHash, filePath]);
+		for (const s of symbols) {
+			await this._run(
+				`INSERT OR REPLACE INTO symbols
+				 (workspace_hash, file_path, name, kind, start_line, end_line, signature, docstring, is_exported, content_hash)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[workspaceHash, filePath, s.name, s.kind, s.startLine, s.endLine, s.signature, s.docstring, s.isExported ? 1 : 0, s.contentHash],
+			);
+			await this._run(
+				`INSERT INTO symbols_fts (name, signature, docstring, file_path, workspace_hash, start_line, end_line)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[s.name, s.signature, s.docstring, filePath, workspaceHash, s.startLine, s.endLine],
+			);
+		}
+	}
+
+	async getFileOutline(workspaceHash: string, filePath: string): Promise<ExtractedSymbol[]> {
+		type SymbolRow = {
+			name: string;
+			kind: ExtractedSymbol['kind'];
+			file_path: string;
+			start_line: number;
+			end_line: number;
+			signature: string | null;
+			docstring: string | null;
+			is_exported: number;
+			content_hash: string;
+		};
+		const rows = await this._all<SymbolRow>(
+			`SELECT name, kind, file_path, start_line, end_line, signature, docstring, is_exported, content_hash
+			 FROM symbols WHERE workspace_hash = ? AND file_path = ?
+			 ORDER BY start_line ASC`,
+			[workspaceHash, filePath],
+		);
+		return rows.map(row => ({
+			name: row.name,
+			kind: row.kind,
+			filePath: row.file_path,
+			startLine: row.start_line,
+			endLine: row.end_line,
+			signature: row.signature ?? '',
+			docstring: row.docstring ?? '',
+			isExported: row.is_exported === 1,
+			contentHash: row.content_hash,
+		}));
+	}
+
+	async getSymbol(workspaceHash: string, filePath: string, symbolName: string): Promise<ExtractedSymbol | null> {
+		type SymbolRow = {
+			name: string;
+			kind: ExtractedSymbol['kind'];
+			file_path: string;
+			start_line: number;
+			end_line: number;
+			signature: string | null;
+			docstring: string | null;
+			is_exported: number;
+			content_hash: string;
+		};
+		const row = await this._get<SymbolRow>(
+			`SELECT name, kind, file_path, start_line, end_line, signature, docstring, is_exported, content_hash
+			 FROM symbols WHERE workspace_hash = ? AND file_path = ? AND name = ?
+			 LIMIT 1`,
+			[workspaceHash, filePath, symbolName],
+		);
+		if (!row) {
+			return null;
+		}
+		return {
+			name: row.name,
+			kind: row.kind,
+			filePath: row.file_path,
+			startLine: row.start_line,
+			endLine: row.end_line,
+			signature: row.signature ?? '',
+			docstring: row.docstring ?? '',
+			isExported: row.is_exported === 1,
+			contentHash: row.content_hash,
+		};
+	}
+
+	async searchSymbols(workspaceHash: string, query: string, maxResults = 20): Promise<ExtractedSymbol[]> {
+		type SymbolRow = {
+			name: string;
+			kind: ExtractedSymbol['kind'];
+			file_path: string;
+			start_line: number;
+			end_line: number;
+			signature: string | null;
+			docstring: string | null;
+			is_exported: number;
+			content_hash: string;
+		};
+		const mapRow = (row: SymbolRow): ExtractedSymbol => ({
+			name: row.name,
+			kind: row.kind,
+			filePath: row.file_path,
+			startLine: row.start_line,
+			endLine: row.end_line,
+			signature: row.signature ?? '',
+			docstring: row.docstring ?? '',
+			isExported: row.is_exported === 1,
+			contentHash: row.content_hash,
+		});
+
+		try {
+			const ftsResults = await this._all<SymbolRow>(
+				`SELECT s.name, s.kind, s.file_path, s.start_line, s.end_line,
+				        s.signature, s.docstring, s.is_exported, s.content_hash
+				 FROM symbols_fts f
+				 JOIN symbols s ON s.file_path = f.file_path
+				  AND s.workspace_hash = f.workspace_hash
+				  AND s.name = f.name
+				  AND s.start_line = f.start_line
+				 WHERE f MATCH ? AND s.workspace_hash = ?
+				 ORDER BY rank LIMIT ?`,
+				[query.replace(FTS_SPECIAL_CHARS, ' '), workspaceHash, maxResults],
+			);
+			if (ftsResults.length > 0) {
+				return ftsResults.map(mapRow);
+			}
+		} catch {
+			// FTS parse error — fall through to LIKE
+		}
+
+		return (await this._all<SymbolRow>(
+			`SELECT name, kind, file_path, start_line, end_line, signature, docstring, is_exported, content_hash
+			 FROM symbols WHERE workspace_hash = ? AND name LIKE ?
+			 LIMIT ?`,
+			[workspaceHash, `%${query}%`, maxResults],
+		)).map(mapRow);
 	}
 
 	async upsertProfile(workspaceHash: string, profile: WorkspaceProfile, fileMeta: FileMetadataEntry[]): Promise<void> {

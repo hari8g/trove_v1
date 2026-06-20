@@ -1147,10 +1147,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			}
 		}
 
-		let precomputedSystemMessage: string | undefined
+		let precomputedRunContext: import('./convertToLLMMessageService.js').RunContextBlocks | undefined
 		if (modelSelection) {
 			this._setIdleStatus(threadId, 'Building workspace context', 'Loading directory tree, rules, and memory')
-			precomputedSystemMessage = await this._convertToLLMMessagesService.buildRunContext({ chatMode, modelSelection })
+			precomputedRunContext = await this._convertToLLMMessagesService.buildRunContext({ chatMode, modelSelection })
 		}
 
 		// tool use loop
@@ -1194,18 +1194,20 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 			let messages: Awaited<ReturnType<IConvertToLLMMessageService['prepareLLMChatMessages']>>['messages'] = []
 			let separateSystemMessage: string | undefined
+			let volatileSystemMessage: string | undefined
 			let contextWasTrimmed = false
 			const prepareMessagesForTurn = async (forceAggressiveTrim?: boolean) => {
 				const prepared = await this._convertToLLMMessagesService.prepareLLMChatMessages({
 					chatMessages: this.state.allThreads[threadId]?.messages ?? [],
 					modelSelection,
 					chatMode,
-					precomputedSystemMessage,
+					precomputedRunContext,
 					agentTailHints,
 					forceAggressiveTrim: forceAggressiveTrim || (chatMode === 'agent' && nMessagesSent > 2),
 				})
 				messages = prepared.messages
 				separateSystemMessage = prepared.separateSystemMessage
+				volatileSystemMessage = prepared.volatileSystemMessage
 				contextWasTrimmed = prepared.contextWasTrimmed
 			}
 			await prepareMessagesForTurn()
@@ -1321,6 +1323,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					overridesOfModel,
 					logging: { loggingName: `Chat - ${chatMode}`, loggingExtras: { threadId, nMessagesSent, chatMode } },
 					separateSystemMessage: separateSystemMessage,
+					volatileSystemMessage,
+					threadId,
 					onText: ({ fullText, fullReasoning, toolCall }) => {
 						resetStallTimer()
 						if (shouldTraceEditToolCall(toolCall)) {

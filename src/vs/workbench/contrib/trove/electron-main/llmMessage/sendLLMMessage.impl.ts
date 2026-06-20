@@ -50,6 +50,8 @@ type InternalCommonMessageParams = {
 type SendChatParams_Internal = InternalCommonMessageParams & {
 	messages: LLMChatMessage[];
 	separateSystemMessage: string | undefined;
+	volatileSystemMessage?: string;
+	threadId?: string;
 	chatMode: ChatMode | null;
 	mcpTools: InternalToolInfo[] | undefined;
 	enablePromptCache?: boolean;
@@ -316,7 +318,7 @@ const pickBestAnthropicToolCall = (
 // ------------ OPENAI-COMPATIBLE ------------
 
 
-const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, overridesOfModel, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
+const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, volatileSystemMessage, threadId, overridesOfModel, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
 	const {
 		modelName,
 		specialToolFormat,
@@ -355,11 +357,13 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 			enablePromptCache,
 			providerName,
 			modelName,
+			volatileSystemMessage,
 		) as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
 		stream: true,
 		stream_options: { include_usage: true },
 		...nativeToolsObj,
-		...additionalOpenAIPayload
+		...additionalOpenAIPayload,
+		...(threadId ? { prompt_cache_key: `trove:${threadId}:${modelName}` } : {}),
 		// max_completion_tokens: maxTokens,
 	}
 
@@ -510,7 +514,7 @@ const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] 
 		const lastIdx = anthropicTools.length - 1
 		anthropicTools[lastIdx] = {
 			...anthropicTools[lastIdx],
-			cache_control: { type: 'ephemeral' },
+			cache_control: { type: 'ephemeral', ttl: '1h' } as Anthropic.Messages.CacheControlEphemeral,
 		}
 	}
 	return anthropicTools
@@ -519,7 +523,85 @@ const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] 
 
 
 // ------------ ANTHROPIC ------------
-const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName: modelName_, _setAborter, separateSystemMessage, chatMode, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
+
+const buildAnthropicSystemBlocks = (
+	stableMsg: string | undefined,
+	volatileMsg: string | undefined,
+	enablePromptCache: boolean,
+): Anthropic.TextBlockParam[] | undefined => {
+	if (!stableMsg && !volatileMsg) {
+		return undefined;
+	}
+
+	const blocks: Anthropic.TextBlockParam[] = [];
+
+	if (stableMsg) {
+		blocks.push({
+			type: 'text',
+			text: stableMsg,
+			...(enablePromptCache
+				? { cache_control: { type: 'ephemeral', ttl: '1h' } as Anthropic.Messages.CacheControlEphemeral }
+				: {}),
+		});
+	}
+
+	if (volatileMsg) {
+		blocks.push({ type: 'text', text: volatileMsg });
+	}
+
+	return blocks;
+};
+
+/**
+ * Place a cache breakpoint on the last content block of the second-to-last
+ * user message (the last "stable" turn before the current one).
+ */
+const addConversationCacheBreakpoint = (
+	messages: AnthropicLLMChatMessage[],
+	enablePromptCache: boolean,
+): AnthropicLLMChatMessage[] => {
+	if (!enablePromptCache || messages.length < 3) {
+		return messages;
+	}
+
+	let userCount = 0;
+	let targetIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === 'user') {
+			userCount++;
+			if (userCount === 2) {
+				targetIdx = i;
+				break;
+			}
+		}
+	}
+	if (targetIdx < 0) {
+		return messages;
+	}
+
+	const result = [...messages];
+	const target = result[targetIdx];
+	const rawContent = target.content;
+
+	let contentBlocks: AnthropicLLMChatMessage['content'];
+	if (typeof rawContent === 'string') {
+		contentBlocks = [{ type: 'text', text: rawContent, cache_control: { type: 'ephemeral', ttl: '1h' } }] as unknown as AnthropicLLMChatMessage['content'];
+	} else if (Array.isArray(rawContent) && rawContent.length > 0) {
+		const blocks = [...rawContent] as Record<string, unknown>[];
+		blocks[blocks.length - 1] = {
+			...blocks[blocks.length - 1],
+			cache_control: { type: 'ephemeral', ttl: '1h' },
+		};
+		contentBlocks = blocks as AnthropicLLMChatMessage['content'];
+	} else {
+		return messages;
+	}
+
+	result[targetIdx] = { ...target, content: contentBlocks } as AnthropicLLMChatMessage;
+	return result;
+};
+
+const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName: modelName_, _setAborter, separateSystemMessage, volatileSystemMessage, chatMode, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
 	const {
 		modelName,
 		specialToolFormat,
@@ -555,16 +637,16 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		console.info('[Trove edit] main_llm_request', { chatMode, maxTokens, anthropicBeta: anthropicBeta ?? null })
 	}
 
+	const cachedMessages = addConversationCacheBreakpoint(
+		messages as AnthropicLLMChatMessage[],
+		enablePromptCache,
+	);
+
 	const stream = anthropic.messages.stream({
-		system: separateSystemMessage
-			? (enablePromptCache
-				? [{ type: 'text', text: separateSystemMessage, cache_control: { type: 'ephemeral' } }]
-				: separateSystemMessage)
-			: undefined,
-		messages: messages as AnthropicLLMChatMessage[],
+		system: buildAnthropicSystemBlocks(separateSystemMessage, volatileSystemMessage, enablePromptCache),
+		messages: cachedMessages,
 		model: modelName,
 		max_tokens: maxTokens ?? 4_096, // anthropic requires this
-		...(anthropicBeta ? { headers: { 'anthropic-beta': anthropicBeta } } : {}),
 		...includeInPayload,
 		...nativeToolsObj,
 

@@ -23,6 +23,8 @@ export const sendLLMMessage = async ({
 	overridesOfModel,
 	chatMode,
 	separateSystemMessage,
+	volatileSystemMessage,
+	threadId,
 	mcpTools,
 	enablePromptCache,
 }: SendLLMMessageParams,
@@ -120,7 +122,7 @@ export const sendLLMMessage = async ({
 		}
 		const { sendFIM, sendChat } = implementation
 		if (messagesType === 'chatMessages') {
-			await sendChat({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName, _setAborter, providerName, separateSystemMessage, chatMode, mcpTools, enablePromptCache: enablePromptCache ?? false })
+			await sendChat({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName, _setAborter, providerName, separateSystemMessage, volatileSystemMessage, threadId, chatMode, mcpTools, enablePromptCache: enablePromptCache ?? false })
 			return
 		}
 		if (messagesType === 'FIMMessage') {

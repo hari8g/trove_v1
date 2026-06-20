@@ -106,6 +106,8 @@ type SendLLMType = {
 	messagesType: 'chatMessages';
 	messages: LLMChatMessage[]; // the type of raw chat messages that we send to Anthropic, OAI, etc
 	separateSystemMessage: string | undefined;
+	volatileSystemMessage?: string;
+	threadId?: string;
 	chatMode: ChatMode | null;
 } | {
 	messagesType: 'FIMMessage';
@@ -137,6 +139,9 @@ export type SendLLMMessageParams = {
 	overridesOfModel: OverridesOfModel | undefined;
 
 	enablePromptCache?: boolean;
+
+	volatileSystemMessage?: string;
+	threadId?: string;
 
 	settingsOfProvider: SettingsOfProvider;
 	mcpTools: InternalToolInfo[] | undefined;

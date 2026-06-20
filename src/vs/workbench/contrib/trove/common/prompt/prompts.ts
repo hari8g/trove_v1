@@ -317,6 +317,32 @@ export const builtinTools: {
 		},
 	},
 
+	get_file_outline: {
+		name: 'get_file_outline',
+		description: `Get a structural outline of a file: all functions, classes, interfaces, types and enums with their line ranges and signatures. Use this BEFORE read_file on any file >100 lines to decide what to read. Cost: ~50 tokens regardless of file size (vs 500–5000 for read_file).`,
+		params: {
+			...uriParam('file'),
+		},
+	},
+
+	get_symbol: {
+		name: 'get_symbol',
+		description: `Get the complete source code of one named symbol (function, class, interface, type, or enum) by name. Reads only that symbol's lines — much cheaper than reading the whole file. Use get_file_outline first to confirm the symbol exists.`,
+		params: {
+			...uriParam('file'),
+			symbol_name: { description: 'Exact name of the function, class, interface, type, or enum' },
+		},
+	},
+
+	search_symbols: {
+		name: 'search_symbols',
+		description: `Search for symbols by name or description across the entire codebase. Returns symbol names, kinds, file paths, and signatures — no file content. Use to locate where something is implemented before using get_symbol or read_file.`,
+		params: {
+			query: { description: 'Symbol name, partial name, or description' },
+			max_results: { description: 'Optional. Max results to return (default 15).' },
+		},
+	},
+
 	search_web: {
 		name: 'search_web',
 		description: `Search the public web for documentation, APIs, libraries, or recent information not in the workspace. Use when the user asks about external docs, package versions, or topics outside the repo.`,
@@ -615,7 +641,34 @@ export function buildVerificationReminder(profile: WorkspaceProfile | null): str
 }
 
 
-export const chat_systemMessage = ({ workspaceFolders, openedURIs, activeURI, persistentTerminalIDs, directoryStr, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: { workspaceFolders: string[], directoryStr: string, openedURIs: string[], activeURI: string | undefined, persistentTerminalIDs: string[], chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, includeXMLToolDefinitions: boolean, repoProfile?: WorkspaceProfile | null, workspaceRules?: string | null, userMemory?: string | null, repoProfileMode?: ChatMode }) => {
+const FILE_READING_POLICY = `
+<file_reading_policy>
+For large files (>100 lines), always follow this order:
+1. get_file_outline(path) — see all symbols and line ranges (~50 tokens)
+2. get_symbol(path, name) — read one symbol (~100–300 tokens)
+3. read_file(path, startLine, endLine) — specific range only when get_symbol is insufficient
+4. read_file(path) — only when you genuinely need the entire file
+
+For finding where something is implemented: use search_symbols(query) first.
+Never use read_file on a file >200 lines without first calling get_file_outline.
+</file_reading_policy>`;
+
+type ChatSystemMessageOpts = {
+	workspaceFolders: string[];
+	directoryStr: string;
+	openedURIs: string[];
+	activeURI: string | undefined;
+	persistentTerminalIDs: string[];
+	chatMode: ChatMode;
+	mcpTools: InternalToolInfo[] | undefined;
+	includeXMLToolDefinitions: boolean;
+	repoProfile?: WorkspaceProfile | null;
+	workspaceRules?: string | null;
+	userMemory?: string | null;
+	repoProfileMode?: ChatMode;
+};
+
+export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'activeURI' | 'persistentTerminalIDs'>): string => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -624,30 +677,13 @@ ${mode === 'agent' ? `to help the user develop, run, and make changes to their c
 You will be given instructions to follow from the user, and you may also be given a list of files that the user has specifically selected for context, \`SELECTIONS\`.
 Please assist the user with their query.`)
 
-
-
-	const sysInfo = (`Here is the user's system information:
+	const sysInfoStable = (`Here is the user's system information:
 <system_info>
 - ${os}
 
 - The user's workspace contains these folders:
 ${workspaceFolders.join('\n') || 'NO FOLDERS OPEN'}
-
-- Active file:
-${activeURI}
-
-- Open files:
-${openedURIs.join('\n') || 'NO OPENED FILES'}${''/* separator */}${mode === 'agent' && persistentTerminalIDs.length !== 0 ? `
-
-- Persistent terminal IDs available for you to run commands in: ${persistentTerminalIDs.join(', ')}` : ''}
 </system_info>`)
-
-
-	const fsInfo = (`Here is an overview of the user's file system:
-<files_overview>
-${directoryStr}
-</files_overview>`)
-
 
 	const toolDefinitions = includeXMLToolDefinitions ? systemToolsXMLPrompt(mode, mcpTools) : null
 
@@ -684,6 +720,7 @@ ${directoryStr}
 		details.push(`Never put an entire large file into one edit_file or rewrite_file call. Chunk edits by section (e.g. :root variables, then body, then components).`)
 		details.push(`ALWAYS have maximal certainty in a change BEFORE you make it. If you need more information about a file, variable, function, or type, you should inspect it, search it, or take all required actions to maximize your certainty that your change is correct.`)
 		details.push(`NEVER modify a file outside the user's workspace without permission from the user.`)
+		details.push(FILE_READING_POLICY.trim())
 	}
 
 	if (mode === 'gather') {
@@ -708,14 +745,13 @@ Here's an example of a good code block:\n${chatSuggestionDiffExample}`)
 
 	details.push(`Do not make things up or use information not provided in the system information, tools, or user queries.`)
 	details.push(`Always use MARKDOWN to format lists, bullet points, etc. Do NOT write tables.`)
+	details.push(`Do NOT use markdown bold (**text**) for step labels. When describing sequential edits, use plain "Step N — filename:" on its own line, or rely on the plan checklist — never wrap steps in **.`)
 	details.push(`Never use emojis in your responses.`)
 	details.push(`Today's date is ${new Date().toDateString()}.`)
 
 	const importantDetails = (`Important notes:
 ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 
-
-	// return answer
 	const ansStrs: string[] = []
 	const profileMode = repoProfileMode ?? mode
 	const repoContext = serializeWorkspaceProfileForPrompt(repoProfile, profileMode)
@@ -725,18 +761,46 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 	const memoryBlock = buildUserMemoryBlock(userMemory ?? null)
 	if (memoryBlock) ansStrs.push(memoryBlock)
 	ansStrs.push(header)
-	ansStrs.push(sysInfo)
+	ansStrs.push(sysInfoStable)
 	if (toolDefinitions) ansStrs.push(toolDefinitions)
 	ansStrs.push(importantDetails)
-	ansStrs.push(fsInfo)
 
-	const fullSystemMsgStr = ansStrs
+	return ansStrs
 		.join('\n\n\n')
 		.trim()
 		.replace('\t', '  ')
+};
 
-	return fullSystemMsgStr
+export const chat_systemMessage_volatile = ({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode: mode }: Pick<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'activeURI' | 'persistentTerminalIDs' | 'chatMode'>): string => {
+	const parts: string[] = [];
 
+	const workspaceState = (`Here is the current workspace state:
+<workspace_state>
+- Active file:
+${activeURI ?? '(none)'}
+
+- Open files:
+${openedURIs.join('\n') || 'NO OPENED FILES'}${mode === 'agent' && persistentTerminalIDs.length !== 0 ? `
+
+- Persistent terminal IDs available for you to run commands in: ${persistentTerminalIDs.join(', ')}` : ''}
+</workspace_state>`)
+	parts.push(workspaceState)
+
+	if (directoryStr) {
+		parts.push(`Here is an overview of the user's file system:
+<files_overview>
+${directoryStr}
+</files_overview>`)
+	}
+
+	return parts.filter(Boolean).join('\n\n\n').trim()
+};
+
+export const chat_systemMessage = (opts: ChatSystemMessageOpts): string => {
+	return [
+		chat_systemMessage_stable(opts),
+		chat_systemMessage_volatile(opts),
+	].filter(Boolean).join('\n\n\n')
 }
 
 

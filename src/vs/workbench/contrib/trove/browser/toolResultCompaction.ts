@@ -15,6 +15,9 @@ export const RECENT_FULL_TOOL_RESULTS = 2;
 export const COMPACTABLE_TOOL_NAMES: ReadonlySet<ToolName> = new Set([
 	'read_file',
 	'search_codebase',
+	'get_file_outline',
+	'get_symbol',
+	'search_symbols',
 	'search_web',
 	'search_for_files',
 	'search_in_file',

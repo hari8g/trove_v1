@@ -7,7 +7,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
 import { getIsReasoningEnabledState, getReservedOutputTokenSpace, getModelCapabilities } from '../common/modelCapabilities.js';
-import { reParsedToolXMLString, chat_systemMessage } from '../common/prompt/prompts.js';
+import { reParsedToolXMLString, chat_systemMessage_stable, chat_systemMessage_volatile } from '../common/prompt/prompts.js';
 import { getEffectiveRepoProfileMode, isLightAgentEnabled } from '../common/lightAgent.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { AnthropicLLMChatMessage, AnthropicReasoning, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, OpenAILLMChatMessage, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
@@ -541,11 +541,13 @@ const prepareMessages = (params: {
 
 
 
+export type RunContextBlocks = { stableBlock: string; volatileBlock: string };
+
 export interface IConvertToLLMMessageService {
 	readonly _serviceBrand: undefined;
-	buildRunContext: (opts: { chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<string>
+	buildRunContext: (opts: { chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<RunContextBlocks>
 	prepareLLMSimpleMessages: (opts: { simpleMessages: SimpleLLMMessage[], systemMessage: string, modelSelection: ModelSelection | null, featureName: FeatureName }) => { messages: LLMChatMessage[], separateSystemMessage: string | undefined }
-	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedSystemMessage?: string, agentTailHints?: string, forceAggressiveTrim?: boolean }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, contextWasTrimmed: boolean }>
+	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedRunContext?: RunContextBlocks, agentTailHints?: string, forceAggressiveTrim?: boolean }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, volatileSystemMessage: string | undefined, contextWasTrimmed: boolean }>
 	prepareFIMMessage(opts: { messages: LLMFIMMessage, }): { prefix: string, suffix: string, stopTokens: string[] }
 }
 
@@ -576,7 +578,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 
 	// system message
-	private _generateChatMessagesSystemMessage = async (chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined) => {
+	private _generateChatMessagesSystemMessage = async (chatMode: ChatMode, specialToolFormat: 'openai-style' | 'anthropic-style' | 'gemini-style' | undefined): Promise<RunContextBlocks> => {
 		const workspaceFolders = this.workspaceContextService.getWorkspace().folders.map(f => f.uri.fsPath)
 
 		const openedURIs = this.modelService.getModels().filter(m => m.isAttachedToEditor()).map(m => m.uri.fsPath) || [];
@@ -610,19 +612,20 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		}
 		const workspaceRules = this._repoIntelligenceService.getWorkspaceRules()
 		const userMemory = this._repoIntelligenceService.getUserMemory()
-		const systemMessage = chat_systemMessage({ workspaceFolders, openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode })
-		return systemMessage
+		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode })
+		const volatileBlock = chat_systemMessage_volatile({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode })
+		return { stableBlock, volatileBlock }
 	}
 
 	buildRunContext: IConvertToLLMMessageService['buildRunContext'] = async ({ chatMode, modelSelection }) => {
 		if (modelSelection === null) {
-			return '';
+			return { stableBlock: '', volatileBlock: '' };
 		}
 		const { overridesOfModel } = this.troveSettingsService.state
 		const { specialToolFormat } = getModelCapabilities(modelSelection.providerName, modelSelection.modelName, overridesOfModel)
-		const fullSystemMessage = await this._generateChatMessagesSystemMessage(chatMode, specialToolFormat)
+		const { stableBlock, volatileBlock } = await this._generateChatMessagesSystemMessage(chatMode, specialToolFormat)
 		const { disableSystemMessage } = this.troveSettingsService.state.globalSettings
-		return disableSystemMessage ? '' : fullSystemMessage
+		return disableSystemMessage ? { stableBlock: '', volatileBlock: '' } : { stableBlock, volatileBlock }
 	}
 
 
@@ -718,8 +721,8 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		})
 		return { messages, separateSystemMessage };
 	}
-	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedSystemMessage, agentTailHints, forceAggressiveTrim }) => {
-		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined, contextWasTrimmed: false }
+	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedRunContext, agentTailHints, forceAggressiveTrim }) => {
+		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined, volatileSystemMessage: undefined, contextWasTrimmed: false }
 
 		const { overridesOfModel } = this.troveSettingsService.state
 
@@ -730,10 +733,10 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			supportsSystemMessage,
 		} = getModelCapabilities(providerName, modelName, overridesOfModel)
 
-		const fullSystemMessage = precomputedSystemMessage !== undefined
-			? precomputedSystemMessage
+		const runContext = precomputedRunContext !== undefined
+			? precomputedRunContext
 			: await this.buildRunContext({ chatMode, modelSelection })
-		const systemMessage = fullSystemMessage;
+		const systemMessage = [runContext.stableBlock, runContext.volatileBlock].filter(Boolean).join('\n\n\n');
 
 		const aiInstructions = this._getGlobalAIInstructions();
 
@@ -761,7 +764,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		this._prependRecentlyViewedCodeToLatestUserMessage(llmMessages)
 		this._appendAgentTailHintsToLatestMessage(llmMessages, agentTailHints)
 
-		const { messages, separateSystemMessage } = prepareMessages({
+		const { messages } = prepareMessages({
 			messages: llmMessages,
 			systemMessage,
 			aiInstructions,
@@ -773,7 +776,9 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 			providerName,
 			forceAggressiveTrim,
 		})
-		return { messages, separateSystemMessage, contextWasTrimmed };
+		const separateSystemMessage = runContext.stableBlock || undefined
+		const volatileSystemMessage = runContext.volatileBlock || undefined
+		return { messages, separateSystemMessage, volatileSystemMessage, contextWasTrimmed };
 	}
 
 
