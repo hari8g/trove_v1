@@ -11,12 +11,10 @@ import { CodeChunk, CodeChunkType, ExtractedSymbol, FileMetadataEntry } from '..
 const MAX_FILE_CHARS = 300_000;
 const MAX_CHUNK_LINES = 80;
 const MIN_NON_EMPTY_LINES = 3;
-const MAX_FILES_TO_CHUNK = 5_000;
-const MAX_CHUNKS_PER_WORKSPACE = 25_000;
 const FALLBACK_FILE_LINES = 120;
 
 const SKIP_LANGUAGES = new Set([
-	'Markdown', 'JSON', 'YAML', 'TOML', 'XML', 'HTML', 'CSS', 'SCSS', 'Sass', 'Less',
+	'Markdown', 'JSON', 'YAML', 'TOML', 'HTML', 'CSS', 'SCSS', 'Sass', 'Less',
 ]);
 
 export { SKIP_LANGUAGES };
@@ -55,6 +53,12 @@ const SYMBOL_PATTERNS: Record<string, SymbolPattern[]> = {
 		{ nameRegex: /^(?:pub\s+)?struct\s+(\w+)/m, kind: 'class', exportRegex: /^pub\s/ },
 		{ nameRegex: /^(?:pub\s+)?trait\s+(\w+)/m, kind: 'interface', exportRegex: /^pub\s/ },
 	],
+	Java: [
+		{ nameRegex: /^(?:public\s+)?(?:static\s+)?\w+\s+(\w+)\s*\(/m, kind: 'function', exportRegex: /^public\s/ },
+		{ nameRegex: /^(?:public\s+)?(?:abstract\s+)?class\s+(\w+)/m, kind: 'class', exportRegex: /^public\s/ },
+		{ nameRegex: /^(?:public\s+)?interface\s+(\w+)/m, kind: 'interface', exportRegex: /^public\s/ },
+		{ nameRegex: /^(?:public\s+)?enum\s+(\w+)/m, kind: 'enum', exportRegex: /^public\s/ },
+	],
 };
 
 export const supportsSymbolExtraction = (language: string | null | undefined): boolean => {
@@ -89,8 +93,9 @@ const LANGUAGE_BOUNDARIES: Record<string, BoundaryPattern[]> = {
 		{ regex: /^(?:pub\s+)?struct\s+\w/m, chunkType: 'class' },
 	],
 	Java: [
-		{ regex: /^(?:public|private|protected)?\s*(?:static\s+)?(?:\w+\s+)+?\w+\s*\([^)]*\)\s*\{/m, chunkType: 'function' },
-		{ regex: /^(?:public|private|protected)?\s*class\s+\w/m, chunkType: 'class' },
+		{ regex: /^(?:public\s+)?(?:abstract\s+)?class\s+\w/m, chunkType: 'class' },
+		{ regex: /^(?:public\s+)?interface\s+\w/m, chunkType: 'block' },
+		{ regex: /^\s+(?:public|private|protected)\s+\w+\s+\w+\s*\(/m, chunkType: 'function' },
 	],
 	'C#': [
 		{ regex: /^(?:public|private|protected|internal)?\s*(?:static\s+)?(?:\w+\s+)+?\w+\s*\([^)]*\)\s*\{/m, chunkType: 'function' },
@@ -263,14 +268,9 @@ export const buildChunksForWorkspace = (
 	fileMeta: FileMetadataEntry[],
 ): CodeChunk[] => {
 	const chunks: CodeChunk[] = [];
-	let filesProcessed = 0;
-
 	const indexable = fileMeta.filter(f => f.language && !SKIP_LANGUAGES.has(f.language));
 
 	for (const file of indexable) {
-		if (filesProcessed >= MAX_FILES_TO_CHUNK || chunks.length >= MAX_CHUNKS_PER_WORKSPACE) break;
-		filesProcessed += 1;
-
 		let content: string;
 		try {
 			content = readFileSync(join(workspaceRoot, file.filePath), 'utf8');
@@ -279,10 +279,7 @@ export const buildChunksForWorkspace = (
 		}
 
 		const fileChunks = chunkFile(workspaceHash, file.filePath, content, file.language);
-		for (const c of fileChunks) {
-			if (chunks.length >= MAX_CHUNKS_PER_WORKSPACE) break;
-			chunks.push(c);
-		}
+		chunks.push(...fileChunks);
 	}
 
 	return chunks;

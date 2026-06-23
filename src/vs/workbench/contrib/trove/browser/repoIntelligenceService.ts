@@ -11,7 +11,8 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
-import { CodebaseSearchResult, IRepoIntelligenceService, REPO_INTEL_CHANNEL, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
+import { CodebaseSearchResult, IRepoIntelligenceMainService, IRepoIntelligenceService, REPO_INTEL_CHANNEL, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
+import { buildIndexingStatsFromProfile, formatRepoIntelligenceIndexingReport } from '../common/repoIntelligenceIndexingReport.js';
 
 class RepoIntelligenceService extends Disposable implements IRepoIntelligenceService {
 	readonly _serviceBrand: undefined;
@@ -28,7 +29,7 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 	private readonly _onDidChangeUserMemory = this._register(new Emitter<void>());
 	readonly onDidChangeUserMemory = this._onDidChangeUserMemory.event;
 
-	private readonly _mainProxy: Pick<IRepoIntelligenceService, 'getProfile' | 'refreshProfile' | 'searchCodebase' | 'getChunkCount' | 'getFileOutline' | 'getSymbol' | 'searchSymbols' | 'getUserMemory' | 'appendToUserMemory'>;
+	private readonly _mainProxy: IRepoIntelligenceMainService;
 	private _initInFlight: Promise<void> | null = null;
 	private _initAttempts = 0;
 
@@ -38,7 +39,7 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		@IFileService private readonly _fileService: IFileService,
 	) {
 		super();
-		this._mainProxy = ProxyChannel.toService<IRepoIntelligenceService>(
+		this._mainProxy = ProxyChannel.toService<IRepoIntelligenceMainService>(
 			this._mainProcessService.getChannel(REPO_INTEL_CHANNEL),
 		);
 
@@ -246,6 +247,51 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 
 	async searchSymbols(workspaceRoot: string, query: string, maxResults?: number) {
 		return this._mainProxy.searchSymbols(workspaceRoot, query, maxResults);
+	}
+
+	async getServiceTopology(workspaceRoot: string) {
+		return this._mainProxy.getServiceTopology(workspaceRoot);
+	}
+
+	async getMavenImpact(workspaceRoot: string, artifactId: string) {
+		return this._mainProxy.getMavenImpact(workspaceRoot, artifactId);
+	}
+
+	async resolveApiContract(workspaceRoot: string, httpMethod: string, pathPattern: string) {
+		return this._mainProxy.resolveApiContract(workspaceRoot, httpMethod, pathPattern);
+	}
+
+	async getNpmConsumers(workspaceRoot: string, packageName: string) {
+		return this._mainProxy.getNpmConsumers(workspaceRoot, packageName);
+	}
+
+	async getConfigDrift(workspaceRoot: string, serviceName: string) {
+		return this._mainProxy.getConfigDrift(workspaceRoot, serviceName);
+	}
+
+	async getTerraformResources(workspaceRoot: string, resourceType?: string) {
+		return this._mainProxy.getTerraformResources(workspaceRoot, resourceType);
+	}
+
+	async getPipelineJobs(workspaceRoot: string, stage?: string) {
+		return this._mainProxy.getPipelineJobs(workspaceRoot, stage);
+	}
+
+	async getIndexingReport(workspaceRoot: string): Promise<string> {
+		try {
+			return await (this._mainProxy as unknown as { getIndexingReport(root: string): Promise<string> }).getIndexingReport(workspaceRoot);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			if (!message.includes('Method not found')) {
+				throw err;
+			}
+		}
+
+		const profile = await this.getProfile(workspaceRoot);
+		const chunkCount = await this.getChunkCount(workspaceRoot);
+		const isIndexing = this._initInFlight !== null;
+		const stats = buildIndexingStatsFromProfile(profile, chunkCount);
+		return formatRepoIntelligenceIndexingReport(workspaceRoot, profile, stats, isIndexing);
 	}
 }
 

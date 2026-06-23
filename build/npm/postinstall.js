@@ -130,7 +130,13 @@ for (let dir of dirs) {
 		}
 		if (process.env['CC']) { opts.env['CC'] = 'gcc'; }
 		if (process.env['CXX']) { opts.env['CXX'] = 'g++'; }
-		if (process.env['CXXFLAGS']) { opts.env['CXXFLAGS'] = ''; }
+		// Node.js 23+ V8 headers require C++20 for native addons (e.g. tree-sitter).
+		const nodeMajorVersion = parseInt(process.versions.node.split('.')[0], 10);
+		if (nodeMajorVersion >= 23) {
+			opts.env['CXXFLAGS'] = '-std=c++20';
+		} else if (process.env['CXXFLAGS']) {
+			opts.env['CXXFLAGS'] = '';
+		}
 		if (process.env['LDFLAGS']) { opts.env['LDFLAGS'] = ''; }
 
 		setNpmrcConfig('build', opts.env);

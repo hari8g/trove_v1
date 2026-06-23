@@ -9,6 +9,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../services/statusbar/browser/statusbar.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
+import { TROVE_OPEN_REPO_INTELLIGENCE_REPORT_ACTION_ID } from './actionIDs.js';
 
 export class RepoIntelligenceStatusContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.troveRepoIntelligenceStatus';
@@ -87,7 +88,8 @@ export class RepoIntelligenceStatusContribution extends Disposable implements IW
 			name: localize('trove.repoIntelligence.status.name', 'Codebase Index'),
 			text,
 			ariaLabel: text,
-			tooltip: localize('trove.repoIntelligence.status.tooltip', 'Number of code chunks indexed for semantic search (search_codebase)'),
+			tooltip: localize('trove.repoIntelligence.status.tooltip', 'Repository Intelligence index — click for detailed report'),
+			command: TROVE_OPEN_REPO_INTELLIGENCE_REPORT_ACTION_ID,
 		};
 	}
 

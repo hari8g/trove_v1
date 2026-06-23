@@ -326,6 +326,30 @@ export class ToolsService implements IToolsService {
 				return { persistentTerminalId };
 			},
 
+			query_service_topology: (params: RawToolParamsObj) => {
+				const query = validateStr('query', params.query);
+				return { query };
+			},
+			resolve_api_contract: (params: RawToolParamsObj) => {
+				const httpMethod = validateStr('httpMethod', params.http_method ?? params.httpMethod);
+				const pathPattern = validateStr('pathPattern', params.path_pattern ?? params.pathPattern);
+				return { httpMethod, pathPattern };
+			},
+			get_maven_impact: (params: RawToolParamsObj) => {
+				const artifactId = validateStr('artifactId', params.artifact_id ?? params.artifactId);
+				return { artifactId };
+			},
+			get_npm_impact: (params: RawToolParamsObj) => ({
+				packageName: validateStr('packageName', params.package_name ?? params.packageName),
+			}),
+			get_config_drift: (params: RawToolParamsObj) => ({
+				serviceName: validateStr('serviceName', params.service_name ?? params.serviceName),
+			}),
+			verify_security_compliance: (params: RawToolParamsObj) => ({
+				code: validateStr('code', params.code),
+				fileExtension: validateStr('fileExtension', params.file_extension ?? params.fileExtension),
+			}),
+
 		}
 
 
@@ -618,6 +642,96 @@ export class ToolsService implements IToolsService {
 				await this.terminalToolService.killPersistentTerminal(persistentTerminalId)
 				return { result: {} }
 			},
+
+			query_service_topology: async ({ query }) => {
+				const profile = this.repoIntelligenceService.getProfileSync();
+				const topo = profile?.serviceTopologySummary;
+				if (!topo) {
+					return { result: { summary: 'No Spring Boot services detected in this workspace. Ensure pom.xml files with spring-boot dependency exist.' } };
+				}
+				const queryLower = query.toLowerCase();
+				let summary = `Service Topology — ${topo.serviceCount} services, ${topo.totalEndpoints} endpoints\n\n`;
+
+				if (queryLower.includes('gateway') || queryLower.includes('route')) {
+					summary += `Gateway Routes:\n${topo.gatewayRoutes.map(r => `  ${r.pathPattern} → ${r.targetService}`).join('\n')}`;
+				} else if (queryLower.includes('feign') || queryLower.includes('call') || queryLower.includes('depend')) {
+					summary += `Feign Dependencies:\n${topo.feignEdges.map(e => `  ${e.caller} calls: ${e.targets.join(', ')}`).join('\n')}`;
+				} else {
+					summary += `Services: ${topo.serviceNames.join(', ')}\n\n`;
+					summary += `Gateway Routes:\n${topo.gatewayRoutes.slice(0, 10).map(r => `  ${r.pathPattern} → ${r.targetService}`).join('\n')}`;
+				}
+				return { result: { summary } };
+			},
+
+			resolve_api_contract: async ({ httpMethod, pathPattern }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+				if (!workspaceRoot) return { result: { contract: 'No workspace open.' } };
+
+				const contract = await this.repoIntelligenceService.resolveApiContract(workspaceRoot, httpMethod, pathPattern);
+				if (!contract) {
+					return { result: { contract: `No endpoint found for ${httpMethod} ${pathPattern}. Check that the workspace has been indexed.` } };
+				}
+
+				const lines = [
+					`API Contract: ${contract.httpMethod} ${contract.pathPattern}`,
+					`Backend service: ${contract.backendService}`,
+					`Controller: ${contract.controllerClass}.${contract.handlerMethod}()`,
+					`File: ${contract.filePath}`,
+				];
+				if (contract.requestDto) lines.push(`@RequestBody: ${contract.requestDto}`);
+				if (contract.responseDto) lines.push(`Response type: ${contract.responseDto}`);
+
+				return { result: { contract: lines.join('\n') } };
+			},
+
+			get_maven_impact: async ({ artifactId }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+				if (!workspaceRoot) return { result: { consumers: [], impactLevel: 'low' as const } };
+
+				const consumers = await this.repoIntelligenceService.getMavenImpact(workspaceRoot, artifactId);
+				const count = consumers.length;
+				const impactLevel = count >= 10 ? 'critical' : count >= 5 ? 'high' : count >= 2 ? 'medium' : 'low';
+
+				return { result: { consumers, impactLevel } };
+			},
+
+			get_npm_impact: async ({ packageName }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+				if (!workspaceRoot) return { result: { consumers: [], impactLevel: 'low' as const } };
+
+				const consumers = await this.repoIntelligenceService.getNpmConsumers(workspaceRoot, packageName);
+				const count = consumers.length;
+				const impactLevel =
+					count >= 5 ? 'critical' :
+						count >= 3 ? 'high' :
+							count >= 1 ? 'medium' : 'low';
+				return { result: { consumers, impactLevel } };
+			},
+
+			get_config_drift: async ({ serviceName }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+				if (!workspaceRoot) return { result: { drifts: [], summary: 'No workspace open.' } };
+
+				const drifts = await this.repoIntelligenceService.getConfigDrift(workspaceRoot, serviceName);
+				if (drifts.length === 0) {
+					return { result: { drifts: [], summary: `No config drift detected for ${serviceName} across environments.` } };
+				}
+
+				const lines = [`Config drift for ${serviceName} (${drifts.length} properties):\n`];
+				for (const d of drifts.slice(0, 20)) {
+					const envPairs = Object.entries(d.envValues).map(([e, v]) => `${e}=${v}`).join(', ');
+					lines.push(`  ${d.key}: ${envPairs}`);
+				}
+				if (drifts.length > 20) lines.push(`  …(${drifts.length - 20} more properties)`);
+
+				return { result: { drifts, summary: lines.join('\n') } };
+			},
+
+			verify_security_compliance: async ({ code, fileExtension }) => {
+				const { verifySecurityCompliance } = await import('./securityVerifierTool.js');
+				const result = verifySecurityCompliance(code, fileExtension);
+				return { result };
+			},
 		}
 
 
@@ -781,6 +895,26 @@ export class ToolsService implements IToolsService {
 			},
 			kill_persistent_terminal: (params, _result) => {
 				return `Successfully closed terminal "${params.persistentTerminalId}".`;
+			},
+			query_service_topology: (_params, result) => result.summary,
+			resolve_api_contract: (_params, result) => result.contract,
+			get_maven_impact: (_params, result) => {
+				const { consumers, impactLevel } = result;
+				if (consumers.length === 0) return 'No consumers found for this artifact.';
+				return `Impact level: ${impactLevel.toUpperCase()} — ${consumers.length} consumer(s):\n${consumers.join('\n')}`;
+			},
+			get_npm_impact: (_p, result) => {
+				if (result.consumers.length === 0) return `No consumers found for this package.`;
+				return `Impact: ${result.impactLevel.toUpperCase()} — ${result.consumers.length} consumer(s):\n${result.consumers.join('\n')}`;
+			},
+			get_config_drift: (_p, result) => result.summary,
+			verify_security_compliance: (_p, result) => {
+				if (result.violations.length === 0) return result.summary;
+				const lines = [result.summary, ''];
+				for (const v of result.violations) {
+					lines.push(`[${v.severity.toUpperCase()}] ${v.rule}: ${v.message}`);
+				}
+				return lines.join('\n');
 			},
 		}
 

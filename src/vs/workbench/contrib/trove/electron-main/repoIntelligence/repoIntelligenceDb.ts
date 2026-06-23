@@ -6,9 +6,9 @@
 import { createHash } from 'crypto';
 import { join } from 'path';
 import type { Database } from '@vscode/sqlite3';
-import { CommandEntry, CodeChunk, CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, FrameworkEntry, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { CommandEntry, CodeChunk, CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, FrameworkEntry, RepoIntelligenceIndexingStats, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 5;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS workspace_profiles (
@@ -92,6 +92,146 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   start_line UNINDEXED,
   end_line UNINDEXED
 );
+
+-- ── STaaS polyglot extensions ────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS java_spring_endpoints (
+  workspace_hash    TEXT NOT NULL,
+  service_name      TEXT NOT NULL,
+  file_path         TEXT NOT NULL,
+  http_method       TEXT NOT NULL,
+  path_pattern      TEXT NOT NULL,
+  controller_class  TEXT NOT NULL,
+  handler_method    TEXT NOT NULL,
+  request_dto       TEXT,
+  response_dto      TEXT,
+  PRIMARY KEY (workspace_hash, service_name, http_method, path_pattern),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_endpoints_path ON java_spring_endpoints(workspace_hash, path_pattern);
+CREATE INDEX IF NOT EXISTS idx_endpoints_service ON java_spring_endpoints(workspace_hash, service_name);
+
+CREATE TABLE IF NOT EXISTS feign_clients (
+  workspace_hash    TEXT NOT NULL,
+  caller_service    TEXT NOT NULL,
+  target_service    TEXT NOT NULL,
+  interface_name    TEXT NOT NULL,
+  file_path         TEXT NOT NULL,
+  PRIMARY KEY (workspace_hash, caller_service, target_service, interface_name),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_feign_caller ON feign_clients(workspace_hash, caller_service);
+CREATE INDEX IF NOT EXISTS idx_feign_target ON feign_clients(workspace_hash, target_service);
+
+CREATE TABLE IF NOT EXISTS maven_dependencies (
+  workspace_hash    TEXT NOT NULL,
+  consumer_path     TEXT NOT NULL,
+  group_id          TEXT NOT NULL,
+  artifact_id       TEXT NOT NULL,
+  version           TEXT,
+  scope             TEXT,
+  PRIMARY KEY (workspace_hash, consumer_path, group_id, artifact_id),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_maven_artifact ON maven_dependencies(workspace_hash, artifact_id);
+CREATE INDEX IF NOT EXISTS idx_maven_consumer ON maven_dependencies(workspace_hash, consumer_path);
+
+CREATE TABLE IF NOT EXISTS k8s_resources (
+  workspace_hash    TEXT NOT NULL,
+  file_path         TEXT NOT NULL,
+  kind              TEXT NOT NULL,
+  name              TEXT NOT NULL,
+  namespace         TEXT,
+  env_label         TEXT,
+  image_tag         TEXT,
+  PRIMARY KEY (workspace_hash, file_path, kind, name),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_k8s_kind ON k8s_resources(workspace_hash, kind);
+CREATE INDEX IF NOT EXISTS idx_k8s_name ON k8s_resources(workspace_hash, name);
+
+CREATE TABLE IF NOT EXISTS gateway_routes (
+  workspace_hash    TEXT NOT NULL,
+  route_id          TEXT NOT NULL,
+  path_predicate    TEXT NOT NULL,
+  target_service    TEXT NOT NULL,
+  strip_prefix      INTEGER,
+  PRIMARY KEY (workspace_hash, route_id),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_routes_path ON gateway_routes(workspace_hash, path_predicate);
+
+-- ── Phase β: NPM impact + config drift ─────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS npm_package_edges (
+  workspace_hash  TEXT NOT NULL,
+  consumer_path   TEXT NOT NULL,
+  package_name    TEXT NOT NULL,
+  version         TEXT,
+  dep_type        TEXT,
+  PRIMARY KEY (workspace_hash, consumer_path, package_name),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_npm_package ON npm_package_edges(workspace_hash, package_name);
+CREATE INDEX IF NOT EXISTS idx_npm_consumer ON npm_package_edges(workspace_hash, consumer_path);
+
+CREATE TABLE IF NOT EXISTS config_env_drift (
+  workspace_hash    TEXT NOT NULL,
+  service_name      TEXT NOT NULL,
+  config_key        TEXT NOT NULL,
+  env_values_json   TEXT NOT NULL,
+  PRIMARY KEY (workspace_hash, service_name, config_key),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_drift_service ON config_env_drift(workspace_hash, service_name);
+
+-- ── Phase γ: Terraform IaC + GitLab CI (persisted) ───────────────────────
+
+CREATE TABLE IF NOT EXISTS terraform_resources (
+  workspace_hash    TEXT NOT NULL,
+  file_path         TEXT NOT NULL,
+  resource_type     TEXT NOT NULL,
+  resource_name     TEXT NOT NULL,
+  provider          TEXT NOT NULL,
+  PRIMARY KEY (workspace_hash, file_path, resource_type, resource_name),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tf_resource_type ON terraform_resources(workspace_hash, resource_type);
+CREATE INDEX IF NOT EXISTS idx_tf_provider ON terraform_resources(workspace_hash, provider);
+
+CREATE TABLE IF NOT EXISTS terraform_modules (
+  workspace_hash    TEXT NOT NULL,
+  file_path         TEXT NOT NULL,
+  module_name       TEXT NOT NULL,
+  source            TEXT NOT NULL,
+  PRIMARY KEY (workspace_hash, file_path, module_name),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS terraform_index_meta (
+  workspace_hash    TEXT PRIMARY KEY,
+  file_count        INTEGER NOT NULL,
+  providers_json    TEXT NOT NULL,
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_jobs (
+  workspace_hash    TEXT NOT NULL,
+  job_name          TEXT NOT NULL,
+  stage             TEXT NOT NULL,
+  needs_json        TEXT NOT NULL,
+  file_path         TEXT NOT NULL,
+  PRIMARY KEY (workspace_hash, job_name),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_stage ON pipeline_jobs(workspace_hash, stage);
+
+CREATE TABLE IF NOT EXISTS pipeline_index_meta (
+  workspace_hash    TEXT PRIMARY KEY,
+  file_count        INTEGER NOT NULL,
+  has_manual_gates  INTEGER NOT NULL,
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
 `;
 
 type ColumnInfo = { name: string };
@@ -112,6 +252,69 @@ type WorkspaceProfileRow = {
 	file_count: number | null;
 	total_loc: number | null;
 	stale: number;
+};
+
+export type SpringEndpoint = {
+	serviceName: string;
+	filePath: string;
+	httpMethod: string;
+	pathPattern: string;
+	controllerClass: string;
+	handlerMethod: string;
+	requestDto?: string;
+	responseDto?: string;
+};
+
+export type FeignClientEdge = {
+	callerService: string;
+	targetService: string;
+	interfaceName: string;
+	filePath: string;
+};
+
+export type MavenDep = {
+	consumerPath: string;
+	groupId: string;
+	artifactId: string;
+	version?: string;
+	scope?: string;
+};
+
+export type GatewayRoute = {
+	routeId: string;
+	pathPredicate: string;
+	targetService: string;
+	stripPrefix: boolean;
+};
+
+export type K8sResource = {
+	filePath: string;
+	kind: string;
+	name: string;
+	namespace?: string;
+	envLabel?: string;
+	imageTag?: string;
+};
+
+export type NpmPackageEdge = {
+	consumerPath: string;
+	packageName: string;
+	version: string;
+	depType: 'dependencies' | 'devDependencies' | 'peerDependencies';
+};
+
+export type { EnvDrift } from './configEnvIndexer.js';
+export type { TerraformResource, TerraformModule } from './terraformIndexer.js';
+export type { PipelineJob } from './gitlabCiIndexer.js';
+
+export type TerraformIndexMeta = {
+	fileCount: number;
+	providers: string[];
+};
+
+export type PipelineIndexMeta = {
+	fileCount: number;
+	hasManualGates: boolean;
 };
 
 export const hashWorkspaceRoot = (workspaceRoot: string): string => {
@@ -197,6 +400,79 @@ export class RepoIntelligenceDb {
 			 SELECT name, signature, docstring, file_path, workspace_hash, start_line, end_line FROM symbols`,
 		);
 
+		// v3 migration: STaaS polyglot tables
+		await this._ensureTable(db, 'java_spring_endpoints',
+			`CREATE TABLE IF NOT EXISTS java_spring_endpoints (
+				workspace_hash TEXT NOT NULL, service_name TEXT NOT NULL,
+				file_path TEXT NOT NULL, http_method TEXT NOT NULL, path_pattern TEXT NOT NULL,
+				controller_class TEXT NOT NULL, handler_method TEXT NOT NULL,
+				request_dto TEXT, response_dto TEXT,
+				PRIMARY KEY (workspace_hash, service_name, http_method, path_pattern)
+			)`);
+		await this._ensureTable(db, 'feign_clients',
+			`CREATE TABLE IF NOT EXISTS feign_clients (
+				workspace_hash TEXT NOT NULL, caller_service TEXT NOT NULL,
+				target_service TEXT NOT NULL, interface_name TEXT NOT NULL, file_path TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, caller_service, target_service, interface_name)
+			)`);
+		await this._ensureTable(db, 'maven_dependencies',
+			`CREATE TABLE IF NOT EXISTS maven_dependencies (
+				workspace_hash TEXT NOT NULL, consumer_path TEXT NOT NULL,
+				group_id TEXT NOT NULL, artifact_id TEXT NOT NULL, version TEXT, scope TEXT,
+				PRIMARY KEY (workspace_hash, consumer_path, group_id, artifact_id)
+			)`);
+		await this._ensureTable(db, 'k8s_resources',
+			`CREATE TABLE IF NOT EXISTS k8s_resources (
+				workspace_hash TEXT NOT NULL, file_path TEXT NOT NULL,
+				kind TEXT NOT NULL, name TEXT NOT NULL, namespace TEXT,
+				env_label TEXT, image_tag TEXT,
+				PRIMARY KEY (workspace_hash, file_path, kind, name)
+			)`);
+		await this._ensureTable(db, 'gateway_routes',
+			`CREATE TABLE IF NOT EXISTS gateway_routes (
+				workspace_hash TEXT NOT NULL, route_id TEXT NOT NULL,
+				path_predicate TEXT NOT NULL, target_service TEXT NOT NULL, strip_prefix INTEGER,
+				PRIMARY KEY (workspace_hash, route_id)
+			)`);
+		await this._ensureTable(db, 'npm_package_edges',
+			`CREATE TABLE IF NOT EXISTS npm_package_edges (
+				workspace_hash TEXT NOT NULL, consumer_path TEXT NOT NULL,
+				package_name TEXT NOT NULL, version TEXT, dep_type TEXT,
+				PRIMARY KEY (workspace_hash, consumer_path, package_name)
+			)`);
+		await this._ensureTable(db, 'config_env_drift',
+			`CREATE TABLE IF NOT EXISTS config_env_drift (
+				workspace_hash TEXT NOT NULL, service_name TEXT NOT NULL,
+				config_key TEXT NOT NULL, env_values_json TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, service_name, config_key)
+			)`);
+		await this._ensureTable(db, 'terraform_resources',
+			`CREATE TABLE IF NOT EXISTS terraform_resources (
+				workspace_hash TEXT NOT NULL, file_path TEXT NOT NULL,
+				resource_type TEXT NOT NULL, resource_name TEXT NOT NULL, provider TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, file_path, resource_type, resource_name)
+			)`);
+		await this._ensureTable(db, 'terraform_modules',
+			`CREATE TABLE IF NOT EXISTS terraform_modules (
+				workspace_hash TEXT NOT NULL, file_path TEXT NOT NULL,
+				module_name TEXT NOT NULL, source TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, file_path, module_name)
+			)`);
+		await this._ensureTable(db, 'terraform_index_meta',
+			`CREATE TABLE IF NOT EXISTS terraform_index_meta (
+				workspace_hash TEXT PRIMARY KEY, file_count INTEGER NOT NULL, providers_json TEXT NOT NULL
+			)`);
+		await this._ensureTable(db, 'pipeline_jobs',
+			`CREATE TABLE IF NOT EXISTS pipeline_jobs (
+				workspace_hash TEXT NOT NULL, job_name TEXT NOT NULL,
+				stage TEXT NOT NULL, needs_json TEXT NOT NULL, file_path TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, job_name)
+			)`);
+		await this._ensureTable(db, 'pipeline_index_meta',
+			`CREATE TABLE IF NOT EXISTS pipeline_index_meta (
+				workspace_hash TEXT PRIMARY KEY, file_count INTEGER NOT NULL, has_manual_gates INTEGER NOT NULL
+			)`);
+
 		await this._exec(db, `PRAGMA user_version = ${SCHEMA_VERSION}`);
 	}
 
@@ -272,6 +548,13 @@ export class RepoIntelligenceDb {
 			return true;
 		} catch {
 			return false;
+		}
+	}
+
+	private async _ensureTable(db: Database, tableName: string, createSql: string): Promise<void> {
+		const exists = await this._tableExists(db, tableName);
+		if (!exists) {
+			await this._exec(db, createSql);
 		}
 	}
 
@@ -581,21 +864,135 @@ export class RepoIntelligenceDb {
 		return row?.count ?? 0;
 	}
 
+	async getDistinctChunkFileCount(workspaceHash: string): Promise<number> {
+		const row = await this._get<{ count: number }>(
+			`SELECT COUNT(DISTINCT file_path) AS count FROM code_chunks WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return row?.count ?? 0;
+	}
+
+	async getIndexingStats(workspaceHash: string): Promise<RepoIntelligenceIndexingStats> {
+		const countRow = async (sql: string): Promise<number> => {
+			const row = await this._get<{ count: number }>(sql, [workspaceHash]);
+			return row?.count ?? 0;
+		};
+
+		const groupedCounts = async (sql: string): Promise<Record<string, number>> => {
+			const rows = await this._all<{ key: string; count: number }>(sql, [workspaceHash]);
+			const result: Record<string, number> = {};
+			for (const row of rows) {
+				if (row.key) {
+					result[row.key] = row.count;
+				}
+			}
+			return result;
+		};
+
+		const [
+			chunkCount,
+			indexedFileCount,
+			totalFileCount,
+			indexableFileCount,
+			symbolCount,
+			symbolFileCount,
+			chunksByType,
+			filesByLanguage,
+			chunksByLanguage,
+			symbolsByLanguage,
+			springEndpoints,
+			feignClients,
+			mavenDeps,
+			k8sResources,
+			gatewayRoutes,
+			npmEdges,
+			configDrift,
+			terraformResources,
+			pipelineJobs,
+		] = await Promise.all([
+			countRow(`SELECT COUNT(*) AS count FROM code_chunks WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(DISTINCT file_path) AS count FROM code_chunks WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM file_metadata WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM file_metadata WHERE workspace_hash = ? AND language IS NOT NULL AND language NOT IN ('Markdown', 'JSON', 'YAML', 'TOML', 'HTML', 'CSS', 'SCSS', 'Sass', 'Less')`),
+			countRow(`SELECT COUNT(*) AS count FROM symbols WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(DISTINCT file_path) AS count FROM symbols WHERE workspace_hash = ?`),
+			groupedCounts(`SELECT chunk_type AS key, COUNT(*) AS count FROM code_chunks WHERE workspace_hash = ? GROUP BY chunk_type`),
+			groupedCounts(`SELECT COALESCE(language, 'Unknown') AS key, COUNT(*) AS count FROM file_metadata WHERE workspace_hash = ? GROUP BY language`),
+			groupedCounts(
+				`SELECT COALESCE(fm.language, 'Unknown') AS key, COUNT(*) AS count
+				 FROM code_chunks cc
+				 JOIN file_metadata fm ON fm.workspace_hash = cc.workspace_hash AND fm.file_path = cc.file_path
+				 WHERE cc.workspace_hash = ?
+				 GROUP BY fm.language`,
+			),
+			groupedCounts(
+				`SELECT COALESCE(fm.language, 'Unknown') AS key, COUNT(*) AS count
+				 FROM symbols s
+				 JOIN file_metadata fm ON fm.workspace_hash = s.workspace_hash AND fm.file_path = s.file_path
+				 WHERE s.workspace_hash = ?
+				 GROUP BY fm.language`,
+			),
+			countRow(`SELECT COUNT(*) AS count FROM java_spring_endpoints WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM feign_clients WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM maven_dependencies WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM k8s_resources WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM gateway_routes WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM npm_package_edges WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM config_env_drift WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM terraform_resources WHERE workspace_hash = ?`),
+			countRow(`SELECT COUNT(*) AS count FROM pipeline_jobs WHERE workspace_hash = ?`),
+		]);
+
+		return {
+			chunkCount,
+			indexedFileCount,
+			totalFileCount,
+			indexableFileCount,
+			symbolCount,
+			symbolFileCount,
+			chunksByType,
+			filesByLanguage,
+			chunksByLanguage,
+			symbolsByLanguage,
+			springEndpoints,
+			feignClients,
+			mavenDeps,
+			k8sResources,
+			gatewayRoutes,
+			npmEdges,
+			configDrift,
+			terraformResources,
+			pipelineJobs,
+			statsSource: 'database',
+		};
+	}
+
 	async replaceChunks(workspaceHash: string, chunks: CodeChunk[]): Promise<void> {
 		await this._run(`DELETE FROM code_chunks WHERE workspace_hash = ?`, [workspaceHash]);
 		await this._run(`DELETE FROM chunks_fts WHERE workspace_hash = ?`, [workspaceHash]);
 
-		for (const chunk of chunks) {
-			await this._run(
-				`INSERT INTO code_chunks (id, workspace_hash, file_path, chunk_text, start_line, end_line, chunk_type)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[chunk.id, workspaceHash, chunk.filePath, chunk.chunkText, chunk.startLine, chunk.endLine, chunk.chunkType],
-			);
-			await this._run(
-				`INSERT INTO chunks_fts (chunk_text, file_path, workspace_hash, start_line, end_line, chunk_type)
-				 VALUES (?, ?, ?, ?, ?, ?)`,
-				[chunk.chunkText, chunk.filePath, workspaceHash, chunk.startLine, chunk.endLine, chunk.chunkType],
-			);
+		if (chunks.length === 0) {
+			return;
+		}
+
+		await this._run(`BEGIN IMMEDIATE`);
+		try {
+			for (const chunk of chunks) {
+				await this._run(
+					`INSERT INTO code_chunks (id, workspace_hash, file_path, chunk_text, start_line, end_line, chunk_type)
+					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					[chunk.id, workspaceHash, chunk.filePath, chunk.chunkText, chunk.startLine, chunk.endLine, chunk.chunkType],
+				);
+				await this._run(
+					`INSERT INTO chunks_fts (chunk_text, file_path, workspace_hash, start_line, end_line, chunk_type)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					[chunk.chunkText, chunk.filePath, workspaceHash, chunk.startLine, chunk.endLine, chunk.chunkType],
+				);
+			}
+			await this._run(`COMMIT`);
+		} catch (err) {
+			await this._run(`ROLLBACK`).catch(() => { });
+			throw err;
 		}
 	}
 
@@ -627,6 +1024,359 @@ export class RepoIntelligenceDb {
 			snippet: truncateSnippet(row.chunk_text, 400),
 			score: row.score,
 		}));
+	}
+
+	// ── α methods ────────────────────────────────────────────────────────────
+
+	async replaceSpringEndpoints(workspaceHash: string, endpoints: SpringEndpoint[]): Promise<void> {
+		await this._run(`DELETE FROM java_spring_endpoints WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const ep of endpoints) {
+			await this._run(
+				`INSERT OR REPLACE INTO java_spring_endpoints
+					(workspace_hash, service_name, file_path, http_method, path_pattern,
+					 controller_class, handler_method, request_dto, response_dto)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[workspaceHash, ep.serviceName, ep.filePath, ep.httpMethod, ep.pathPattern,
+					ep.controllerClass, ep.handlerMethod, ep.requestDto ?? null, ep.responseDto ?? null],
+			);
+		}
+	}
+
+	async getSpringEndpoints(workspaceHash: string): Promise<SpringEndpoint[]> {
+		type Row = {
+			service_name: string; file_path: string; http_method: string;
+			path_pattern: string; controller_class: string; handler_method: string;
+			request_dto: string | null; response_dto: string | null;
+		};
+		const rows = await this._all<Row>(
+			`SELECT service_name, file_path, http_method, path_pattern,
+					controller_class, handler_method, request_dto, response_dto
+			 FROM java_spring_endpoints WHERE workspace_hash = ? ORDER BY path_pattern`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			serviceName: r.service_name, filePath: r.file_path, httpMethod: r.http_method,
+			pathPattern: r.path_pattern, controllerClass: r.controller_class,
+			handlerMethod: r.handler_method, requestDto: r.request_dto ?? undefined,
+			responseDto: r.response_dto ?? undefined,
+		}));
+	}
+
+	async replaceFeignClients(workspaceHash: string, clients: FeignClientEdge[]): Promise<void> {
+		await this._run(`DELETE FROM feign_clients WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const c of clients) {
+			await this._run(
+				`INSERT OR REPLACE INTO feign_clients
+					(workspace_hash, caller_service, target_service, interface_name, file_path)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[workspaceHash, c.callerService, c.targetService, c.interfaceName, c.filePath],
+			);
+		}
+	}
+
+	async getFeignClients(workspaceHash: string): Promise<FeignClientEdge[]> {
+		type Row = { caller_service: string; target_service: string; interface_name: string; file_path: string };
+		const rows = await this._all<Row>(
+			`SELECT caller_service, target_service, interface_name, file_path
+			 FROM feign_clients WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			callerService: r.caller_service, targetService: r.target_service,
+			interfaceName: r.interface_name, filePath: r.file_path,
+		}));
+	}
+
+	async replaceMavenDependencies(workspaceHash: string, deps: MavenDep[]): Promise<void> {
+		await this._run(`DELETE FROM maven_dependencies WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const d of deps) {
+			await this._run(
+				`INSERT OR REPLACE INTO maven_dependencies
+					(workspace_hash, consumer_path, group_id, artifact_id, version, scope)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[workspaceHash, d.consumerPath, d.groupId, d.artifactId, d.version ?? null, d.scope ?? null],
+			);
+		}
+	}
+
+	async getMavenConsumers(workspaceHash: string, artifactId: string): Promise<MavenDep[]> {
+		type Row = { consumer_path: string; group_id: string; artifact_id: string; version: string | null; scope: string | null };
+		const rows = await this._all<Row>(
+			`SELECT consumer_path, group_id, artifact_id, version, scope
+			 FROM maven_dependencies WHERE workspace_hash = ? AND artifact_id = ?`,
+			[workspaceHash, artifactId],
+		);
+		return rows.map(r => ({
+			consumerPath: r.consumer_path, groupId: r.group_id, artifactId: r.artifact_id,
+			version: r.version ?? undefined, scope: r.scope ?? undefined,
+		}));
+	}
+
+	async getAllMavenDependencies(workspaceHash: string): Promise<MavenDep[]> {
+		type Row = { consumer_path: string; group_id: string; artifact_id: string; version: string | null; scope: string | null };
+		const rows = await this._all<Row>(
+			`SELECT consumer_path, group_id, artifact_id, version, scope
+			 FROM maven_dependencies WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			consumerPath: r.consumer_path, groupId: r.group_id, artifactId: r.artifact_id,
+			version: r.version ?? undefined, scope: r.scope ?? undefined,
+		}));
+	}
+
+	async replaceGatewayRoutes(workspaceHash: string, routes: GatewayRoute[]): Promise<void> {
+		await this._run(`DELETE FROM gateway_routes WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const r of routes) {
+			await this._run(
+				`INSERT OR REPLACE INTO gateway_routes
+					(workspace_hash, route_id, path_predicate, target_service, strip_prefix)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[workspaceHash, r.routeId, r.pathPredicate, r.targetService, r.stripPrefix ? 1 : 0],
+			);
+		}
+	}
+
+	async getGatewayRoutes(workspaceHash: string): Promise<GatewayRoute[]> {
+		type Row = { route_id: string; path_predicate: string; target_service: string; strip_prefix: number };
+		const rows = await this._all<Row>(
+			`SELECT route_id, path_predicate, target_service, strip_prefix
+			 FROM gateway_routes WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			routeId: r.route_id, pathPredicate: r.path_predicate,
+			targetService: r.target_service, stripPrefix: r.strip_prefix === 1,
+		}));
+	}
+
+	async replaceK8sResources(workspaceHash: string, resources: K8sResource[]): Promise<void> {
+		await this._run(`DELETE FROM k8s_resources WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const r of resources) {
+			await this._run(
+				`INSERT OR REPLACE INTO k8s_resources
+					(workspace_hash, file_path, kind, name, namespace, env_label, image_tag)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[workspaceHash, r.filePath, r.kind, r.name,
+					r.namespace ?? null, r.envLabel ?? null, r.imageTag ?? null],
+			);
+		}
+	}
+
+	async getK8sResources(workspaceHash: string): Promise<K8sResource[]> {
+		type Row = { file_path: string; kind: string; name: string; namespace: string | null; env_label: string | null; image_tag: string | null };
+		const rows = await this._all<Row>(
+			`SELECT file_path, kind, name, namespace, env_label, image_tag
+			 FROM k8s_resources WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			filePath: r.file_path, kind: r.kind, name: r.name,
+			namespace: r.namespace ?? undefined, envLabel: r.env_label ?? undefined,
+			imageTag: r.image_tag ?? undefined,
+		}));
+	}
+
+	// ── β methods ─────────────────────────────────────────────────────────────
+
+	async replaceNpmEdges(workspaceHash: string, edges: NpmPackageEdge[]): Promise<void> {
+		await this._run(`DELETE FROM npm_package_edges WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const e of edges) {
+			await this._run(
+				`INSERT OR REPLACE INTO npm_package_edges
+					(workspace_hash, consumer_path, package_name, version, dep_type)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[workspaceHash, e.consumerPath, e.packageName, e.version, e.depType],
+			);
+		}
+	}
+
+	async getNpmConsumers(workspaceHash: string, packageName: string): Promise<string[]> {
+		type Row = { consumer_path: string };
+		const rows = await this._all<Row>(
+			`SELECT DISTINCT consumer_path FROM npm_package_edges
+			 WHERE workspace_hash = ? AND package_name = ?`,
+			[workspaceHash, packageName],
+		);
+		return rows.map(r => r.consumer_path);
+	}
+
+	async getAllNpmEdges(workspaceHash: string): Promise<NpmPackageEdge[]> {
+		type Row = { consumer_path: string; package_name: string; version: string | null; dep_type: string };
+		const rows = await this._all<Row>(
+			`SELECT consumer_path, package_name, version, dep_type FROM npm_package_edges WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			consumerPath: r.consumer_path,
+			packageName: r.package_name,
+			version: r.version ?? '',
+			depType: r.dep_type as NpmPackageEdge['depType'],
+		}));
+	}
+
+	async replaceConfigDrift(workspaceHash: string, drifts: import('./configEnvIndexer.js').EnvDrift[]): Promise<void> {
+		await this._run(`DELETE FROM config_env_drift WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const d of drifts) {
+			await this._run(
+				`INSERT OR REPLACE INTO config_env_drift
+					(workspace_hash, service_name, config_key, env_values_json)
+				 VALUES (?, ?, ?, ?)`,
+				[workspaceHash, d.serviceName, d.key, JSON.stringify(d.envValues)],
+			);
+		}
+	}
+
+	async getConfigDriftForService(
+		workspaceHash: string,
+		serviceName: string,
+	): Promise<{ key: string; serviceName: string; envValues: Record<string, string> }[]> {
+		type Row = { service_name: string; config_key: string; env_values_json: string };
+		const rows = await this._all<Row>(
+			`SELECT service_name, config_key, env_values_json
+			 FROM config_env_drift WHERE workspace_hash = ? AND service_name = ?
+			 ORDER BY config_key`,
+			[workspaceHash, serviceName],
+		);
+		return rows.map(r => ({
+			key: r.config_key,
+			serviceName: r.service_name,
+			envValues: JSON.parse(r.env_values_json) as Record<string, string>,
+		}));
+	}
+
+	async getConfigDriftStats(workspaceHash: string): Promise<{ driftCount: number; topDriftedServices: string[] }> {
+		type Row = { service_name: string };
+		const rows = await this._all<Row>(
+			`SELECT DISTINCT service_name FROM config_env_drift WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		const countRow = await this._get<{ count: number }>(
+			`SELECT COUNT(*) AS count FROM config_env_drift WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return {
+			driftCount: countRow?.count ?? 0,
+			topDriftedServices: rows.map(r => r.service_name).slice(0, 5),
+		};
+	}
+
+	// ── γ methods (Terraform + GitLab CI) ─────────────────────────────────────
+
+	async replaceTerraformIndex(
+		workspaceHash: string,
+		result: import('./terraformIndexer.js').TerraformIndexResult,
+	): Promise<void> {
+		await this._run(`DELETE FROM terraform_resources WHERE workspace_hash = ?`, [workspaceHash]);
+		await this._run(`DELETE FROM terraform_modules WHERE workspace_hash = ?`, [workspaceHash]);
+		await this._run(`DELETE FROM terraform_index_meta WHERE workspace_hash = ?`, [workspaceHash]);
+
+		for (const r of result.resources) {
+			await this._run(
+				`INSERT OR REPLACE INTO terraform_resources
+					(workspace_hash, file_path, resource_type, resource_name, provider)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[workspaceHash, r.filePath, r.resourceType, r.resourceName, r.provider],
+			);
+		}
+		for (const m of result.modules) {
+			await this._run(
+				`INSERT OR REPLACE INTO terraform_modules
+					(workspace_hash, file_path, module_name, source)
+				 VALUES (?, ?, ?, ?)`,
+				[workspaceHash, m.filePath, m.moduleName, m.source],
+			);
+		}
+		if (result.fileCount > 0 || result.resources.length > 0 || result.modules.length > 0) {
+			await this._run(
+				`INSERT OR REPLACE INTO terraform_index_meta (workspace_hash, file_count, providers_json)
+				 VALUES (?, ?, ?)`,
+				[workspaceHash, result.fileCount, JSON.stringify(result.providers)],
+			);
+		}
+	}
+
+	async getTerraformResources(workspaceHash: string): Promise<import('./terraformIndexer.js').TerraformResource[]> {
+		type Row = { file_path: string; resource_type: string; resource_name: string; provider: string };
+		const rows = await this._all<Row>(
+			`SELECT file_path, resource_type, resource_name, provider
+			 FROM terraform_resources WHERE workspace_hash = ? ORDER BY resource_type, resource_name`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			filePath: r.file_path,
+			resourceType: r.resource_type,
+			resourceName: r.resource_name,
+			provider: r.provider,
+		}));
+	}
+
+	async getTerraformModules(workspaceHash: string): Promise<import('./terraformIndexer.js').TerraformModule[]> {
+		type Row = { file_path: string; module_name: string; source: string };
+		const rows = await this._all<Row>(
+			`SELECT file_path, module_name, source FROM terraform_modules WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({ filePath: r.file_path, moduleName: r.module_name, source: r.source }));
+	}
+
+	async getTerraformIndexMeta(workspaceHash: string): Promise<TerraformIndexMeta | null> {
+		const row = await this._get<{ file_count: number; providers_json: string }>(
+			`SELECT file_count, providers_json FROM terraform_index_meta WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		if (!row) return null;
+		return {
+			fileCount: row.file_count,
+			providers: JSON.parse(row.providers_json) as string[],
+		};
+	}
+
+	async replacePipelineIndex(
+		workspaceHash: string,
+		result: import('./gitlabCiIndexer.js').PipelineIndexResult,
+	): Promise<void> {
+		await this._run(`DELETE FROM pipeline_jobs WHERE workspace_hash = ?`, [workspaceHash]);
+		await this._run(`DELETE FROM pipeline_index_meta WHERE workspace_hash = ?`, [workspaceHash]);
+
+		for (const job of result.jobs) {
+			await this._run(
+				`INSERT OR REPLACE INTO pipeline_jobs
+					(workspace_hash, job_name, stage, needs_json, file_path)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[workspaceHash, job.name, job.stage, JSON.stringify(job.needs), job.filePath],
+			);
+		}
+		if (result.fileCount > 0 || result.jobs.length > 0) {
+			await this._run(
+				`INSERT OR REPLACE INTO pipeline_index_meta (workspace_hash, file_count, has_manual_gates)
+				 VALUES (?, ?, ?)`,
+				[workspaceHash, result.fileCount, result.hasManualGates ? 1 : 0],
+			);
+		}
+	}
+
+	async getPipelineJobs(workspaceHash: string): Promise<import('./gitlabCiIndexer.js').PipelineJob[]> {
+		type Row = { job_name: string; stage: string; needs_json: string; file_path: string };
+		const rows = await this._all<Row>(
+			`SELECT job_name, stage, needs_json, file_path FROM pipeline_jobs WHERE workspace_hash = ? ORDER BY stage, job_name`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({
+			name: r.job_name,
+			stage: r.stage,
+			needs: JSON.parse(r.needs_json) as string[],
+			filePath: r.file_path,
+		}));
+	}
+
+	async getPipelineIndexMeta(workspaceHash: string): Promise<PipelineIndexMeta | null> {
+		const row = await this._get<{ file_count: number; has_manual_gates: number }>(
+			`SELECT file_count, has_manual_gates FROM pipeline_index_meta WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		if (!row) return null;
+		return { fileCount: row.file_count, hasManualGates: row.has_manual_gates === 1 };
 	}
 }
 

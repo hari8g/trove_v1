@@ -352,6 +352,70 @@ export const builtinTools: {
 		},
 	},
 
+	query_service_topology: {
+		name: 'query_service_topology',
+		description: `Query the service mesh topology of a Spring Boot microservices workspace.
+Returns gateway routes, Feign call edges between services, and endpoint counts.
+Use before modifying any backend service to understand upstream callers and downstream dependencies.`,
+		params: {
+			query: { description: 'Natural language query about services (e.g. "which services call order-management", "what does the payment service expose")' },
+		},
+	},
+
+	resolve_api_contract: {
+		name: 'resolve_api_contract',
+		description: `Resolve the full API contract for a given HTTP method and path.
+Traces: gateway route → backend service → @RestController handler → Java DTO types.
+Use before generating frontend API calls or backend handler changes to ensure type correctness.`,
+		params: {
+			http_method: { description: 'HTTP method (GET, POST, PUT, DELETE, PATCH)' },
+			path_pattern: { description: 'API path pattern (e.g. /order/**, /user/{id})' },
+		},
+	},
+
+	get_maven_impact: {
+		name: 'get_maven_impact',
+		description: `Analyse the blast radius of changing a Maven shared library.
+Returns all pom.xml consumer paths and an impact level (critical if 10+ consumers).
+Use before modifying any artifact in dependencies-be/ to understand downstream build risk.`,
+		params: {
+			artifact_id: { description: 'Maven artifactId of the shared library (e.g. ms-data-model, ms-dto, jwks-multitenancy-service)' },
+		},
+	},
+
+	get_npm_impact: {
+		name: 'get_npm_impact',
+		description: `Returns all frontend apps and packages that consume a given @mobilitystore/* or @bosch/*
+npm package. Returns an impact level: critical (5+ consumers), high (3-4), medium (1-2), low (none).
+Use before modifying any shared frontend library in the dependencies-fe/ or api-endpoints.ts scope.`,
+		params: {
+			package_name: { description: 'Full scoped package name, e.g. @mobilitystore/components-interface or @bosch/frontend.kit-npm' },
+		},
+	},
+
+	get_config_drift: {
+		name: 'get_config_drift',
+		description: `Returns all Spring Cloud Config properties that differ across environments
+(dev/qa/stage/prod) for a named service. Use before editing any application-{env}.yml
+file to understand environment-specific constraints and avoid accidental config divergence.`,
+		params: {
+			service_name: { description: 'Spring Boot service name, e.g. staas-order-management or staas-pricing-management' },
+		},
+	},
+
+	verify_security_compliance: {
+		name: 'verify_security_compliance',
+		description: `Run STaaS security compliance checks on generated or modified code BEFORE writing it to disk.
+Detects: missing tenant isolation in @Query methods (CRITICAL), unsecured @RestController endpoints (HIGH),
+hardcoded JWKS URIs (HIGH), plaintext secrets in YAML (CRITICAL), missing Feign auth propagation (HIGH),
+bare dependency versions bypassing OWASP BOM (MEDIUM), and wildcard CORS origins (MEDIUM).
+ALWAYS call this tool after generating any .java controller, Feign client, application-{env}.yml, or pom.xml.`,
+		params: {
+			code: { description: 'The complete code content to check.' },
+			file_extension: { description: 'File extension determining which rules apply: .java, .yml, .yaml, or .xml' },
+		},
+	},
+
 	// add new search_in_file tool
 	search_in_file: {
 		name: 'search_in_file',
@@ -575,6 +639,72 @@ export function serializeWorkspaceProfileForPrompt(
 			lines.push(`Architecture summary: ${summary}`);
 		}
 
+		// ── STaaS Service Topology Block ─────────────────────────────────────────
+		if (profile.serviceTopologySummary) {
+			const topo = profile.serviceTopologySummary;
+			lines.push(`\nMicroservice topology (${topo.serviceCount} services, ${topo.totalEndpoints} endpoints):`);
+
+			if (topo.gatewayRoutes.length > 0) {
+				lines.push(`Gateway routes:`);
+				for (const r of topo.gatewayRoutes.slice(0, 15)) {
+					lines.push(`  ${r.pathPattern} → ${r.targetService}`);
+				}
+				if (topo.gatewayRoutes.length > 15) {
+					lines.push(`  …(${topo.gatewayRoutes.length - 15} more routes)`);
+				}
+			}
+
+			if (topo.feignEdges.length > 0) {
+				lines.push(`Feign call graph:`);
+				for (const e of topo.feignEdges.slice(0, 10)) {
+					lines.push(`  ${e.caller} → [${e.targets.join(', ')}]`);
+				}
+			}
+		}
+
+		// ── STaaS Maven Shared Library Summary ───────────────────────────────────
+		if (profile.mavenImpactSummary) {
+			const maven = profile.mavenImpactSummary;
+			lines.push(`\nMaven shared libs (${maven.pomCount} pom.xml files):`);
+			for (const lib of maven.sharedLibs.slice(0, 10)) {
+				lines.push(`  ${lib.artifactId} — used by ${lib.consumerCount} services`);
+			}
+		}
+
+		if (profile.npmImpactSummary) {
+			const npm = profile.npmImpactSummary;
+			lines.push(`\nNPM shared libs (${npm.packageJsonCount} package.json files):`);
+			for (const pkg of npm.sharedPackages.slice(0, 8)) {
+				lines.push(`  ${pkg.packageName} — ${pkg.consumerCount} consumer(s)`);
+			}
+		}
+
+		if (mode === 'agent' && profile.configDriftSummary && profile.configDriftSummary.driftCount > 0) {
+			const drift = profile.configDriftSummary;
+			lines.push(
+				`\nConfig drift detected: ${drift.driftCount} properties differ across environments` +
+				` (services with drift: ${drift.topDriftedServices.join(', ')}).` +
+				` Call get_config_drift before editing any application-{env}.yml file.`
+			);
+		}
+
+		if (mode === 'agent' && profile.terraformSummary) {
+			const tf = profile.terraformSummary;
+			lines.push(
+				`\nInfrastructure (Terraform): ${tf.resourceCount} resources across ${tf.fileCount} .tf files` +
+				` | Providers: ${tf.providers.join(', ')}` +
+				(tf.topResourceTypes.length > 0 ? ` | Types: ${tf.topResourceTypes.slice(0, 6).join(', ')}` : '')
+			);
+		}
+
+		if (mode === 'agent' && profile.pipelineSummary) {
+			const ci = profile.pipelineSummary;
+			lines.push(
+				`\nCI/CD: ${ci.stageCount} stages (${ci.stages.join(' → ')}), ${ci.jobCount} jobs` +
+				(ci.hasManualGates ? ' | Manual approval gate present for prod deployments' : '')
+			);
+		}
+
 		const allBuild = profile.buildCommands
 			.filter(c => c.purpose !== 'build' && c.purpose !== 'start' && c.confidence !== 'low')
 			.slice(0, 3);
@@ -668,7 +798,7 @@ type ChatSystemMessageOpts = {
 	repoProfileMode?: ChatMode;
 };
 
-export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'activeURI' | 'persistentTerminalIDs'>): string => {
+export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode, activeURI }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'persistentTerminalIDs'>): string => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -760,6 +890,33 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 	if (rulesBlock) ansStrs.push(rulesBlock)
 	const memoryBlock = buildUserMemoryBlock(userMemory ?? null)
 	if (memoryBlock) ansStrs.push(memoryBlock)
+
+	if (activeURI && (
+		activeURI.includes('ondc-integrator') ||
+		activeURI.includes('ondc_integrator')
+	)) {
+		const ondcBlock = `<ondc_protocol_context>
+Protocol: ONDC v1.x / Beckn Core Specification
+Mandatory context object fields (must be present in EVERY request/response):
+  bap_id, bap_uri, transaction_id, message_id, timestamp (ISO 8601), ttl (e.g. PT30S), action, domain, version, country, city
+
+Beckn action flow:
+  search → on_search → select → on_select → init → on_init → confirm → on_confirm
+  status → on_status | track → on_track | cancel → on_cancel | update → on_update | rating → on_rating
+
+STaaS integration points:
+  ONDC catalog items map to staas-catalog-management via /catalog/** gateway route
+  ONDC order lifecycle maps to staas-order-management via /order/** gateway route
+  Seller onboarding maps to staas-tenant-management
+
+Compliance constraints (India region):
+  All callbacks must return HTTP 200 ACK within 30 seconds
+  Error responses use Beckn Error schema: { code, message, type, path }
+  Signatures: ED25519 signing over (digest + created + expires) headers
+</ondc_protocol_context>`;
+		ansStrs.push(ondcBlock);
+	}
+
 	ansStrs.push(header)
 	ansStrs.push(sysInfoStable)
 	if (toolDefinitions) ansStrs.push(toolDefinitions)

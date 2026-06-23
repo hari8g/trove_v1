@@ -612,7 +612,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		}
 		const workspaceRules = this._repoIntelligenceService.getWorkspaceRules()
 		const userMemory = this._repoIntelligenceService.getUserMemory()
-		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode })
+		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode, activeURI })
 		const volatileBlock = chat_systemMessage_volatile({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode })
 		return { stableBlock, volatileBlock }
 	}

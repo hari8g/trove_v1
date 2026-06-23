@@ -69,6 +69,7 @@ import './troveSCMService.js'
 // register repository intelligence
 import './repoIntelligenceService.js'
 import './webSearchService.js'
+import './repoIntelligenceReportAction.js'
 import './repoIntelligenceStatusContribution.js'
 import './riafAgentService.js'
 import './analyseRepositoryAction.js'

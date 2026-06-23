@@ -56,6 +56,12 @@ export type BuiltinToolCallParams = {
 	'get_symbol': { uri: URI, symbolName: string },
 	'search_symbols': { query: string, maxResults: number },
 	'search_web': { query: string, maxResults: number },
+	'query_service_topology': { query: string },
+	'resolve_api_contract': { httpMethod: string, pathPattern: string },
+	'get_maven_impact': { artifactId: string },
+	'get_npm_impact': { packageName: string },
+	'get_config_drift': { serviceName: string },
+	'verify_security_compliance': { code: string; fileExtension: string },
 	'search_in_file': { uri: URI, query: string, isRegex: boolean },
 	'read_lint_errors': { uri: URI },
 	// ---
@@ -82,6 +88,16 @@ export type BuiltinToolResultType = {
 	'get_symbol': { source?: string, startLine?: number, endLine?: number, error?: string },
 	'search_symbols': { results: string },
 	'search_web': { results: { title: string, url: string, snippet: string }[], query: string },
+	'query_service_topology': { summary: string },
+	'resolve_api_contract': { contract: string },
+	'get_maven_impact': { consumers: string[], impactLevel: 'critical' | 'high' | 'medium' | 'low' },
+	'get_npm_impact': { consumers: string[]; impactLevel: 'critical' | 'high' | 'medium' | 'low' },
+	'get_config_drift': { drifts: { key: string; envValues: Record<string, string> }[]; summary: string },
+	'verify_security_compliance': {
+		violations: { rule: string; severity: string; message: string }[];
+		passed: boolean;
+		summary: string;
+	},
 	'search_in_file': { lines: number[]; },
 	'read_lint_errors': { lintErrors: LintErrorItem[] | null },
 	// ---

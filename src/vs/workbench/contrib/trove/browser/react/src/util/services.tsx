@@ -55,6 +55,7 @@ import { IMCPService } from '../../../../common/mcpService.js';
 import { IAgentDeliveryService } from '../../../agentDeliveryService.js';
 import { IRiafAgentService } from '../../../../common/riaf/riafTypes.js';
 import { IUsageMeteringService } from '../../../usageMeteringService.js';
+import { IRepoIntelligenceService } from '../../../../common/repoIntelligenceTypes.js';
 import { AgentDeliverySummary } from '../../../../common/agentDeliveryTypes.js';
 import type { QueuedUserMessage } from '../../../../common/chatMessageQueueTypes.js';
 import { IStorageService, StorageScope } from '../../../../../../../platform/storage/common/storage.js'
@@ -277,6 +278,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IAgentDeliveryService: accessor.get(IAgentDeliveryService),
 		IRiafAgentService: accessor.get(IRiafAgentService),
 		IUsageMeteringService: accessor.get(IUsageMeteringService),
+		IRepoIntelligenceService: accessor.get(IRepoIntelligenceService),
 
 	} as const
 	return reactAccessor
