@@ -45,6 +45,7 @@ const emptySession = (): MeteringSession => ({
 	totalInputTokens: 0,
 	totalOutputTokens: 0,
 	totalCacheReadTokens: 0,
+	totalCacheWriteTokens: 0,
 	byProvider: {},
 	byThread: {},
 	dailyUSD: {},
@@ -69,7 +70,11 @@ export class UsageMeteringService extends Disposable implements IUsageMeteringSe
 		try {
 			const raw = this._storage.get(STORAGE_KEY_METERING_SESSION, StorageScope.APPLICATION);
 			if (raw) {
-				return JSON.parse(raw) as MeteringSession;
+				const parsed = JSON.parse(raw) as MeteringSession;
+				return {
+					...parsed,
+					totalCacheWriteTokens: parsed.totalCacheWriteTokens ?? 0,
+				};
 			}
 		} catch { /* corrupt storage — start fresh */ }
 		return emptySession();
@@ -111,6 +116,7 @@ export class UsageMeteringService extends Disposable implements IUsageMeteringSe
 		this._session.totalInputTokens += opts.usage.inputTokens;
 		this._session.totalOutputTokens += opts.usage.outputTokens;
 		this._session.totalCacheReadTokens += opts.usage.cacheReadTokens;
+		this._session.totalCacheWriteTokens += opts.usage.cacheWriteTokens ?? 0;
 
 		const prov = this._session.byProvider[opts.providerName]
 			?? (this._session.byProvider[opts.providerName] = { costUSD: 0, turns: 0 });

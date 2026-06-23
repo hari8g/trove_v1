@@ -798,7 +798,7 @@ type ChatSystemMessageOpts = {
 	repoProfileMode?: ChatMode;
 };
 
-export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode, activeURI }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'persistentTerminalIDs'>): string => {
+export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'persistentTerminalIDs' | 'activeURI'>): string => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -891,11 +891,24 @@ ${details.map((d, i) => `${i + 1}. ${d}`).join('\n\n')}`)
 	const memoryBlock = buildUserMemoryBlock(userMemory ?? null)
 	if (memoryBlock) ansStrs.push(memoryBlock)
 
-	if (activeURI && (
-		activeURI.includes('ondc-integrator') ||
-		activeURI.includes('ondc_integrator')
-	)) {
-		const ondcBlock = `<ondc_protocol_context>
+	ansStrs.push(header)
+	ansStrs.push(sysInfoStable)
+	if (toolDefinitions) ansStrs.push(toolDefinitions)
+	ansStrs.push(importantDetails)
+
+	return ansStrs
+		.join('\n\n\n')
+		.trim()
+		.replace('\t', '  ')
+};
+
+export function buildDomainContextBlock(activeURI: string | undefined): string {
+	if (!activeURI) {
+		return '';
+	}
+
+	if (activeURI.includes('ondc-integrator') || activeURI.includes('ondc_integrator')) {
+		return `<ondc_protocol_context>
 Protocol: ONDC v1.x / Beckn Core Specification
 Mandatory context object fields (must be present in EVERY request/response):
   bap_id, bap_uri, transaction_id, message_id, timestamp (ISO 8601), ttl (e.g. PT30S), action, domain, version, country, city
@@ -914,19 +927,10 @@ Compliance constraints (India region):
   Error responses use Beckn Error schema: { code, message, type, path }
   Signatures: ED25519 signing over (digest + created + expires) headers
 </ondc_protocol_context>`;
-		ansStrs.push(ondcBlock);
 	}
 
-	ansStrs.push(header)
-	ansStrs.push(sysInfoStable)
-	if (toolDefinitions) ansStrs.push(toolDefinitions)
-	ansStrs.push(importantDetails)
-
-	return ansStrs
-		.join('\n\n\n')
-		.trim()
-		.replace('\t', '  ')
-};
+	return '';
+}
 
 export const chat_systemMessage_volatile = ({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode: mode }: Pick<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'activeURI' | 'persistentTerminalIDs' | 'chatMode'>): string => {
 	const parts: string[] = [];
@@ -948,6 +952,11 @@ ${openedURIs.join('\n') || 'NO OPENED FILES'}${mode === 'agent' && persistentTer
 <files_overview>
 ${directoryStr}
 </files_overview>`)
+	}
+
+	const domainBlock = buildDomainContextBlock(activeURI);
+	if (domainBlock) {
+		parts.push(domainBlock);
 	}
 
 	return parts.filter(Boolean).join('\n\n\n').trim()

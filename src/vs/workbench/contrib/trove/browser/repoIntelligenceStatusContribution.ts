@@ -88,7 +88,7 @@ export class RepoIntelligenceStatusContribution extends Disposable implements IW
 			name: localize('trove.repoIntelligence.status.name', 'Codebase Index'),
 			text,
 			ariaLabel: text,
-			tooltip: localize('trove.repoIntelligence.status.tooltip', 'Repository Intelligence index — click for detailed report'),
+			tooltip: localize('trove.repoIntelligence.status.tooltip', 'Repository Intelligence index — click for report. Run "Trove: Refresh Repository Index" to re-scan STaaS indexers.'),
 			command: TROVE_OPEN_REPO_INTELLIGENCE_REPORT_ACTION_ID,
 		};
 	}

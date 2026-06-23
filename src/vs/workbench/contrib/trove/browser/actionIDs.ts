@@ -32,3 +32,5 @@ export const TROVE_ANALYSE_REPOSITORY_ACTION_ID = 'trove.analyseRepository'
 export const TROVE_OPEN_REPO_INTELLIGENCE_REPORT_ACTION_ID = 'trove.openRepoIntelligenceReport'
 
 export const TROVE_OPEN_CONTEXT_GRAPH_ACTION_ID = 'trove.openContextGraph'
+
+export const TROVE_REFRESH_REPO_INDEX_ACTION_ID = 'trove.refreshRepoIndex'

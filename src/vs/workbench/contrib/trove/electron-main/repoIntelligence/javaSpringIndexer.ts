@@ -141,7 +141,7 @@ export function indexAllSpringServices(workspaceRoot: string): JavaIndexResult {
 
 	const pomFiles: string[] = [];
 	function findPoms(dir: string, depth = 0) {
-		if (depth > 5) return;
+		if (depth > 8) return;
 		const SKIP = new Set(['node_modules', '.git', 'target', 'build', '.gradle']);
 		let entries: string[];
 		try { entries = readdirSync(dir); } catch { return; }

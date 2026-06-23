@@ -28,7 +28,7 @@ const clamp = (value: number, min: number, max: number): number => {
 
 export const getAgentLoopLimits = (settings: GlobalSettings): AgentLoopLimits => ({
 	maxAgentIterations: clamp(settings.maxAgentIterations, 1, 100),
-	maxReadOnlyCalls: clamp(getEffectiveMaxReadOnlyCalls(settings), 1, 50),
+	maxReadOnlyCalls: clamp(getEffectiveMaxReadOnlyCalls(settings), 1, 100),
 	maxConsecutiveToolFails: clamp(settings.maxConsecutiveToolFails, 1, 10),
 	llmStreamStallTimeoutMs: clamp(settings.llmStreamStallTimeoutMs, 10_000, 300_000),
 });

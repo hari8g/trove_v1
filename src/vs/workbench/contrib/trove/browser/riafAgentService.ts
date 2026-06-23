@@ -9,6 +9,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IChatThreadService } from './chatThreadService.js';
 import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { IRiafAgentService } from '../common/riaf/riafTypes.js';
+import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { RiafAgentRunController } from './riafAgentRunController.js';
 
 class RiafAgentService extends RiafAgentRunController {
@@ -17,8 +18,9 @@ class RiafAgentService extends RiafAgentRunController {
 		@ITroveSettingsService settingsService: ITroveSettingsService,
 		@IWorkspaceContextService workspaceService: IWorkspaceContextService,
 		@IFileService fileService: IFileService,
+		@IRepoIntelligenceService repoIntelligenceService: IRepoIntelligenceService,
 	) {
-		super(chatThreadService, settingsService, workspaceService, fileService);
+		super(chatThreadService, settingsService, workspaceService, fileService, repoIntelligenceService);
 	}
 }
 

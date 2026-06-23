@@ -3,6 +3,7 @@ import { deepClone } from '../../../../base/common/objects.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
@@ -547,7 +548,7 @@ export interface IConvertToLLMMessageService {
 	readonly _serviceBrand: undefined;
 	buildRunContext: (opts: { chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<RunContextBlocks>
 	prepareLLMSimpleMessages: (opts: { simpleMessages: SimpleLLMMessage[], systemMessage: string, modelSelection: ModelSelection | null, featureName: FeatureName }) => { messages: LLMChatMessage[], separateSystemMessage: string | undefined }
-	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedRunContext?: RunContextBlocks, agentTailHints?: string, forceAggressiveTrim?: boolean }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, volatileSystemMessage: string | undefined, contextWasTrimmed: boolean }>
+	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedRunContext?: RunContextBlocks, agentTailHints?: string, forceAggressiveTrim?: boolean, threadId?: string }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, volatileSystemMessage: string | undefined, contextWasTrimmed: boolean }>
 	prepareFIMMessage(opts: { messages: LLMFIMMessage, }): { prefix: string, suffix: string, stopTokens: string[] }
 }
 
@@ -557,8 +558,20 @@ export const IConvertToLLMMessageService = createDecorator<IConvertToLLMMessageS
 class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMessageService {
 	_serviceBrand: undefined;
 
+	private readonly _stableBlockHashByThread = new Map<string, number>();
+
+	private _hashString(s: string): number {
+		let hash = 5381;
+		for (let i = 0; i < s.length; i++) {
+			hash = ((hash << 5) + hash) ^ s.charCodeAt(i);
+			hash = hash >>> 0;
+		}
+		return hash;
+	}
+
 	constructor(
 		@IModelService private readonly modelService: IModelService,
+		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IDirectoryStrService private readonly directoryStrService: IDirectoryStrService,
@@ -612,7 +625,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		}
 		const workspaceRules = this._repoIntelligenceService.getWorkspaceRules()
 		const userMemory = this._repoIntelligenceService.getUserMemory()
-		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode, activeURI })
+		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode })
 		const volatileBlock = chat_systemMessage_volatile({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode })
 		return { stableBlock, volatileBlock }
 	}
@@ -721,7 +734,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		})
 		return { messages, separateSystemMessage };
 	}
-	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedRunContext, agentTailHints, forceAggressiveTrim }) => {
+	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedRunContext, agentTailHints, forceAggressiveTrim, threadId }) => {
 		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined, volatileSystemMessage: undefined, contextWasTrimmed: false }
 
 		const { overridesOfModel } = this.troveSettingsService.state
@@ -778,6 +791,23 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		})
 		const separateSystemMessage = runContext.stableBlock || undefined
 		const volatileSystemMessage = runContext.volatileBlock || undefined
+
+		// Renderer has no Node `process.env`; use isBuilt (false in ./scripts/code.sh dev builds).
+		if (!this._environmentService.isBuilt) {
+			const cacheThreadId = threadId ?? 'unknown';
+			const hash = this._hashString(separateSystemMessage ?? '');
+			const prev = this._stableBlockHashByThread.get(cacheThreadId);
+			if (prev !== undefined && prev !== hash) {
+				console.warn(
+					'[Trove cache] Stable system message changed mid-session for thread',
+					cacheThreadId,
+					'— this busts the prompt cache and triggers an expensive re-write.',
+					'Diff the stable block to find volatile content that leaked in.',
+				);
+			}
+			this._stableBlockHashByThread.set(cacheThreadId, hash);
+		}
+
 		return { messages, separateSystemMessage, volatileSystemMessage, contextWasTrimmed };
 	}
 

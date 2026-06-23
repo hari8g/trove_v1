@@ -4,7 +4,7 @@
  *---------------------------------------------------------------------------*/
 
 import { readFileSync, readdirSync, statSync } from 'fs';
-import { join, relative } from 'path';
+import { join, relative, sep } from 'path';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'target', 'build']);
 const ENV_PATTERN = /application-(\w+)\.(yml|yaml)$/;
@@ -39,7 +39,8 @@ function collectConfigFiles(dir: string, results: string[] = [], depth = 0): str
 }
 
 function deriveServiceName(filePath: string): string {
-	const parts = filePath.split('/');
+	const normalized = filePath.split(sep).join('/');
+	const parts = normalized.split('/');
 	for (let i = parts.length - 1; i >= 0; i--) {
 		if (parts[i].startsWith('staas-') || parts[i].includes('-service') || parts[i].includes('-management')) {
 			return parts[i];

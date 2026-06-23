@@ -24,6 +24,21 @@ function withMeteringService(run: (service: UsageMeteringService, storage: InMem
 suite('Trove - usageMeteringService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('recordTurn accumulates cache write tokens', () => {
+		withMeteringService((service) => {
+			service.recordTurn({
+				usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 500, cacheWriteTokens: 200 },
+				providerName: 'anthropic',
+				modelName: 'claude-sonnet-4-6',
+				threadId: 'thread-1',
+			});
+
+			const session = service.getSession();
+			assert.strictEqual(session.totalCacheReadTokens, 500);
+			assert.strictEqual(session.totalCacheWriteTokens, 200);
+		});
+	});
+
 	test('recordTurn accumulates session and provider totals', () => {
 		withMeteringService((service) => {
 			service.recordTurn({

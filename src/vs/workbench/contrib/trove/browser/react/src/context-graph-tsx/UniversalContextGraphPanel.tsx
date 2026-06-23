@@ -37,7 +37,9 @@ export function UniversalContextGraphPanel() {
 
 	const workspaceRoot = workspaceService.getWorkspace().folders[0]?.uri.fsPath ?? null;
 
-	const loadGraph = useCallback(async () => {
+	const [refreshing, setRefreshing] = useState(false);
+
+	const loadGraph = useCallback(async (forceReindex = false) => {
 		if (!workspaceRoot) {
 			setGraph(null);
 			setLoading(false);
@@ -47,7 +49,12 @@ export function UniversalContextGraphPanel() {
 		setLoading(true);
 		setError(null);
 		try {
-			await repoIntel.ensureInitialized();
+			if (forceReindex) {
+				setRefreshing(true);
+				await repoIntel.refreshProfile(workspaceRoot);
+			} else {
+				await repoIntel.ensureInitialized();
+			}
 			const data = await repoIntel.getUCGGraph(workspaceRoot);
 			setGraph(data);
 			if (data) {
@@ -57,6 +64,7 @@ export function UniversalContextGraphPanel() {
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
 			setLoading(false);
+			setRefreshing(false);
 		}
 	}, [repoIntel, workspaceRoot]);
 
@@ -177,8 +185,11 @@ export function UniversalContextGraphPanel() {
 				alignItems: 'center',
 			}}>
 				<span style={{ fontWeight: 600, fontSize: 13 }}>Universal Context Graph</span>
-				<button onClick={() => void loadGraph()} style={btnStyle()} disabled={loading}>
-					{loading ? 'Loading…' : 'Refresh'}
+				<button onClick={() => void loadGraph(false)} style={btnStyle()} disabled={loading || refreshing}>
+					{loading ? (refreshing ? 'Re-indexing…' : 'Loading…') : 'Refresh'}
+				</button>
+				<button onClick={() => void loadGraph(true)} style={btnStyle()} disabled={loading || refreshing} title="Full repository re-scan including import graph">
+					Re-index
 				</button>
 				<select value={viewMode} onChange={e => setViewMode(e.target.value as ViewMode)} style={selectStyle()}>
 					<option value="file">File view</option>
@@ -231,7 +242,8 @@ export function UniversalContextGraphPanel() {
 					{error && <div style={{ padding: 16, color: 'var(--vscode-errorForeground)' }}>{error}</div>}
 					{!error && !loading && graphNodes.length === 0 && (
 						<div style={{ padding: 16, color: 'var(--vscode-descriptionForeground)' }}>
-							No import graph data yet. Run <strong>Trove: Analyse Repository</strong> to index the workspace.
+							No import graph data yet. Opening this panel builds the graph from the repo index automatically;
+							if it stays empty, run <strong>Trove: Refresh Repository Index</strong> (not Analyse Repository — that writes a context doc only).
 						</div>
 					)}
 					{graphNodes.length > 0 && (

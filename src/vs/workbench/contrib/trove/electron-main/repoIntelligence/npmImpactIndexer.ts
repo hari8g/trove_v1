@@ -11,7 +11,7 @@ import { NpmPackageEdge } from './repoIntelligenceDb.js';
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next']);
 
 function findPackageJsonFiles(dir: string, results: string[] = [], depth = 0): string[] {
-	if (depth > 5) return results;
+	if (depth > 8) return results;
 	let entries: string[];
 	try { entries = readdirSync(dir); } catch { return results; }
 	for (const entry of entries) {

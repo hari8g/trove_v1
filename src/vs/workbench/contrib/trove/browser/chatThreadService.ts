@@ -1204,6 +1204,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					precomputedRunContext,
 					agentTailHints,
 					forceAggressiveTrim: forceAggressiveTrim || (chatMode === 'agent' && nMessagesSent > 2),
+					threadId,
 				})
 				messages = prepared.messages
 				separateSystemMessage = prepared.separateSystemMessage

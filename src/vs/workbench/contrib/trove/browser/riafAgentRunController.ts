@@ -9,16 +9,18 @@ import { URI } from '../../../../base/common/uri.js';
 import { buildRiafAgentPrompt } from '../common/riaf/riafPrompts.js';
 import {
 	buildRiafConfig,
+	buildRiafIndexSnapshot,
 	IRiafAgentService,
 	RIAF_USER_DISPLAY_MESSAGE,
 	RiafConfig,
 	RiafRunState,
 } from '../common/riaf/riafTypes.js';
 import { ChatMode, GlobalSettings } from '../common/troveSettingsTypes.js';
+import type { WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
 
 /** Raised limits for the duration of a RIAF run (clamped by getAgentLoopLimits). */
-export const RIAF_MAX_READONLY_CALLS = 50;
-export const RIAF_MAX_AGENT_ITERATIONS = 40;
+export const RIAF_MAX_READONLY_CALLS = 100;
+export const RIAF_MAX_AGENT_ITERATIONS = 60;
 
 export type RiafSettingsSnapshot = {
 	chatMode: ChatMode;
@@ -46,6 +48,11 @@ export type RiafWorkspacePort = {
 
 export type RiafFilePort = {
 	exists(uri: URI): Promise<boolean>;
+};
+
+export type RiafIntelPort = {
+	getProfile(workspaceRoot: string): Promise<WorkspaceProfile | null>;
+	getChunkCount(workspaceRoot: string): Promise<number>;
 };
 
 export const snapshotRiafSettings = (globalSettings: GlobalSettings): RiafSettingsSnapshot => ({
@@ -96,6 +103,7 @@ export class RiafAgentRunController extends Disposable implements IRiafAgentServ
 		private readonly _settings: RiafSettingsPort,
 		private readonly _workspace: RiafWorkspacePort,
 		private readonly _files: RiafFilePort,
+		private readonly _intel?: RiafIntelPort,
 	) {
 		super();
 		this._outputFileName = this._deriveOutputFileName();
@@ -190,6 +198,21 @@ export class RiafAgentRunController extends Disposable implements IRiafAgentServ
 		const config = buildRiafConfig(folder.name, configOverride);
 		this._outputFileName = config.outputFileName;
 
+		// Fetch the pre-computed index snapshot before the run starts so the agent
+		// can skip basic filesystem discovery for facts already known.
+		let indexSnapshot = undefined;
+		if (this._intel) {
+			try {
+				const [profile, chunkCount] = await Promise.all([
+					this._intel.getProfile(root),
+					this._intel.getChunkCount(root),
+				]);
+				indexSnapshot = buildRiafIndexSnapshot(profile, chunkCount);
+			} catch {
+				// Non-fatal — proceed without snapshot
+			}
+		}
+
 		this._chatThread.openNewThread();
 		const threadId = this._chatThread.state.currentThreadId;
 
@@ -198,7 +221,7 @@ export class RiafAgentRunController extends Disposable implements IRiafAgentServ
 
 		try {
 			await this._chatThread.addUserMessageAndStreamResponse({
-				userMessage: buildRiafAgentPrompt(root, folder.name, config),
+				userMessage: buildRiafAgentPrompt(root, folder.name, config, indexSnapshot),
 				displayMessage: RIAF_USER_DISPLAY_MESSAGE,
 				threadId,
 			});

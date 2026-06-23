@@ -16,7 +16,7 @@ import { GoogleAuth } from 'google-auth-library'
 
 import { AnthropicLLMChatMessage, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, LLMMessageUsage, ModelListParams, OllamaModelResponse, OnError, OnFinalMessage, OnText, RawToolCallObj, RawToolParamsObj } from '../../common/sendLLMMessageTypes.js';
 import { usageFromAnthropicResponse, usageFromGeminiMetadata, usageFromOpenAIResponse } from '../../common/llmMessageUsage.js';
-import { applyRoutedAnthropicPromptCache } from '../../common/promptCache.js';
+import { applyRoutedAnthropicConversationCache, applyRoutedAnthropicPromptCache } from '../../common/promptCache.js';
 import { ChatMode, displayInfoOfProviderName, ModelSelectionOptions, OverridesOfModel, ProviderName, SettingsOfProvider } from '../../common/troveSettingsTypes.js';
 import { getSendableReasoningInfo, getModelCapabilities, getProviderCapabilities, defaultProviderSettings, getReservedOutputTokenSpace } from '../../common/modelCapabilities.js';
 import { getAnthropicBetaHeaders, getEffectiveMaxOutputTokens } from '../../common/agentOutputTokenLimits.js';
@@ -351,19 +351,27 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 	}
 	const options: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 		model: modelName,
-		messages: applyRoutedAnthropicPromptCache(
-			messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-			separateSystemMessage,
-			enablePromptCache,
-			providerName,
-			modelName,
-			volatileSystemMessage,
-		) as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+		messages: (() => {
+			const withSystemCache = applyRoutedAnthropicPromptCache(
+				messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+				separateSystemMessage,
+				enablePromptCache,
+				providerName,
+				modelName,
+				volatileSystemMessage,
+			);
+			return applyRoutedAnthropicConversationCache(
+				withSystemCache,
+				enablePromptCache,
+				providerName,
+				modelName,
+			);
+		})() as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
 		stream: true,
 		stream_options: { include_usage: true },
 		...nativeToolsObj,
 		...additionalOpenAIPayload,
-		...(threadId ? { prompt_cache_key: `trove:${threadId}:${modelName}` } : {}),
+		...(enablePromptCache && threadId ? { prompt_cache_key: `trove:${threadId}:${modelName}` } : {}),
 		// max_completion_tokens: maxTokens,
 	}
 
@@ -514,7 +522,7 @@ const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] 
 		const lastIdx = anthropicTools.length - 1
 		anthropicTools[lastIdx] = {
 			...anthropicTools[lastIdx],
-			cache_control: { type: 'ephemeral', ttl: '1h' } as Anthropic.Messages.CacheControlEphemeral,
+			cache_control: { type: 'ephemeral' } satisfies Anthropic.Messages.CacheControlEphemeral,
 		}
 	}
 	return anthropicTools
@@ -540,7 +548,7 @@ const buildAnthropicSystemBlocks = (
 			type: 'text',
 			text: stableMsg,
 			...(enablePromptCache
-				? { cache_control: { type: 'ephemeral', ttl: '1h' } as Anthropic.Messages.CacheControlEphemeral }
+				? { cache_control: { type: 'ephemeral' } satisfies Anthropic.Messages.CacheControlEphemeral }
 				: {}),
 		});
 	}
@@ -553,51 +561,63 @@ const buildAnthropicSystemBlocks = (
 };
 
 /**
- * Place a cache breakpoint on the last content block of the second-to-last
- * user message (the last "stable" turn before the current one).
+ * Place cache breakpoints on user messages in the conversation history.
+ * Anthropic allows up to 4 cache breakpoints total (system + tools already use 2).
+ * We use the remaining 2 slots for conversation history:
+ *   - BP3: the user message at roughly the midpoint of history (caches older half)
+ *   - BP4: the second-to-last user message (caches recent stable half)
  */
-const addConversationCacheBreakpoint = (
+const addConversationCacheBreakpoints = (
 	messages: AnthropicLLMChatMessage[],
 	enablePromptCache: boolean,
 ): AnthropicLLMChatMessage[] => {
-	if (!enablePromptCache || messages.length < 3) {
+	if (!enablePromptCache) {
 		return messages;
 	}
 
-	let userCount = 0;
-	let targetIdx = -1;
-	for (let i = messages.length - 1; i >= 0; i--) {
+	const userIndices: number[] = [];
+	for (let i = 0; i < messages.length; i++) {
 		if (messages[i].role === 'user') {
-			userCount++;
-			if (userCount === 2) {
-				targetIdx = i;
-				break;
-			}
+			userIndices.push(i);
 		}
 	}
-	if (targetIdx < 0) {
+
+	if (userIndices.length < 3) {
 		return messages;
 	}
+
+	const bp4Idx = userIndices[userIndices.length - 2];
+	const midpoint = Math.floor((userIndices.length - 2) / 2);
+	const bp3Idx = userIndices[midpoint];
+	const targets = bp3Idx !== bp4Idx ? [bp3Idx, bp4Idx] : [bp4Idx];
 
 	const result = [...messages];
-	const target = result[targetIdx];
-	const rawContent = target.content;
 
-	let contentBlocks: AnthropicLLMChatMessage['content'];
-	if (typeof rawContent === 'string') {
-		contentBlocks = [{ type: 'text', text: rawContent, cache_control: { type: 'ephemeral', ttl: '1h' } }] as unknown as AnthropicLLMChatMessage['content'];
-	} else if (Array.isArray(rawContent) && rawContent.length > 0) {
-		const blocks = [...rawContent] as Record<string, unknown>[];
-		blocks[blocks.length - 1] = {
-			...blocks[blocks.length - 1],
-			cache_control: { type: 'ephemeral', ttl: '1h' },
-		};
-		contentBlocks = blocks as AnthropicLLMChatMessage['content'];
-	} else {
-		return messages;
+	for (const targetIdx of targets) {
+		const target = result[targetIdx];
+		const rawContent = target.content;
+
+		let contentBlocks: AnthropicLLMChatMessage['content'];
+		if (typeof rawContent === 'string') {
+			contentBlocks = [{
+				type: 'text',
+				text: rawContent,
+				cache_control: { type: 'ephemeral' },
+			}] as unknown as AnthropicLLMChatMessage['content'];
+		} else if (Array.isArray(rawContent) && rawContent.length > 0) {
+			const blocks = [...rawContent] as Record<string, unknown>[];
+			blocks[blocks.length - 1] = {
+				...blocks[blocks.length - 1],
+				cache_control: { type: 'ephemeral' },
+			};
+			contentBlocks = blocks as AnthropicLLMChatMessage['content'];
+		} else {
+			continue;
+		}
+
+		result[targetIdx] = { ...target, content: contentBlocks } as AnthropicLLMChatMessage;
 	}
 
-	result[targetIdx] = { ...target, content: contentBlocks } as AnthropicLLMChatMessage;
 	return result;
 };
 
@@ -626,7 +646,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 
 
 	// instance
-	const anthropicBeta = getAnthropicBetaHeaders({ enablePromptCache, chatMode })
+	const anthropicBeta = getAnthropicBetaHeaders({ chatMode })
 	const anthropic = new Anthropic({
 		apiKey: thisConfig.apiKey,
 		dangerouslyAllowBrowser: true,
@@ -637,7 +657,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 		console.info('[Trove edit] main_llm_request', { chatMode, maxTokens, anthropicBeta: anthropicBeta ?? null })
 	}
 
-	const cachedMessages = addConversationCacheBreakpoint(
+	const cachedMessages = addConversationCacheBreakpoints(
 		messages as AnthropicLLMChatMessage[],
 		enablePromptCache,
 	);

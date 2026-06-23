@@ -96,6 +96,11 @@ export function UsageDashboard() {
 		}
 	}, [meteringService]);
 
+	const cacheEfficiencyDenominator = session.totalInputTokens + session.totalCacheReadTokens + (session.totalCacheWriteTokens ?? 0);
+	const cacheEfficiencyPct = cacheEfficiencyDenominator > 0
+		? ((session.totalCacheReadTokens / cacheEfficiencyDenominator) * 100).toFixed(0)
+		: null;
+
 	return (
 		<div style={{ padding: '0 16px 24px', maxWidth: 480 }}>
 			<h3 style={{ fontSize: 13, fontWeight: 600, margin: '16px 0 12px', color: 'var(--vscode-foreground)' }}>
@@ -112,18 +117,17 @@ export function UsageDashboard() {
 				<StatCard label="Session total" value={fmt(session.totalCostUSD)} sub={`${session.totalTurns} turns`} />
 				<StatCard label="Today" value={fmt(todayUSD)} />
 				<StatCard
-					label="Cache ratio"
-					value={session.totalInputTokens > 0
-						? `${((session.totalCacheReadTokens / session.totalInputTokens) * 100).toFixed(0)}%`
-						: '—'}
-					sub="of input tokens"
+					label="Cache efficiency"
+					value={cacheEfficiencyPct !== null ? `${cacheEfficiencyPct}%` : '—'}
+					sub="cache-read / (in + cache-read + cache-write)"
 				/>
 			</div>
 
 			<div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)', marginBottom: 14 }}>
 				{fmtTokens(session.totalInputTokens)} in ·{' '}
 				{fmtTokens(session.totalOutputTokens)} out ·{' '}
-				{fmtTokens(session.totalCacheReadTokens)} cache-read
+				{fmtTokens(session.totalCacheReadTokens)} cache-read ·{' '}
+				{fmtTokens(session.totalCacheWriteTokens ?? 0)} cache-write
 			</div>
 
 			{budgetPct !== null && (

@@ -282,7 +282,11 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 	}
 
 	async getUCGGraph(workspaceRoot: string) {
-		return this._mainProxy.getUCGGraph(workspaceRoot);
+		const data = await this._mainProxy.getUCGGraph(workspaceRoot);
+		if (data && data.nodes.length > 0) {
+			this._onDidChangeUCG.fire();
+		}
+		return data;
 	}
 
 	async getUCGMetrics(workspaceRoot: string) {

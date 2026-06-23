@@ -1528,6 +1528,14 @@ export class RepoIntelligenceDb {
 		);
 	}
 
+	async getUCGNodeCount(workspaceHash: string): Promise<number> {
+		const row = await this._get<{ count: number }>(
+			`SELECT COUNT(*) AS count FROM ucg_file_nodes WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return row?.count ?? 0;
+	}
+
 	async getUCGGraph(workspaceHash: string): Promise<{ nodes: UCGFileNode[]; edges: UCGImportEdge[] }> {
 		type NodeRow = {
 			file_path: string;

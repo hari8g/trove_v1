@@ -35,6 +35,7 @@ suite('Trove - riafIntegration', () => {
 		const contribution = readTroveFile('browser/trove.contribution.ts');
 		assert.ok(contribution.includes("import './riafAgentService.js'"));
 		assert.ok(contribution.includes("import './analyseRepositoryAction.js'"));
+		assert.ok(contribution.includes("import './refreshRepoIndexAction.js'"));
 	});
 
 	test('analyse repository action is wired with keybinding', () => {

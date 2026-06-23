@@ -104,6 +104,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			const isExpired = Date.now() - existing.lastScannedAt > REPO_INTEL_PROFILE_STALE_MS;
 			if (!existing.isStale && !isExpired) {
 				await this._ensureChunksIndexed(workspaceRoot, hash);
+				await this._ensureUCGIndexed(workspaceRoot, hash);
 				return this._hydrateStaasSummaries(hash, existing);
 			}
 		}
@@ -246,82 +247,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 
 		// ── Universal Context Graph ──────────────────────────────────────────────
 		try {
-			const ucgStart = Date.now();
-			const allNodes: UCGFileNode[] = [];
-			const allEdges: UCGImportEdge[] = [];
-
-			for (const meta of scan.fileMeta) {
-				const { filePath: relPath, language } = meta;
-				if (!language || SKIP_LANGUAGES.has(language)) {
-					continue;
-				}
-
-				const absPath = join(workspaceRoot, relPath);
-				let content = '';
-				try {
-					content = readFileSync(absPath, 'utf8');
-				} catch {
-					continue;
-				}
-
-				const normalizedPath = relPath.replace(/\\/g, '/');
-				const classification = classifyNode(normalizedPath, content);
-				const imports = extractImports(absPath, content, language, workspaceRoot);
-
-				allNodes.push({
-					filePath: normalizedPath,
-					language,
-					nodeType: classification.nodeType,
-					archLayer: classification.layer,
-					isEntryPoint: false,
-					importCount: imports.filter(e => !e.isExternal).length,
-					importedByCount: 0,
-				});
-
-				for (const imp of imports) {
-					allEdges.push({
-						fromFile: normalizedPath,
-						toModule: imp.toModule,
-						resolvedFile: imp.resolvedFile,
-						isExternal: imp.isExternal,
-						edgeType: imp.edgeType,
-					});
-				}
-			}
-
-			const metrics = computeMetrics(allNodes, allEdges.map(e => ({
-				fromFile: e.fromFile,
-				toModule: e.toModule,
-				resolvedFile: e.resolvedFile,
-				isExternal: e.isExternal,
-				edgeType: e.edgeType as 'import' | 'require' | 'include' | 'use' | 'from_import',
-			})));
-
-			for (const node of allNodes) {
-				const inDeg = allEdges.filter(e => e.resolvedFile === node.filePath).length;
-				node.isEntryPoint = isEntryPoint(node.filePath, '', inDeg);
-				node.importedByCount = inDeg;
-			}
-
-			await this._db.replaceUCGNodes(hash, allNodes);
-			await this._db.replaceUCGEdges(hash, allEdges);
-			await this._db.upsertUCGMetrics(hash, {
-				totalNodes: metrics.totalNodes,
-				totalEdges: metrics.totalEdges,
-				entryCount: metrics.entryPoints.length,
-				cycleCount: metrics.cycleCount,
-				cycles: metrics.cycles,
-				hotFiles: metrics.hotFiles,
-				externalDeps: Object.fromEntries(metrics.externalDeps),
-				computedAt: Date.now(),
-			});
-
-			this._metricsService.capture('UCG Indexed', {
-				nodeCount: allNodes.length,
-				edgeCount: allEdges.length,
-				cycleCount: metrics.cycleCount,
-				durationMs: Date.now() - ucgStart,
-			});
+			await this._indexUniversalContextGraph(workspaceRoot, hash, scan.fileMeta);
 		} catch (err) {
 			console.error('[UniversalContextGraph] Indexing failed:', err);
 		}
@@ -409,10 +335,8 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 				.slice(0, 20);
 
 			const pomPaths = new Set(mavenDeps.map(d => d.consumerPath));
-			if (sharedLibs.length > 0) {
-				const mavenImpact: MavenImpactSummary = { sharedLibs, pomCount: pomPaths.size };
-				hydrated = { ...hydrated, mavenImpactSummary: mavenImpact };
-			}
+			const mavenImpact: MavenImpactSummary = { sharedLibs, pomCount: pomPaths.size };
+			hydrated = { ...hydrated, mavenImpactSummary: mavenImpact };
 		}
 
 		if (npmEdges.length > 0) {
@@ -426,10 +350,11 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 				.map(([packageName, consumers]) => ({ packageName, consumerCount: consumers.size }))
 				.sort((a, b) => b.consumerCount - a.consumerCount)
 				.slice(0, 15);
-			if (topNpmLibs.length > 0) {
-				const packageJsonCount = new Set(npmEdges.map(e => e.consumerPath)).size;
-				hydrated = { ...hydrated, npmImpactSummary: { sharedPackages: topNpmLibs, packageJsonCount } };
-			}
+			const packageJsonCount = new Set(npmEdges.map(e => e.consumerPath)).size;
+			hydrated = {
+				...hydrated,
+				npmImpactSummary: { sharedPackages: topNpmLibs, packageJsonCount },
+			};
 		}
 
 		if (driftStats.driftCount > 0) {
@@ -480,6 +405,109 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		}
 
 		return hydrated;
+	}
+
+	private async _ensureUCGIndexed(workspaceRoot: string, hash: string): Promise<void> {
+		const nodeCount = await this._db.getUCGNodeCount(hash);
+		if (nodeCount > 0) {
+			return;
+		}
+
+		const fileMeta = await this._db.getFileMetadata(hash);
+		if (fileMeta.length === 0) {
+			return;
+		}
+
+		try {
+			await this._indexUniversalContextGraph(workspaceRoot, hash, fileMeta);
+		} catch (err) {
+			console.error('[UniversalContextGraph] Backfill indexing failed:', err);
+		}
+	}
+
+	private async _indexUniversalContextGraph(
+		workspaceRoot: string,
+		hash: string,
+		fileMeta: FileMetadataEntry[],
+	): Promise<void> {
+		const ucgStart = Date.now();
+		const allNodes: UCGFileNode[] = [];
+		const allEdges: UCGImportEdge[] = [];
+
+		for (const meta of fileMeta) {
+			const relPath = meta.filePath;
+			const { language } = meta;
+			if (!language || SKIP_LANGUAGES.has(language)) {
+				continue;
+			}
+
+			const absPath = join(workspaceRoot, relPath);
+			let content = '';
+			try {
+				content = readFileSync(absPath, 'utf8');
+			} catch {
+				continue;
+			}
+
+			const normalizedPath = relPath.replace(/\\/g, '/');
+			const classification = classifyNode(normalizedPath, content);
+			const imports = extractImports(absPath, content, language, workspaceRoot);
+
+			allNodes.push({
+				filePath: normalizedPath,
+				language,
+				nodeType: classification.nodeType,
+				archLayer: classification.layer,
+				isEntryPoint: false,
+				importCount: imports.filter(e => !e.isExternal).length,
+				importedByCount: 0,
+			});
+
+			for (const imp of imports) {
+				allEdges.push({
+					fromFile: normalizedPath,
+					toModule: imp.toModule,
+					resolvedFile: imp.resolvedFile,
+					isExternal: imp.isExternal,
+					edgeType: imp.edgeType,
+				});
+			}
+		}
+
+		const metrics = computeMetrics(allNodes, allEdges.map(e => ({
+			fromFile: e.fromFile,
+			toModule: e.toModule,
+			resolvedFile: e.resolvedFile,
+			isExternal: e.isExternal,
+			edgeType: e.edgeType as 'import' | 'require' | 'include' | 'use' | 'from_import',
+		})));
+
+		for (const node of allNodes) {
+			const inDeg = allEdges.filter(e => e.resolvedFile === node.filePath).length;
+			node.isEntryPoint = isEntryPoint(node.filePath, '', inDeg);
+			node.importedByCount = inDeg;
+		}
+
+		await this._db.replaceUCGNodes(hash, allNodes);
+		await this._db.replaceUCGEdges(hash, allEdges);
+		await this._db.upsertUCGMetrics(hash, {
+			totalNodes: metrics.totalNodes,
+			totalEdges: metrics.totalEdges,
+			entryCount: metrics.entryPoints.length,
+			cycleCount: metrics.cycleCount,
+			cycles: metrics.cycles,
+			hotFiles: metrics.hotFiles,
+			externalDeps: Object.fromEntries(metrics.externalDeps),
+			computedAt: Date.now(),
+		});
+
+		this._metricsService.capture('UCG Indexed', {
+			nodeCount: allNodes.length,
+			edgeCount: allEdges.length,
+			cycleCount: metrics.cycleCount,
+			durationMs: Date.now() - ucgStart,
+		});
+		console.log(`[UniversalContextGraph] Indexed ${allNodes.length} nodes, ${allEdges.length} edges in ${Date.now() - ucgStart}ms`);
 	}
 
 	private async _ensureChunksIndexed(workspaceRoot: string, hash: string): Promise<void> {
@@ -806,6 +834,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 	async getUCGGraph(workspaceRoot: string): Promise<UCGGraphData | null> {
 		const hash = hashWorkspaceRoot(workspaceRoot);
 		await this._db.init();
+		await this._ensureUCGIndexed(workspaceRoot, hash);
 		const graph = await this._db.getUCGGraph(hash);
 		if (graph.nodes.length === 0 && graph.edges.length === 0) {
 			return null;

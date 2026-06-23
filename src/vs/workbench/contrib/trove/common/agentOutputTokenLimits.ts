@@ -23,8 +23,8 @@ export const getEffectiveMaxOutputTokens = (
 	return base;
 };
 
+/** Prompt caching is GA since late 2024 and requires no beta header. */
 export const getAnthropicBetaHeaders = (opts: {
-	enablePromptCache: boolean;
 	chatMode: ChatMode | null | undefined;
 }): string | undefined => {
 	const betas: string[] = [];
