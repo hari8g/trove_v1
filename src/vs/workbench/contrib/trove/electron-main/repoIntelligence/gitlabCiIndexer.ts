@@ -28,7 +28,7 @@ export type PipelineIndexResult = {
 };
 
 function collectCiFiles(dir: string, results: string[] = [], depth = 0): string[] {
-	if (depth > 4) return results;
+	if (depth > 6) return results;
 	let entries: string[];
 	try { entries = readdirSync(dir); } catch { return results; }
 	for (const entry of entries) {

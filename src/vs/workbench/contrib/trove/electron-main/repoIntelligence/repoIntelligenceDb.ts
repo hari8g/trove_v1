@@ -8,7 +8,7 @@ import { join } from 'path';
 import type { Database } from '@vscode/sqlite3';
 import { CommandEntry, CodeChunk, CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, FrameworkEntry, RepoIntelligenceIndexingStats, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS workspace_profiles (
@@ -232,6 +232,49 @@ CREATE TABLE IF NOT EXISTS pipeline_index_meta (
   has_manual_gates  INTEGER NOT NULL,
   FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
 );
+
+-- ── Universal Context Graph ──────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS ucg_file_nodes (
+  workspace_hash      TEXT NOT NULL,
+  file_path           TEXT NOT NULL,
+  language            TEXT NOT NULL,
+  node_type           TEXT NOT NULL,
+  arch_layer          TEXT NOT NULL,
+  is_entry_point      INTEGER NOT NULL DEFAULT 0,
+  import_count        INTEGER NOT NULL DEFAULT 0,
+  imported_by_count   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (workspace_hash, file_path),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ucg_nodes_layer ON ucg_file_nodes(workspace_hash, arch_layer);
+
+CREATE TABLE IF NOT EXISTS ucg_import_edges (
+  workspace_hash      TEXT NOT NULL,
+  from_file           TEXT NOT NULL,
+  to_module           TEXT NOT NULL,
+  resolved_file       TEXT,
+  is_external         INTEGER NOT NULL DEFAULT 0,
+  edge_type           TEXT NOT NULL,
+  PRIMARY KEY (workspace_hash, from_file, to_module),
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ucg_edges_from ON ucg_import_edges(workspace_hash, from_file);
+CREATE INDEX IF NOT EXISTS idx_ucg_edges_to ON ucg_import_edges(workspace_hash, resolved_file);
+CREATE INDEX IF NOT EXISTS idx_ucg_edges_ext ON ucg_import_edges(workspace_hash, is_external);
+
+CREATE TABLE IF NOT EXISTS ucg_graph_metrics (
+  workspace_hash      TEXT PRIMARY KEY,
+  total_nodes         INTEGER NOT NULL DEFAULT 0,
+  total_edges         INTEGER NOT NULL DEFAULT 0,
+  entry_count         INTEGER NOT NULL DEFAULT 0,
+  cycle_count         INTEGER NOT NULL DEFAULT 0,
+  cycles_json         TEXT NOT NULL DEFAULT '[]',
+  hot_files_json      TEXT NOT NULL DEFAULT '[]',
+  ext_deps_json       TEXT NOT NULL DEFAULT '{}',
+  computed_at         INTEGER NOT NULL,
+  FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
+);
 `;
 
 type ColumnInfo = { name: string };
@@ -270,6 +313,35 @@ export type FeignClientEdge = {
 	targetService: string;
 	interfaceName: string;
 	filePath: string;
+};
+
+export type UCGFileNode = {
+	filePath: string;
+	language: string;
+	nodeType: string;
+	archLayer: string;
+	isEntryPoint: boolean;
+	importCount: number;
+	importedByCount: number;
+};
+
+export type UCGImportEdge = {
+	fromFile: string;
+	toModule: string;
+	resolvedFile: string | null;
+	isExternal: boolean;
+	edgeType: string;
+};
+
+export type UCGGraphMetrics = {
+	totalNodes: number;
+	totalEdges: number;
+	entryCount: number;
+	cycleCount: number;
+	cycles: string[][];
+	hotFiles: string[];
+	externalDeps: Record<string, number>;
+	computedAt: number;
 };
 
 export type MavenDep = {
@@ -471,6 +543,28 @@ export class RepoIntelligenceDb {
 		await this._ensureTable(db, 'pipeline_index_meta',
 			`CREATE TABLE IF NOT EXISTS pipeline_index_meta (
 				workspace_hash TEXT PRIMARY KEY, file_count INTEGER NOT NULL, has_manual_gates INTEGER NOT NULL
+			)`);
+
+		await this._ensureTable(db, 'ucg_file_nodes',
+			`CREATE TABLE IF NOT EXISTS ucg_file_nodes (
+				workspace_hash TEXT NOT NULL, file_path TEXT NOT NULL, language TEXT NOT NULL,
+				node_type TEXT NOT NULL, arch_layer TEXT NOT NULL, is_entry_point INTEGER NOT NULL DEFAULT 0,
+				import_count INTEGER NOT NULL DEFAULT 0, imported_by_count INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (workspace_hash, file_path)
+			)`);
+		await this._ensureTable(db, 'ucg_import_edges',
+			`CREATE TABLE IF NOT EXISTS ucg_import_edges (
+				workspace_hash TEXT NOT NULL, from_file TEXT NOT NULL, to_module TEXT NOT NULL,
+				resolved_file TEXT, is_external INTEGER NOT NULL DEFAULT 0, edge_type TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, from_file, to_module)
+			)`);
+		await this._ensureTable(db, 'ucg_graph_metrics',
+			`CREATE TABLE IF NOT EXISTS ucg_graph_metrics (
+				workspace_hash TEXT PRIMARY KEY, total_nodes INTEGER NOT NULL DEFAULT 0,
+				total_edges INTEGER NOT NULL DEFAULT 0, entry_count INTEGER NOT NULL DEFAULT 0,
+				cycle_count INTEGER NOT NULL DEFAULT 0, cycles_json TEXT NOT NULL DEFAULT '[]',
+				hot_files_json TEXT NOT NULL DEFAULT '[]', ext_deps_json TEXT NOT NULL DEFAULT '{}',
+				computed_at INTEGER NOT NULL
 			)`);
 
 		await this._exec(db, `PRAGMA user_version = ${SCHEMA_VERSION}`);
@@ -1177,6 +1271,14 @@ export class RepoIntelligenceDb {
 		}));
 	}
 
+	async getK8sResourceCount(workspaceHash: string): Promise<number> {
+		const row = await this._get<{ count: number }>(
+			`SELECT COUNT(*) as count FROM k8s_resources WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return row?.count ?? 0;
+	}
+
 	// ── β methods ─────────────────────────────────────────────────────────────
 
 	async replaceNpmEdges(workspaceHash: string, edges: NpmPackageEdge[]): Promise<void> {
@@ -1377,6 +1479,135 @@ export class RepoIntelligenceDb {
 		);
 		if (!row) return null;
 		return { fileCount: row.file_count, hasManualGates: row.has_manual_gates === 1 };
+	}
+
+	// ── Universal Context Graph ───────────────────────────────────────────────
+
+	async replaceUCGNodes(workspaceHash: string, nodes: UCGFileNode[]): Promise<void> {
+		await this._run(`DELETE FROM ucg_file_nodes WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const n of nodes) {
+			await this._run(
+				`INSERT OR REPLACE INTO ucg_file_nodes
+					(workspace_hash, file_path, language, node_type, arch_layer, is_entry_point, import_count, imported_by_count)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[workspaceHash, n.filePath, n.language, n.nodeType, n.archLayer,
+					n.isEntryPoint ? 1 : 0, n.importCount, n.importedByCount],
+			);
+		}
+	}
+
+	async replaceUCGEdges(workspaceHash: string, edges: UCGImportEdge[]): Promise<void> {
+		await this._run(`DELETE FROM ucg_import_edges WHERE workspace_hash = ?`, [workspaceHash]);
+		for (const e of edges) {
+			await this._run(
+				`INSERT OR REPLACE INTO ucg_import_edges
+					(workspace_hash, from_file, to_module, resolved_file, is_external, edge_type)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[workspaceHash, e.fromFile, e.toModule, e.resolvedFile, e.isExternal ? 1 : 0, e.edgeType],
+			);
+		}
+	}
+
+	async upsertUCGMetrics(workspaceHash: string, metrics: UCGGraphMetrics): Promise<void> {
+		await this._run(
+			`INSERT OR REPLACE INTO ucg_graph_metrics
+				(workspace_hash, total_nodes, total_edges, entry_count, cycle_count,
+				 cycles_json, hot_files_json, ext_deps_json, computed_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				workspaceHash,
+				metrics.totalNodes,
+				metrics.totalEdges,
+				metrics.entryCount,
+				metrics.cycleCount,
+				JSON.stringify(metrics.cycles),
+				JSON.stringify(metrics.hotFiles),
+				JSON.stringify(metrics.externalDeps),
+				metrics.computedAt,
+			],
+		);
+	}
+
+	async getUCGGraph(workspaceHash: string): Promise<{ nodes: UCGFileNode[]; edges: UCGImportEdge[] }> {
+		type NodeRow = {
+			file_path: string;
+			language: string;
+			node_type: string;
+			arch_layer: string;
+			is_entry_point: number;
+			import_count: number;
+			imported_by_count: number;
+		};
+		type EdgeRow = {
+			from_file: string;
+			to_module: string;
+			resolved_file: string | null;
+			is_external: number;
+			edge_type: string;
+		};
+
+		const [nodeRows, edgeRows] = await Promise.all([
+			this._all<NodeRow>(
+				`SELECT file_path, language, node_type, arch_layer, is_entry_point, import_count, imported_by_count
+				 FROM ucg_file_nodes WHERE workspace_hash = ?`,
+				[workspaceHash],
+			),
+			this._all<EdgeRow>(
+				`SELECT from_file, to_module, resolved_file, is_external, edge_type
+				 FROM ucg_import_edges WHERE workspace_hash = ?`,
+				[workspaceHash],
+			),
+		]);
+
+		return {
+			nodes: nodeRows.map(r => ({
+				filePath: r.file_path,
+				language: r.language,
+				nodeType: r.node_type,
+				archLayer: r.arch_layer,
+				isEntryPoint: r.is_entry_point === 1,
+				importCount: r.import_count,
+				importedByCount: r.imported_by_count,
+			})),
+			edges: edgeRows.map(r => ({
+				fromFile: r.from_file,
+				toModule: r.to_module,
+				resolvedFile: r.resolved_file,
+				isExternal: r.is_external === 1,
+				edgeType: r.edge_type,
+			})),
+		};
+	}
+
+	async getUCGMetrics(workspaceHash: string): Promise<UCGGraphMetrics | null> {
+		const row = await this._get<{
+			total_nodes: number;
+			total_edges: number;
+			entry_count: number;
+			cycle_count: number;
+			cycles_json: string;
+			hot_files_json: string;
+			ext_deps_json: string;
+			computed_at: number;
+		}>(
+			`SELECT total_nodes, total_edges, entry_count, cycle_count,
+			        cycles_json, hot_files_json, ext_deps_json, computed_at
+			 FROM ucg_graph_metrics WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		if (!row) {
+			return null;
+		}
+		return {
+			totalNodes: row.total_nodes,
+			totalEdges: row.total_edges,
+			entryCount: row.entry_count,
+			cycleCount: row.cycle_count,
+			cycles: JSON.parse(row.cycles_json) as string[][],
+			hotFiles: JSON.parse(row.hot_files_json) as string[],
+			externalDeps: JSON.parse(row.ext_deps_json) as Record<string, number>,
+			computedAt: row.computed_at,
+		};
 	}
 }
 

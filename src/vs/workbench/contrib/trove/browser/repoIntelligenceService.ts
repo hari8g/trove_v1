@@ -28,6 +28,8 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 	readonly onDidChangeChunkIndex = this._onDidChangeChunkIndex.event;
 	private readonly _onDidChangeUserMemory = this._register(new Emitter<void>());
 	readonly onDidChangeUserMemory = this._onDidChangeUserMemory.event;
+	private readonly _onDidChangeUCG = this._register(new Emitter<void>());
+	readonly onDidChangeUCG = this._onDidChangeUCG.event;
 
 	private readonly _mainProxy: IRepoIntelligenceMainService;
 	private _initInFlight: Promise<void> | null = null;
@@ -121,6 +123,7 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 			this._cachedProfile = await this._mainProxy.getProfile(root);
 			console.log('[RepoIntelligence] Profile loaded for', root);
 			await this._refreshChunkCount();
+			this._onDidChangeUCG.fire();
 			this._initAttempts = 0;
 		} catch (err) {
 			console.error('[RepoIntelligence] Failed to load profile:', err);
@@ -221,6 +224,7 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		if (workspaceRoot === this._getWorkspaceRoot()) {
 			this._cachedProfile = profile;
 			await this._refreshChunkCount();
+			this._onDidChangeUCG.fire();
 		}
 		return profile;
 	}
@@ -275,6 +279,14 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 
 	async getPipelineJobs(workspaceRoot: string, stage?: string) {
 		return this._mainProxy.getPipelineJobs(workspaceRoot, stage);
+	}
+
+	async getUCGGraph(workspaceRoot: string) {
+		return this._mainProxy.getUCGGraph(workspaceRoot);
+	}
+
+	async getUCGMetrics(workspaceRoot: string) {
+		return this._mainProxy.getUCGMetrics(workspaceRoot);
 	}
 
 	async getIndexingReport(workspaceRoot: string): Promise<string> {

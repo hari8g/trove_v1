@@ -12,7 +12,7 @@ import { IEnvironmentMainService } from '../../../../../platform/environment/ele
 import { IEncryptionMainService } from '../../../../../platform/encryption/common/encryptionService.js';
 import { IApplicationStorageMainService } from '../../../../../platform/storage/electron-main/storageMainService.js';
 import { StorageScope } from '../../../../../platform/storage/common/storage.js';
-import { CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, IRepoIntelligenceMainService, MavenImpactSummary, REPO_INTEL_PROFILE_STALE_MS, ServiceTopologySummary, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, IRepoIntelligenceMainService, MavenImpactSummary, REPO_INTEL_PROFILE_STALE_MS, ServiceTopologySummary, UCGGraphData, UCGGraphMetrics, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 import { getTroveMemoryFilePath } from '../../common/troveMemoryPaths.js';
 import { TROVE_SETTINGS_STORAGE_KEY } from '../../common/storageKeys.js';
 import { TroveSettingsState } from '../../common/troveSettingsService.js';
@@ -29,8 +29,11 @@ import { indexMavenDependencies } from './mavenDependencyIndexer.js';
 import { indexNpmDependencies } from './npmImpactIndexer.js';
 import { indexTerraformResources } from './terraformIndexer.js';
 import { formatRepoIntelligenceIndexingReport } from '../../common/repoIntelligenceIndexingReport.js';
-import { getRepoIntelligenceDbPath, hashWorkspaceRoot, RepoIntelligenceDb } from './repoIntelligenceDb.js';
+import { getRepoIntelligenceDbPath, hashWorkspaceRoot, RepoIntelligenceDb, UCGFileNode, UCGImportEdge } from './repoIntelligenceDb.js';
 import { RawScanResult, scanWorkspace } from './workspaceScanner.js';
+import { extractImports } from './universalImportExtractor.js';
+import { classifyNode, isEntryPoint } from './universalNodeClassifier.js';
+import { computeMetrics } from './universalGraphAnalyzer.js';
 
 const ARCH_SUMMARY_SYSTEM_PROMPT = `You are a software architect. Given scan data about a codebase, write a concise 2-4 sentence architecture summary describing the project's structure, main components, and technology patterns. Output plain text only, no markdown.`;
 
@@ -241,6 +244,88 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			console.error('[RepoIntelligence] STaaS polyglot indexing failed:', err);
 		}
 
+		// ── Universal Context Graph ──────────────────────────────────────────────
+		try {
+			const ucgStart = Date.now();
+			const allNodes: UCGFileNode[] = [];
+			const allEdges: UCGImportEdge[] = [];
+
+			for (const meta of scan.fileMeta) {
+				const { filePath: relPath, language } = meta;
+				if (!language || SKIP_LANGUAGES.has(language)) {
+					continue;
+				}
+
+				const absPath = join(workspaceRoot, relPath);
+				let content = '';
+				try {
+					content = readFileSync(absPath, 'utf8');
+				} catch {
+					continue;
+				}
+
+				const normalizedPath = relPath.replace(/\\/g, '/');
+				const classification = classifyNode(normalizedPath, content);
+				const imports = extractImports(absPath, content, language, workspaceRoot);
+
+				allNodes.push({
+					filePath: normalizedPath,
+					language,
+					nodeType: classification.nodeType,
+					archLayer: classification.layer,
+					isEntryPoint: false,
+					importCount: imports.filter(e => !e.isExternal).length,
+					importedByCount: 0,
+				});
+
+				for (const imp of imports) {
+					allEdges.push({
+						fromFile: normalizedPath,
+						toModule: imp.toModule,
+						resolvedFile: imp.resolvedFile,
+						isExternal: imp.isExternal,
+						edgeType: imp.edgeType,
+					});
+				}
+			}
+
+			const metrics = computeMetrics(allNodes, allEdges.map(e => ({
+				fromFile: e.fromFile,
+				toModule: e.toModule,
+				resolvedFile: e.resolvedFile,
+				isExternal: e.isExternal,
+				edgeType: e.edgeType as 'import' | 'require' | 'include' | 'use' | 'from_import',
+			})));
+
+			for (const node of allNodes) {
+				const inDeg = allEdges.filter(e => e.resolvedFile === node.filePath).length;
+				node.isEntryPoint = isEntryPoint(node.filePath, '', inDeg);
+				node.importedByCount = inDeg;
+			}
+
+			await this._db.replaceUCGNodes(hash, allNodes);
+			await this._db.replaceUCGEdges(hash, allEdges);
+			await this._db.upsertUCGMetrics(hash, {
+				totalNodes: metrics.totalNodes,
+				totalEdges: metrics.totalEdges,
+				entryCount: metrics.entryPoints.length,
+				cycleCount: metrics.cycleCount,
+				cycles: metrics.cycles,
+				hotFiles: metrics.hotFiles,
+				externalDeps: Object.fromEntries(metrics.externalDeps),
+				computedAt: Date.now(),
+			});
+
+			this._metricsService.capture('UCG Indexed', {
+				nodeCount: allNodes.length,
+				edgeCount: allEdges.length,
+				cycleCount: metrics.cycleCount,
+				durationMs: Date.now() - ucgStart,
+			});
+		} catch (err) {
+			console.error('[UniversalContextGraph] Indexing failed:', err);
+		}
+
 		const existing = await this._db.getProfile(hash);
 		if (existing?.projectPurpose && existing?.architectureSummary) {
 			profile = { ...profile, projectPurpose: existing.projectPurpose, architectureSummary: existing.architectureSummary };
@@ -271,7 +356,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 	): Promise<WorkspaceProfile> {
 		const [
 			endpoints, feignClients, routes, mavenDeps, npmEdges, driftStats,
-			tfResources, tfMeta, pipelineJobs, pipelineMeta,
+			tfResources, tfMeta, pipelineJobs, pipelineMeta, k8sCount,
 		] = await Promise.all([
 			this._db.getSpringEndpoints(hash),
 			this._db.getFeignClients(hash),
@@ -283,6 +368,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			this._db.getTerraformIndexMeta(hash),
 			this._db.getPipelineJobs(hash),
 			this._db.getPipelineIndexMeta(hash),
+			this._db.getK8sResourceCount(hash),
 		]);
 
 		let hydrated = { ...profile };
@@ -387,6 +473,10 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 					stages: Array.from(stageMap.keys()),
 				},
 			};
+		}
+
+		if (k8sCount > 0) {
+			hydrated = { ...hydrated, k8sResourceCount: k8sCount };
 		}
 
 		return hydrated;
@@ -711,6 +801,23 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		const jobs = await this._db.getPipelineJobs(hash);
 		if (!stage) return jobs;
 		return jobs.filter(j => j.stage === stage);
+	}
+
+	async getUCGGraph(workspaceRoot: string): Promise<UCGGraphData | null> {
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this._db.init();
+		const graph = await this._db.getUCGGraph(hash);
+		if (graph.nodes.length === 0 && graph.edges.length === 0) {
+			return null;
+		}
+		const metrics = await this._db.getUCGMetrics(hash);
+		return { ...graph, metrics };
+	}
+
+	async getUCGMetrics(workspaceRoot: string): Promise<UCGGraphMetrics | null> {
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this._db.init();
+		return this._db.getUCGMetrics(hash);
 	}
 
 	async getIndexingReport(workspaceRoot: string): Promise<string> {

@@ -51,6 +51,8 @@ export type WorkspaceProfile = {
 	terraformSummary?: TerraformSummary | null;
 	/** GitLab CI pipeline structure summary */
 	pipelineSummary?: PipelineSummary | null;
+	/** Number of K8s resources indexed (Deployments, Services, Ingresses, etc.) */
+	k8sResourceCount?: number;
 };
 
 export type ServiceTopologySummary = {
@@ -112,6 +114,41 @@ export type PipelineJobRow = {
 	stage: string;
 	needs: string[];
 	filePath: string;
+};
+
+export type UCGFileNode = {
+	filePath: string;
+	language: string;
+	nodeType: string;
+	archLayer: string;
+	isEntryPoint: boolean;
+	importCount: number;
+	importedByCount: number;
+};
+
+export type UCGImportEdge = {
+	fromFile: string;
+	toModule: string;
+	resolvedFile: string | null;
+	isExternal: boolean;
+	edgeType: string;
+};
+
+export type UCGGraphMetrics = {
+	totalNodes: number;
+	totalEdges: number;
+	entryCount: number;
+	cycleCount: number;
+	cycles: string[][];
+	hotFiles: string[];
+	externalDeps: Record<string, number>;
+	computedAt: number;
+};
+
+export type UCGGraphData = {
+	nodes: UCGFileNode[];
+	edges: UCGImportEdge[];
+	metrics: UCGGraphMetrics | null;
 };
 
 export type ApiContractResult = {
@@ -205,6 +242,8 @@ export interface IRepoIntelligenceMainService {
 	getConfigDrift(workspaceRoot: string, serviceName: string): Promise<{ key: string; envValues: Record<string, string> }[]>;
 	getTerraformResources(workspaceRoot: string, resourceType?: string): Promise<TerraformResourceRow[]>;
 	getPipelineJobs(workspaceRoot: string, stage?: string): Promise<PipelineJobRow[]>;
+	getUCGGraph(workspaceRoot: string): Promise<UCGGraphData | null>;
+	getUCGMetrics(workspaceRoot: string): Promise<UCGGraphMetrics | null>;
 }
 
 export const IRepoIntelligenceMainService = createDecorator<IRepoIntelligenceMainService>('repoIntelligenceMainService');
@@ -218,6 +257,7 @@ export interface IRepoIntelligenceService extends IRepoIntelligenceMainService {
 	readonly onDidChangeWorkspaceRules: Event<void>;
 	readonly onDidChangeChunkIndex: Event<number>;
 	readonly onDidChangeUserMemory: Event<void>;
+	readonly onDidChangeUCG: Event<void>;
 }
 
 export const IRepoIntelligenceService = createDecorator<IRepoIntelligenceService>('repoIntelligenceService');

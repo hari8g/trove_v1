@@ -11,7 +11,7 @@ const SKIP_DIRS = new Set([
 	'node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.venv', '.tox',
 	'.next', '.nuxt', 'coverage', '.cache', 'vendor', 'target', '.gradle',
 ]);
-const MAX_DEPTH = 8;
+const MAX_DEPTH = 12;
 const MAX_FILES = 50_000;
 
 const EXT_TO_LANGUAGE: Record<string, string> = {

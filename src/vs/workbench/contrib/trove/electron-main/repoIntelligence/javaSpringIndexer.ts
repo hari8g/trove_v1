@@ -4,7 +4,7 @@
  *---------------------------------------------------------------------------*/
 
 import { readFileSync, readdirSync, statSync } from 'fs';
-import { join, relative } from 'path';
+import { basename, dirname, join, relative } from 'path';
 import { FeignClientEdge, SpringEndpoint } from './repoIntelligenceDb.js';
 
 const HTTP_METHOD_MAP: Record<string, string> = {
@@ -23,7 +23,7 @@ function deriveServiceName(workspaceRoot: string, applicationYmlPath: string | n
 			if (match) return match[1].trim();
 		} catch { /* ignore */ }
 	}
-	return workspaceRoot.split('/').at(-1) ?? 'unknown-service';
+	return basename(workspaceRoot) || 'unknown-service';
 }
 
 function collectJavaFiles(dir: string, results: string[] = [], depth = 0): string[] {
@@ -88,7 +88,7 @@ export function indexJavaSpringService(workspaceRoot: string, serviceDir: string
 		for (const m of feignMatches) {
 			const targetService = m[1];
 			const interfaceMatch = source.match(/public\s+interface\s+(\w+)/);
-			const interfaceName = interfaceMatch ? interfaceMatch[1] : relPath.split('/').at(-1)?.replace('.java', '') ?? 'Unknown';
+			const interfaceName = interfaceMatch ? interfaceMatch[1] : (basename(relPath, '.java') || 'Unknown');
 			feignClients.push({ callerService: serviceName, targetService, interfaceName, filePath: relPath });
 		}
 
@@ -158,12 +158,28 @@ export function indexAllSpringServices(workspaceRoot: string): JavaIndexResult {
 
 	const processedDirs = new Set<string>();
 	for (const pom of pomFiles) {
+		let content: string;
 		try {
-			const content = readFileSync(pom, 'utf8');
-			if (!content.includes('spring-boot')) continue;
+			content = readFileSync(pom, 'utf8');
 		} catch { continue; }
 
-		const serviceDir = pom.replace(/\/pom\.xml$/, '');
+		const serviceDir = dirname(pom);
+
+		const isSpringProject =
+			content.includes('spring-boot') ||
+			content.includes('springframework') ||
+			content.includes('spring-web') ||
+			content.includes('spring-mvc');
+
+		const hasSrcMainJava = (() => {
+			try {
+				statSync(join(serviceDir, 'src', 'main', 'java'));
+				return true;
+			} catch { return false; }
+		})();
+
+		if (!isSpringProject && !hasSrcMainJava) continue;
+
 		if (processedDirs.has(serviceDir)) continue;
 		processedDirs.add(serviceDir);
 

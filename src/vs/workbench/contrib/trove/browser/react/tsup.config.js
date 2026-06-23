@@ -14,6 +14,7 @@ export default defineConfig({
 		'./src2/trove-onboarding/index.tsx',
 		'./src2/quick-edit-tsx/index.tsx',
 		'./src2/diff/index.tsx',
+		'./src2/context-graph-tsx/index.tsx',
 	],
 	outDir: './out',
 	format: ['esm'],

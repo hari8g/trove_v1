@@ -59,7 +59,7 @@ export const buildIndexingStatsFromProfile = (
 		springEndpoints: topo?.totalEndpoints ?? 0,
 		feignClients: topo?.feignEdges?.length ?? 0,
 		mavenDeps: maven?.pomCount ?? 0,
-		k8sResources: 0,
+		k8sResources: profile?.k8sResourceCount ?? 0,
 		gatewayRoutes: topo?.gatewayRoutes?.length ?? 0,
 		npmEdges: npm?.sharedPackages?.length ?? 0,
 		configDrift: drift?.driftCount ?? 0,
