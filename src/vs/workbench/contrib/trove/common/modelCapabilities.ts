@@ -800,6 +800,11 @@ const openAICompatIncludeInPayloadReasoning = (reasoningInfo: SendableReasoningI
 	if (reasoningInfo.type === 'effort_slider_value') {
 		return { reasoning_effort: reasoningInfo.reasoningEffort }
 	}
+	// LiteLLM passes through Anthropic's thinking parameter when routing to Claude
+	// https://docs.litellm.ai/docs/reasoning_content
+	if (reasoningInfo.type === 'budget_slider_value') {
+		return { thinking: { type: 'enabled', budget_tokens: reasoningInfo.reasoningBudget } }
+	}
 	return null
 
 }
@@ -1351,7 +1356,25 @@ const openaiCompatible: VoidStaticProviderInfo = {
 }
 
 const liteLLMSettings: VoidStaticProviderInfo = { // https://docs.litellm.ai/docs/reasoning_content
-	modelOptionsFallback: (modelName) => extensiveModelOptionsFallback(modelName, { downloadable: { sizeGb: 'not-known' } }),
+	modelOptionsFallback: (modelName) => {
+		const lower = modelName.toLowerCase()
+		const cleanName = lower.replace(/^anthropic\//, '')
+
+		if (cleanName.includes('claude')) {
+			const anthropicFallback = anthropicSettings.modelOptionsFallback?.(cleanName)
+			if (anthropicFallback) {
+				return {
+					...anthropicFallback,
+					modelName: modelName,
+					// LiteLLM auto-converts anthropic-style tool definitions to Anthropic's format,
+					// but the SDK call uses OpenAI wire format — so we use openai-style here.
+					specialToolFormat: 'openai-style',
+				}
+			}
+		}
+
+		return extensiveModelOptionsFallback(modelName, { downloadable: { sizeGb: 'not-known' } })
+	},
 	modelOptions: {},
 	providerReasoningIOSettings: {
 		input: { includeInPayload: openAICompatIncludeInPayloadReasoning },

@@ -6,6 +6,7 @@
 import { URI } from '../../../../base/common/uri.js';
 import { ChatMessage, PlanMessage } from '../common/chatThreadServiceTypes.js';
 import { ChatMode, ModelSelection, ModelSelectionOptions, OverridesOfModel } from '../common/troveSettingsTypes.js';
+import { getModelCapabilities } from '../common/modelCapabilities.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
 import type { IUsageMeteringService } from './usageMeteringService.js';
@@ -95,6 +96,19 @@ export const generateAgentPlan = async (opts: {
 
 	const planOverrides = withPlanTokenCap(opts.overridesOfModel, opts.modelSelection);
 
+	const { reasoningCapabilities } = getModelCapabilities(
+		opts.modelSelection.providerName,
+		opts.modelSelection.modelName,
+		planOverrides,
+	);
+	const reasoningSlider = reasoningCapabilities === false ? undefined : reasoningCapabilities?.reasoningSlider;
+	const defaultBudget = reasoningSlider?.type === 'budget_slider' ? reasoningSlider.default : undefined;
+	const effectiveBudget = opts.modelSelectionOptions?.reasoningBudget ?? defaultBudget;
+	const planModelOptions: ModelSelectionOptions = {
+		...opts.modelSelectionOptions,
+		...(effectiveBudget ? { reasoningBudget: Math.min(effectiveBudget, 2048) } : {}),
+	};
+
 	let fullText = '';
 	try {
 		fullText = await new Promise<string>((resolve, reject) => {
@@ -104,7 +118,7 @@ export const generateAgentPlan = async (opts: {
 				messages,
 				separateSystemMessage,
 				modelSelection: opts.modelSelection,
-				modelSelectionOptions: opts.modelSelectionOptions,
+				modelSelectionOptions: planModelOptions,
 				overridesOfModel: planOverrides,
 				logging: { loggingName: 'Agent Plan' },
 				onText: () => { },

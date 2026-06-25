@@ -14,7 +14,7 @@ import { Tool as GeminiTool, FunctionDeclaration, GoogleGenAI, ThinkingConfig, S
 import { GoogleAuth } from 'google-auth-library'
 /* eslint-enable */
 
-import { AnthropicLLMChatMessage, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, LLMMessageUsage, ModelListParams, OllamaModelResponse, OnError, OnFinalMessage, OnText, RawToolCallObj, RawToolParamsObj } from '../../common/sendLLMMessageTypes.js';
+import { AnthropicLLMChatMessage, AnthropicReasoning, GeminiLLMChatMessage, LLMChatMessage, LLMFIMMessage, LLMMessageUsage, ModelListParams, OllamaModelResponse, OnError, OnFinalMessage, OnText, RawToolCallObj, RawToolParamsObj } from '../../common/sendLLMMessageTypes.js';
 import { usageFromAnthropicResponse, usageFromGeminiMetadata, usageFromOpenAIResponse } from '../../common/llmMessageUsage.js';
 import { applyRoutedAnthropicConversationCache, applyRoutedAnthropicPromptCache } from '../../common/promptCache.js';
 import { ChatMode, displayInfoOfProviderName, ModelSelectionOptions, OverridesOfModel, ProviderName, SettingsOfProvider } from '../../common/troveSettingsTypes.js';
@@ -349,6 +349,8 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 		// Required to select the model
 		(openai as AzureOpenAI).deploymentName = modelName;
 	}
+	const isLiteLLMClaudeModel = providerName === 'liteLLM'
+		&& modelName.toLowerCase().includes('claude')
 	const options: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 		model: modelName,
 		messages: (() => {
@@ -372,6 +374,8 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 		...nativeToolsObj,
 		...additionalOpenAIPayload,
 		...(enablePromptCache && threadId ? { prompt_cache_key: `trove:${threadId}:${modelName}` } : {}),
+		// LiteLLM forwards extra_headers to Anthropic for prompt caching activation
+		...(isLiteLLMClaudeModel ? { extra_headers: { 'anthropic-beta': 'prompt-caching-2024-07-31' } } : {}),
 		// max_completion_tokens: maxTokens,
 	}
 
@@ -446,7 +450,15 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 			else {
 				const toolCall = rawToolCallObjOfParamsStr(toolName, toolParamsStr, toolId)
 				const toolCallObj = toolCall ? { toolCall } : {}
-				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: null, usage: latestUsage, ...toolCallObj });
+				// When routing Claude thinking models through LiteLLM, reasoning_content in the
+				// delta populates fullReasoningSoFar. Synthesize anthropicReasoning so
+				// LiveReasoningBlock timer/collapse works. Signature is empty — multi-turn
+				// extended thinking continuity requires litellm_config.yaml + signature passthrough.
+				const syntheticAnthropicReasoning: AnthropicReasoning[] | null =
+					(isLiteLLMClaudeModel && fullReasoningSoFar)
+						? [{ type: 'thinking', thinking: fullReasoningSoFar, signature: '' }]
+						: null
+				onFinalMessage({ fullText: fullTextSoFar, fullReasoning: fullReasoningSoFar, anthropicReasoning: syntheticAnthropicReasoning, usage: latestUsage, ...toolCallObj });
 			}
 		})
 		// when error/fail - this catches errors of both .create() and .then(for await)
