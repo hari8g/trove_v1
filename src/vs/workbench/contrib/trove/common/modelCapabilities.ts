@@ -800,8 +800,8 @@ const openAICompatIncludeInPayloadReasoning = (reasoningInfo: SendableReasoningI
 	if (reasoningInfo.type === 'effort_slider_value') {
 		return { reasoning_effort: reasoningInfo.reasoningEffort }
 	}
-	// LiteLLM passes through Anthropic's thinking parameter when routing to Claude
-	// https://docs.litellm.ai/docs/reasoning_content
+	// LiteLLM translates { thinking: ... } to Bedrock inferenceConfig or Anthropic's thinking param
+	// https://docs.litellm.ai/docs/providers/bedrock#extended-thinking
 	if (reasoningInfo.type === 'budget_slider_value') {
 		return { thinking: { type: 'enabled', budget_tokens: reasoningInfo.reasoningBudget } }
 	}
@@ -1358,7 +1358,8 @@ const openaiCompatible: VoidStaticProviderInfo = {
 const liteLLMSettings: VoidStaticProviderInfo = { // https://docs.litellm.ai/docs/reasoning_content
 	modelOptionsFallback: (modelName) => {
 		const lower = modelName.toLowerCase()
-		const cleanName = lower.replace(/^anthropic\//, '')
+		// Strip optional provider prefixes (e.g. anthropic/claude-sonnet-4-6, us.anthropic.claude-sonnet-4-6)
+		const cleanName = lower.replace(/^(?:anthropic\/|us\.anthropic\.|bedrock\/us\.anthropic\.)/, '')
 
 		if (cleanName.includes('claude')) {
 			const anthropicFallback = anthropicSettings.modelOptionsFallback?.(cleanName)
@@ -1366,8 +1367,7 @@ const liteLLMSettings: VoidStaticProviderInfo = { // https://docs.litellm.ai/doc
 				return {
 					...anthropicFallback,
 					modelName: modelName,
-					// LiteLLM auto-converts anthropic-style tool definitions to Anthropic's format,
-					// but the SDK call uses OpenAI wire format — so we use openai-style here.
+					// openai-style: LiteLLM translates tools/thinking to Anthropic or Bedrock Converse format
 					specialToolFormat: 'openai-style',
 				}
 			}
@@ -1378,7 +1378,7 @@ const liteLLMSettings: VoidStaticProviderInfo = { // https://docs.litellm.ai/doc
 	modelOptions: {},
 	providerReasoningIOSettings: {
 		input: { includeInPayload: openAICompatIncludeInPayloadReasoning },
-		output: { nameOfFieldInDelta: 'reasoning_content' },
+		output: { nameOfFieldInDelta: 'reasoning_content' }, // LiteLLM surfaces Bedrock/Anthropic thinking here
 	},
 }
 
