@@ -1,0 +1,69 @@
+# LiteLLM proxy for Trove → AWS Bedrock Claude models
+#
+# Start:
+#   macOS/Linux:  ./start.sh
+#   Windows:      .\start.ps1   or double-click start.bat
+#
+# Trove Settings → LiteLLM:
+#   baseURL: http://localhost:4000
+#   Model:   claude-sonnet-4-6  (recommended; must match model_name below)
+#
+# List active models for your account:
+#   aws bedrock list-foundation-models --region us-east-1 \
+#     --query 'modelSummaries[?modelLifecycle.status==`ACTIVE` && contains(modelId,`claude`)].modelId'
+
+x-bedrock-auth: &bedrock_auth
+  aws_region_name: os.environ/AWS_REGION_NAME
+  aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+  aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+  aws_session_token: os.environ/AWS_SESSION_TOKEN
+  aws_profile_name: os.environ/AWS_PROFILE
+
+model_list:
+
+  # --- Active Claude 4.x (cross-region inference: us.* prefix) ---
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-6
+      <<: *bedrock_auth
+
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-6-v1
+      <<: *bedrock_auth
+
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-8
+      <<: *bedrock_auth
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      <<: *bedrock_auth
+
+  # --- Legacy Trove model names → routed to active Bedrock models (EOL on AWS) ---
+
+  - model_name: claude-3-7-sonnet-20250219
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-6
+      <<: *bedrock_auth
+
+  - model_name: claude-3-5-sonnet-20241022
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-6
+      <<: *bedrock_auth
+
+  - model_name: claude-3-5-haiku-20241022
+    litellm_params:
+      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      <<: *bedrock_auth
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 660
+
+general_settings:
+  allow_clientside_credentials: false
+  max_parallel_requests: 100
