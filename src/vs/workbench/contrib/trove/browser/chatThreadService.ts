@@ -11,33 +11,30 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { URI } from '../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
-import { chat_userMessageContent, findUnresolvedAtMentionsInText, isABuiltinToolName, validateStagingSelections } from '../common/prompt/prompts.js';
+import { chat_userMessageContent, findUnresolvedAtMentionsInText, validateStagingSelections } from '../common/prompt/prompts.js';
 import { AnthropicReasoning, getErrorMessage, RawToolCallObj, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ChatMode, FeatureName, ModelSelection, ModelSelectionOptions, OverridesOfModel } from '../common/troveSettingsTypes.js';
+import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { getIsReasoningEnabledState } from '../common/modelCapabilities.js';
-import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, TerminalResolveReason, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
+import { BuiltinToolCallParams, ToolCallParams, ToolName } from '../common/toolsServiceTypes.js';
 import { IToolsService } from './toolsService.js';
 import { IAgentDeliveryService } from './agentDeliveryService.js';
 import { IWorkspacePreviewService } from './workspacePreviewService.js';
 import { buildReadToolBatch, discoverAdditionalReadTools, isReadOnlyBatchTool, toolCallDedupKey } from './parallelReadToolBatch.js';
-import { isCompactableToolName } from './toolResultCompaction.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
 import { completeRemainingPlanItems, findLatestPlanMessageIdx, generateAgentPlan, markPlanItemDoneForTool, skipRemainingPlanItems } from './agentPlan.js';
 import { getAgentLoopLimits } from './agentLoopSettings.js';
 import { getLlmStreamStallTimeoutMs } from './agentLoopLimits.js';
 import { shouldGenerateAgentPlan, shouldUseParallelReadBatching } from '../common/lightAgent.js';
-import { shouldSkipDuplicateFileRead, buildRepeatFileReadHint, recordFileReadSize, FileReadRecord } from './fileReadDedup.js';
-import { buildRepeatEditHint, buildLargeFileEditHint, trackFileEdit } from './agentEditHints.js';
-import { buildAgentTailHints, buildExplorationBudgetHint, buildRepeatReadHint, buildCrossQueryFileReadHint, createReadOnlyCallCounts, trackReadOnlyCall } from './agentReadHints.js';
+import { buildRepeatFileReadHint, FileReadRecord } from './fileReadDedup.js';
+import { buildRepeatEditHint, buildLargeFileEditHint } from './agentEditHints.js';
+import { buildAgentTailHints, buildExplorationBudgetHint, buildRepeatReadHint, buildCrossQueryFileReadHint, createReadOnlyCallCounts } from './agentReadHints.js';
 import {
 	buildSandboxVerificationHint,
 	createSandboxVerificationTracker,
-	markSandboxCodeChange,
-	markSandboxVerified,
 	MAX_SANDBOX_VERIFICATION_NUDGES,
 	needsSandboxVerification,
-	type SandboxVerificationTracker,
 } from './agentVerificationHints.js';
 import {
 	buildEditCompletionHint,
@@ -55,7 +52,6 @@ import {
 	logEditDiagnostic,
 	shouldTraceEditToolCall,
 	summarizeEditToolCall,
-	uriPathForLog,
 	warnEditDiagnostic,
 } from './agentEditDiagnostics.js';
 import { getLLMRetryDelayMs, getMaxLLMRetryAttempts, isRateLimitLLMError, isStreamStallLLMError, shouldForceAggressiveTrimOnRetry, getProviderRateLimitCooldownMs, recordProviderRateLimitHit, formatRateLimitCooldownMessage, clearProviderRateLimitCooldown } from './llmRateLimit.js';
@@ -84,21 +80,13 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IDirectoryStrService } from '../common/directoryStrService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IMCPService } from '../common/mcpService.js';
-import { RawMCPToolCall } from '../common/mcpServiceTypes.js';
 import { ITerminalToolService } from './terminalToolService.js';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { createRunToolCall, ToolCallLoopResult } from './toolCallRunner.js';
 
 
 // related to retrying when LLM message has error
 const CHAT_RETRIES = 3
 const RETRY_DELAY = 2500
-
-type ToolCallLoopResult = {
-	awaitingUserApproval?: boolean;
-	interrupted?: boolean;
-	status?: 'ok' | 'error' | 'invalid_params';
-}
-
 
 const findStagingSelectionIndex = (currentSelections: StagingSelectionItem[] | undefined, newSelection: StagingSelectionItem): number | null => {
 	if (!currentSelections) return null
@@ -134,16 +122,6 @@ const findStagingSelectionIndex = (currentSelections: StagingSelectionItem[] | u
 	}
 	return null
 }
-
-const DIRECTORY_TREE_INVALIDATING_TOOLS = new Set<ToolName>([
-	'edit_file',
-	'rewrite_file',
-	'create_file_or_folder',
-	'delete_file_or_folder',
-	'run_command',
-	'run_persistent_command',
-]);
-
 
 /*
 
@@ -416,6 +394,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	private readonly _threadFileReadHistory = new Map<string, Map<string, FileReadRecord>>();
 	/** Skip the pre-run agent plan step for internal/system prompts (e.g. RIAF). */
 	private readonly _suppressAgentPlanByThread = new Map<string, boolean>();
+	private _runToolCall!: ReturnType<typeof createRunToolCall>;
 	state: ThreadsState // allThreads is persisted, currentThread is not
 
 	// used in checkpointing
@@ -474,6 +453,23 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		// 	if (!(e.id in disposablesOfModelId)) return
 		// 	disposablesOfModelId[e.id].forEach(d => d.dispose())
 		// }))
+
+		this._runToolCall = createRunToolCall({
+			toolsService: this._toolsService,
+			mcpService: this._mcpService,
+			settingsService: this._settingsService,
+			terminalToolService: this._terminalToolService,
+			agentDeliveryService: this._agentDeliveryService,
+			directoryStringService: this._directoryStringService,
+			workspacePreviewService: this._workspacePreviewService,
+			errWhenStringifying: (error) => this.toolErrMsgs.errWhenStringifying(error),
+			addMessageToThread: (threadId, message) => this._addMessageToThread(threadId, message),
+			updateLatestTool: (threadId, tool, opts) => this._updateLatestTool(threadId, tool, opts),
+			setStreamState: (threadId, state) => this._setStreamState(threadId, state),
+			getStreamState: (threadId) => this.streamState[threadId],
+			addToolEditCheckpoint: (opts) => this._addToolEditCheckpoint(opts),
+			markPlanItemDone: (threadId, toolName, toolParams) => this._markPlanItemDone(threadId, toolName, toolParams),
+		});
 
 	}
 
@@ -782,287 +778,6 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	// private readonly _currentlyRunningToolInterruptor: { [threadId: string]: (() => void) | undefined } = {}
 
 
-	// returns true when the tool call is waiting for user approval
-	private _runToolCall = async (
-		threadId: string,
-		toolName: ToolName,
-		toolId: string,
-		mcpServerName: string | undefined,
-		opts: ({ preapproved: true, unvalidatedToolParams: RawToolParamsObj, validatedParams: ToolCallParams<ToolName> } | { preapproved: false, unvalidatedToolParams: RawToolParamsObj }) & { batchInsert?: boolean; fileEditCounts?: Map<string, number>; readOnlyCallCounts?: ReturnType<typeof createReadOnlyCallCounts>; sandboxVerificationTracker?: SandboxVerificationTracker },
-	): Promise<ToolCallLoopResult> => {
-
-		// compute these below
-		let toolParams: ToolCallParams<ToolName>
-		let toolResult!: ToolResult<ToolName>
-		let toolResultStr: string | undefined
-
-		// Check if it's a built-in tool
-		const isBuiltInTool = isABuiltinToolName(toolName)
-
-
-		if (!opts.preapproved) { // skip this if pre-approved
-			// 1. validate tool params
-			try {
-				if (isBuiltInTool) {
-					const params = this._toolsService.validateParams[toolName](opts.unvalidatedToolParams)
-					toolParams = params
-				}
-				else {
-					toolParams = opts.unvalidatedToolParams
-				}
-			}
-			catch (error) {
-				const errorMessage = getErrorMessage(error)
-				if (isEditToolName(toolName)) {
-					errorEditDiagnostic('tool_validate_fail', {
-						toolName,
-						toolId,
-						error: errorMessage,
-						rawParamKeys: Object.keys(opts.unvalidatedToolParams).join(','),
-					})
-				}
-				this._addMessageToThread(threadId, { role: 'tool', type: 'invalid_params', rawParams: opts.unvalidatedToolParams, result: null, name: toolName, content: errorMessage, id: toolId, mcpServerName })
-				return { status: 'invalid_params' }
-			}
-			// once validated, add checkpoint for edit
-			if (toolName === 'edit_file') { this._addToolEditCheckpoint({ threadId, uri: (toolParams as BuiltinToolCallParams['edit_file']).uri }) }
-			if (toolName === 'rewrite_file') { this._addToolEditCheckpoint({ threadId, uri: (toolParams as BuiltinToolCallParams['rewrite_file']).uri }) }
-			if (isEditToolName(toolName)) {
-				logEditDiagnostic('tool_validate_ok', {
-					toolName,
-					toolId,
-					uri: uriPathForLog((toolParams as { uri?: URI }).uri),
-				})
-			}
-
-			// 2. if tool requires approval, break from the loop, awaiting approval
-
-			const approvalType = isBuiltInTool ? approvalTypeOfBuiltinToolName[toolName] : 'MCP tools'
-			if (approvalType) {
-				const { autoApprove, autoApproveAll } = this._settingsService.state.globalSettings
-				const isApproved = autoApproveAll || autoApprove[approvalType]
-				// add a tool_request because we use it for UI if a tool is loading (this should be improved in the future)
-				this._addMessageToThread(threadId, { role: 'tool', type: 'tool_request', content: '(Awaiting user permission...)', result: null, name: toolName, params: toolParams, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName })
-				if (!isApproved) {
-					if (isEditToolName(toolName)) {
-						warnEditDiagnostic('tool_approval_blocked', { toolName, toolId, approvalType })
-					}
-					return { awaitingUserApproval: true }
-				}
-			}
-		}
-		else {
-			toolParams = opts.validatedParams
-		}
-
-		let skippedFileReadMessage: string | undefined
-		if (toolName === 'read_file' && opts.readOnlyCallCounts) {
-			const readParams = toolParams as BuiltinToolCallParams['read_file']
-			const skip = shouldSkipDuplicateFileRead(
-				opts.readOnlyCallCounts.fileReads,
-				readParams.uri,
-				readParams.startLine,
-				readParams.endLine,
-			)
-			if (skip.skip) {
-				skippedFileReadMessage = skip.message
-			}
-		}
-
-		if (opts.readOnlyCallCounts) {
-			trackReadOnlyCall(opts.readOnlyCallCounts, toolName, opts.unvalidatedToolParams)
-		}
-
-
-
-
-
-
-		// 3. call the tool
-		// this._setStreamState(threadId, { isRunning: 'tool' }, 'merge')
-		const runningTool = { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content: toolName === 'run_command' || toolName === 'run_persistent_command' ? '(starting terminal sandbox…)' : '(value not received yet...)', result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName } as const
-		this._updateLatestTool(threadId, runningTool, { batchInsert: opts.batchInsert })
-
-		if (isEditToolName(toolName)) {
-			logEditDiagnostic('tool_dispatch', {
-				toolName,
-				toolId,
-				uri: uriPathForLog((toolParams as { uri?: URI }).uri),
-			})
-		}
-
-
-		let interrupted = false
-		let resolveInterruptor: (r: () => void) => void = () => { }
-		const interruptorPromise = new Promise<() => void>(res => { resolveInterruptor = res })
-		let liveOutputDisposable: IDisposable | undefined
-		try {
-
-			// set stream state
-			const initialToolContent = toolName === 'run_command' || toolName === 'run_persistent_command'
-				? '(starting terminal sandbox…)'
-				: 'interrupted...'
-			this._setStreamState(threadId, { isRunning: 'tool', interrupt: interruptorPromise, toolInfo: { toolName, toolParams, id: toolId, content: initialToolContent, rawParams: opts.unvalidatedToolParams, mcpServerName } })
-
-			if (toolName === 'run_command' || toolName === 'run_persistent_command') {
-				const terminalKey = toolName === 'run_command'
-					? (toolParams as BuiltinToolCallParams['run_command']).terminalId
-					: (toolParams as BuiltinToolCallParams['run_persistent_command']).persistentTerminalId
-				liveOutputDisposable = this._terminalToolService.registerLiveOutputListener(terminalKey, (output) => {
-					const preview = output.length > 12_000 ? '…\n' + output.slice(-12_000) : output
-					const content = preview.trim() ? preview : '(waiting for terminal output…)'
-					const command = (toolParams as { command?: string }).command ?? ''
-					this._agentDeliveryService.handleLiveTerminalOutput(threadId, command, output)
-					this._updateLatestTool(threadId, { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content, result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName }, { batchInsert: opts.batchInsert })
-					const stream = this.streamState[threadId]
-					if (stream?.isRunning === 'tool') {
-						this._setStreamState(threadId, { isRunning: 'tool', interrupt: stream.interrupt, toolInfo: { ...stream.toolInfo, content } })
-					}
-				})
-			}
-
-			if (isBuiltInTool) {
-				if (skippedFileReadMessage !== undefined) {
-					resolveInterruptor(() => { })
-				} else {
-				const callPromise = this._toolsService.callTool[toolName](toolParams as any)
-
-				// For chat sandbox terminal tools, expose the interrupt handler as soon as the terminal is created
-				if (toolName === 'run_command' || toolName === 'run_persistent_command') {
-					callPromise.then(({ interruptTool }) => {
-						resolveInterruptor(() => { interrupted = true; interruptTool?.() })
-					}).catch(() => { resolveInterruptor(() => { }) })
-				}
-
-				const { result, interruptTool } = await callPromise
-				if (toolName !== 'run_command' && toolName !== 'run_persistent_command') {
-					resolveInterruptor(() => { interrupted = true; interruptTool?.() })
-				}
-
-				toolResult = await result
-				}
-			}
-			else {
-				const mcpTools = this._mcpService.getMCPTools()
-				const mcpTool = mcpTools?.find(t => t.name === toolName)
-				if (!mcpTool) { throw new Error(`MCP tool ${toolName} not found`) }
-
-				resolveInterruptor(() => { })
-
-				toolResult = (await this._mcpService.callMCPTool({
-					serverName: mcpTool.mcpServerName ?? 'unknown_mcp_server',
-					toolName: toolName,
-					params: toolParams
-				})).result
-			}
-
-			if (interrupted) { return { interrupted: true } } // the tool result is added where we interrupt, not here
-		}
-		catch (error) {
-			resolveInterruptor(() => { }) // resolve for the sake of it
-			if (interrupted) { return { interrupted: true } } // the tool result is added where we interrupt, not here
-
-			const errorMessage = getErrorMessage(error)
-			if (isEditToolName(toolName)) {
-				errorEditDiagnostic('tool_execute_error', { toolName, toolId, error: errorMessage })
-			}
-			this._updateLatestTool(threadId, { role: 'tool', type: 'tool_error', params: toolParams, result: errorMessage, name: toolName, content: errorMessage, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName }, { batchInsert: opts.batchInsert })
-			return { status: 'error' }
-		}
-		finally {
-			liveOutputDisposable?.dispose()
-		}
-
-		// 4. stringify the result to give to the LLM
-		try {
-			if (skippedFileReadMessage !== undefined) {
-				toolResultStr = skippedFileReadMessage
-			} else if (isBuiltInTool) {
-				toolResultStr = this._toolsService.stringOfResult[toolName](toolParams as any, toolResult as any)
-			}
-			// For MCP tools, handle the result based on its type
-			else {
-				toolResultStr = this._mcpService.stringifyResult(toolResult as RawMCPToolCall)
-			}
-		} catch (error) {
-			const errorMessage = this.toolErrMsgs.errWhenStringifying(error)
-			this._updateLatestTool(threadId, { role: 'tool', type: 'tool_error', params: toolParams, result: errorMessage, name: toolName, content: errorMessage, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName }, { batchInsert: opts.batchInsert })
-			return { status: 'error' }
-		}
-
-		// 5. add to history and keep going
-		this._updateLatestTool(threadId, {
-			role: 'tool',
-			type: 'success',
-			params: toolParams,
-			result: skippedFileReadMessage !== undefined
-				? { fileContents: '', totalFileLen: 0, totalNumLines: 0, hasNextPage: false }
-				: toolResult,
-			name: toolName,
-			content: toolResultStr!,
-			id: toolId,
-			rawParams: opts.unvalidatedToolParams,
-			mcpServerName,
-			compactable: isCompactableToolName(toolName),
-		}, { batchInsert: opts.batchInsert })
-
-		if (toolName === 'read_file' && opts.readOnlyCallCounts && toolResult && typeof toolResult === 'object' && 'totalFileLen' in toolResult) {
-			const readParams = toolParams as BuiltinToolCallParams['read_file']
-			recordFileReadSize(opts.readOnlyCallCounts.fileReads, readParams.uri, (toolResult as { totalFileLen: number }).totalFileLen)
-		}
-
-		if (isEditToolName(toolName)) {
-			logEditDiagnostic('tool_execute_done', {
-				toolName,
-				toolId,
-				uri: uriPathForLog((toolParams as { uri?: URI }).uri),
-			})
-		}
-
-		if (DIRECTORY_TREE_INVALIDATING_TOOLS.has(toolName)) {
-			this._directoryStringService.invalidateCache()
-		}
-
-		this._markPlanItemDone(threadId, toolName, toolParams)
-
-		if (opts.fileEditCounts && (toolName === 'edit_file' || toolName === 'rewrite_file')) {
-			trackFileEdit(opts.fileEditCounts, toolName, toolParams as Record<string, unknown>)
-			if (opts.sandboxVerificationTracker) {
-				markSandboxCodeChange(opts.sandboxVerificationTracker)
-			}
-			if (this._workspacePreviewService.getActivePreviewUrl()) {
-				this._workspacePreviewService.scheduleReloadAfterWebChange()
-			}
-		} else if (opts.sandboxVerificationTracker && toolName === 'create_file_or_folder') {
-			const createParams = toolParams as BuiltinToolCallParams['create_file_or_folder']
-			if (!createParams.isFolder) {
-				markSandboxCodeChange(opts.sandboxVerificationTracker)
-			}
-		}
-
-		if (toolName === 'run_command') {
-			const runParams = toolParams as BuiltinToolCallParams['run_command']
-			const runResult = toolResult as { result: string; resolveReason: TerminalResolveReason; autoPersistentTerminalId?: string }
-			if (opts.sandboxVerificationTracker) {
-				markSandboxVerified(opts.sandboxVerificationTracker, runParams.command, runResult.result, runResult.resolveReason)
-			}
-			void this._agentDeliveryService.handleTerminalToolResult(
-				threadId,
-				'run_command',
-				runParams,
-				runResult,
-			)
-		} else if (toolName === 'run_persistent_command') {
-			void this._agentDeliveryService.handleTerminalToolResult(
-				threadId,
-				'run_persistent_command',
-				toolParams as BuiltinToolCallParams['run_persistent_command'],
-				toolResult as { result: string; resolveReason: TerminalResolveReason },
-			)
-		}
-
-		return { status: 'ok' }
-	};
 
 	private async _runReadOnlyToolBatch({
 		threadId,
@@ -1101,7 +816,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				recentMessages: chatMessages,
 				excludeKeys: new Set([toolCallDedupKey(primaryToolCall.name, primaryToolCall.rawParams)]),
 			})
-		} catch {
+		} catch (err) {
+			console.error('[Trove] Read-tool batch discovery failed; continuing with primary read only.', err);
 			additional = []
 		}
 

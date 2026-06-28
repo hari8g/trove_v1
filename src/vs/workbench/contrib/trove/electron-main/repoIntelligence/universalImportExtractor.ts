@@ -145,7 +145,12 @@ function resolveRelativePath(fromFile: string, modulePath: string, language: str
 		}
 		const base = join(dirname(fromFile), modulePath);
 		for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts']) {
-			return (base.endsWith(ext) ? base : `${base}${ext}`).replace(/\\/g, '/');
+			if (base.endsWith(ext)) {
+				return base.replace(/\\/g, '/');
+			}
+		}
+		for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts']) {
+			return `${base}${ext}`.replace(/\\/g, '/');
 		}
 	}
 	if (language === 'Python') {

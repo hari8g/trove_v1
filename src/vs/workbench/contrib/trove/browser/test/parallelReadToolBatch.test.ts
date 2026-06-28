@@ -7,6 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	buildReadToolBatch,
+	discoverAdditionalReadTools,
 	isReadOnlyBatchTool,
 	parseDiscoveryToolLines,
 	toolCallDedupKey,
@@ -67,6 +68,82 @@ suite('Trove - parallelReadToolBatch', () => {
 		const batch = buildReadToolBatch(primary, additional);
 		assert.strictEqual(batch.length, 2);
 		assert.strictEqual(toolCallDedupKey(batch[0].name, batch[0].rawParams), toolCallDedupKey('read_file', { uri: 'src/a.ts' }));
+	});
+
+	test('discoverAdditionalReadTools parses LLM discovery output', async () => {
+		const primary: RawToolCallObj = {
+			name: 'read_file',
+			rawParams: { uri: 'src/a.ts' },
+			doneParams: ['uri'],
+			id: '1',
+			isDone: true,
+		};
+
+		const additional = await discoverAdditionalReadTools({
+			llmMessageService: {
+				sendLLMMessage: (params: any) => {
+					params.onFinalMessage({
+						fullText: '{"name":"read_file","rawParams":{"uri":"src/b.ts"}}\nDONE',
+						fullReasoning: '',
+						anthropicReasoning: null,
+						usage: null,
+					});
+					return 'discovery-req-1';
+				},
+			} as any,
+			convertToLLMMessageService: {
+				prepareLLMSimpleMessages: () => ({
+					messages: [{ role: 'user', content: 'task' }],
+					separateSystemMessage: 'system',
+				}),
+			} as any,
+			modelSelection: { providerName: 'anthropic', modelName: 'claude-sonnet-4-6' },
+			modelSelectionOptions: undefined,
+			overridesOfModel: undefined,
+			chatMode: 'agent',
+			primaryToolCall: primary,
+			recentMessages: [{ role: 'user', content: 'Find auth flow', displayContent: 'Find auth flow' }],
+			excludeKeys: new Set([toolCallDedupKey(primary.name, primary.rawParams)]),
+		});
+
+		assert.strictEqual(additional.length, 1);
+		assert.strictEqual(additional[0].name, 'read_file');
+		assert.strictEqual(additional[0].rawParams.uri, 'src/b.ts');
+	});
+
+	test('discoverAdditionalReadTools rejects when discovery LLM fails', async () => {
+		const primary: RawToolCallObj = {
+			name: 'search_codebase',
+			rawParams: { query: 'auth' },
+			doneParams: ['query'],
+			id: '1',
+			isDone: true,
+		};
+
+		await assert.rejects(
+			() => discoverAdditionalReadTools({
+				llmMessageService: {
+					sendLLMMessage: (params: any) => {
+						params.onError({ message: 'rate limited', fullError: null });
+						return 'discovery-req-2';
+					},
+				} as any,
+				convertToLLMMessageService: {
+					prepareLLMSimpleMessages: () => ({
+						messages: [{ role: 'user', content: 'task' }],
+						separateSystemMessage: 'system',
+					}),
+				} as any,
+				modelSelection: { providerName: 'anthropic', modelName: 'claude-sonnet-4-6' },
+				modelSelectionOptions: undefined,
+				overridesOfModel: undefined,
+				chatMode: 'agent',
+				primaryToolCall: primary,
+				recentMessages: [{ role: 'user', content: 'Find auth flow' }],
+				excludeKeys: new Set([toolCallDedupKey(primary.name, primary.rawParams)]),
+			}),
+			/rate limited/,
+		);
 	});
 
 });

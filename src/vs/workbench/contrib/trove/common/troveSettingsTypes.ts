@@ -7,6 +7,8 @@
 import { defaultModelsOfProvider, defaultProviderSettings, ModelOverrides } from './modelCapabilities.js';
 import { ToolApprovalType } from './toolsServiceTypes.js';
 import { TroveSettingsState } from './troveSettingsService.js'
+import { DEFAULT_ORG_EXTENSION_CONFIG_SERVER_DIRS, DEFAULT_ORG_EXTENSION_NPM_SCOPES } from '../extensions/staas/staasIndexerDefaults.js';
+import { DEFAULT_ORG_EXTENSIONS_ENABLED } from '../extensions/staas/staasToolNames.js';
 
 
 type UnionOfKeys<T> = T extends T ? keyof T : never;
@@ -466,6 +468,9 @@ export type GlobalSettings = {
 	enableAutocompleteCodebaseContext: boolean;
 	enableVectorSearch: boolean;
 	enableNextEditMode: boolean;
+	orgExtensions: boolean;
+	orgExtensionNpmScopes: string[];
+	orgExtensionConfigServerDirs: string[];
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
@@ -496,6 +501,9 @@ export const defaultGlobalSettings: GlobalSettings = {
 	enableAutocompleteCodebaseContext: true,
 	enableVectorSearch: false,
 	enableNextEditMode: true,
+	orgExtensions: DEFAULT_ORG_EXTENSIONS_ENABLED,
+	orgExtensionNpmScopes: [...DEFAULT_ORG_EXTENSION_NPM_SCOPES],
+	orgExtensionConfigServerDirs: [...DEFAULT_ORG_EXTENSION_CONFIG_SERVER_DIRS],
 }
 
 export type GlobalSettingName = keyof GlobalSettings

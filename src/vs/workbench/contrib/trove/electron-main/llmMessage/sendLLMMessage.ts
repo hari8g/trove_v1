@@ -6,6 +6,7 @@
 import { SendLLMMessageParams, OnText, OnFinalMessage, OnError } from '../../common/sendLLMMessageTypes.js';
 import { IMetricsService } from '../../common/metricsService.js';
 import { displayInfoOfProviderName } from '../../common/troveSettingsTypes.js';
+import { DEFAULT_ORG_EXTENSIONS_ENABLED } from '../../extensions/staas/staasToolNames.js';
 import { sendLLMMessageToProviderImplementation } from './sendLLMMessage.impl.js';
 
 
@@ -27,6 +28,7 @@ export const sendLLMMessage = async ({
 	threadId,
 	mcpTools,
 	enablePromptCache,
+	orgExtensions,
 }: SendLLMMessageParams,
 
 	metricsService: IMetricsService
@@ -122,7 +124,7 @@ export const sendLLMMessage = async ({
 		}
 		const { sendFIM, sendChat } = implementation
 		if (messagesType === 'chatMessages') {
-			await sendChat({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName, _setAborter, providerName, separateSystemMessage, volatileSystemMessage, threadId, chatMode, mcpTools, enablePromptCache: enablePromptCache ?? false })
+			await sendChat({ messages: messages_, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName, _setAborter, providerName, separateSystemMessage, volatileSystemMessage, threadId, chatMode, mcpTools, enablePromptCache: enablePromptCache ?? false, orgExtensions: orgExtensions ?? DEFAULT_ORG_EXTENSIONS_ENABLED })
 			return
 		}
 		if (messagesType === 'FIMMessage') {

@@ -341,10 +341,13 @@ class TroveSettingsService extends Disposable implements ITroveSettingsService {
 			if (readS.globalSettings.maxAgentIterations === undefined) readS.globalSettings.maxAgentIterations = 25;
 			if (readS.globalSettings.maxReadOnlyCalls === undefined) readS.globalSettings.maxReadOnlyCalls = 12;
 			if (readS.globalSettings.maxConsecutiveToolFails === undefined) readS.globalSettings.maxConsecutiveToolFails = 3;
-			if (readS.globalSettings.llmStreamStallTimeoutMs === undefined) readS.globalSettings.llmStreamStallTimeoutMs = 60_000;
+			if (readS.globalSettings.llmStreamStallTimeoutMs === undefined) readS.globalSettings.llmStreamStallTimeoutMs = defaultGlobalSettings.llmStreamStallTimeoutMs;
 			if (readS.globalSettings.enableAutocompleteCodebaseContext === undefined) readS.globalSettings.enableAutocompleteCodebaseContext = true;
 			if (readS.globalSettings.enableVectorSearch === undefined) readS.globalSettings.enableVectorSearch = false;
 			if (readS.globalSettings.enableNextEditMode === undefined) readS.globalSettings.enableNextEditMode = true;
+			if (readS.globalSettings.orgExtensions === undefined) readS.globalSettings.orgExtensions = defaultGlobalSettings.orgExtensions;
+			if (readS.globalSettings.orgExtensionNpmScopes === undefined) readS.globalSettings.orgExtensionNpmScopes = [...defaultGlobalSettings.orgExtensionNpmScopes];
+			if (readS.globalSettings.orgExtensionConfigServerDirs === undefined) readS.globalSettings.orgExtensionConfigServerDirs = [...defaultGlobalSettings.orgExtensionConfigServerDirs];
 		}
 		catch (e) {
 			readS = defaultState()

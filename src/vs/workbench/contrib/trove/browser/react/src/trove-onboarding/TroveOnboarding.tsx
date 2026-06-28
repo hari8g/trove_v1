@@ -5,9 +5,8 @@
 
 import { useEffect, useState } from 'react';
 import { useAccessor, useIsDark, useSettingsState } from '../util/services.js';
-import { Brain, Check, ChevronRight, DollarSign, ExternalLink, Lock, X } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import { displayInfoOfProviderName, ProviderName, providerNames, localProviderNames, featureNames, FeatureName, isFeatureNameDisabled } from '../../../../common/troveSettingsTypes.js';
-import { ChatMarkdownRender } from '../markdown/ChatMarkdownRender.js';
 import { OllamaSetupInstructions, OneClickSwitchButton, SettingsForProvider, ModelDump } from '../trove-settings-tsx/Settings.js';
 import ErrorBoundary from '../sidebar-tsx/ErrorBoundary.js';
 import { isLinux } from '../../../../../../../base/common/platform.js';
@@ -347,57 +346,6 @@ const OnboardingPageShell = ({ top, bottom, content, hasMaxWidth = true, classNa
 	)
 }
 
-const OllamaDownloadOrRemoveModelButton = ({ modelName, isModelInstalled, sizeGb }: { modelName: string, isModelInstalled: boolean, sizeGb: number | false | 'not-known' }) => {
-	// for now just link to the ollama download page
-	return <a
-		href={`https://ollama.com/library/${modelName}`}
-		target="_blank"
-		rel="noopener noreferrer"
-		className="flex items-center justify-center text-trove-fg-2 hover:text-trove-fg-1"
-	>
-		<ExternalLink className="w-3.5 h-3.5" />
-	</a>
-
-}
-
-
-const YesNoText = ({ val }: { val: boolean | null }) => {
-
-	return <div
-		className={
-			val === true ? "text text-emerald-500"
-				: val === false ? 'text-rose-600'
-					: "text text-amber-300"
-		}
-	>
-		{
-			val === true ? "Yes"
-				: val === false ? 'No'
-					: "Yes*"
-		}
-	</div>
-
-}
-
-
-
-const abbreviateNumber = (num: number): string => {
-	if (num >= 1000000) {
-		// For millions
-		return Math.floor(num / 1000000) + 'M';
-	} else if (num >= 1000) {
-		// For thousands
-		return Math.floor(num / 1000) + 'K';
-	} else {
-		// For numbers less than 1000
-		return num.toString();
-	}
-}
-
-
-
-
-
 const PrimaryActionButton = ({ children, className, ringSize, ...props }: { children: React.ReactNode, ringSize?: undefined | 'xl' | 'screen' } & React.ButtonHTMLAttributes<HTMLButtonElement>) => {
 
 
@@ -443,10 +391,7 @@ const PrimaryActionButton = ({ children, className, ringSize, ...props }: { chil
 }
 
 
-type WantToUseOption = 'smart' | 'private' | 'cheap' | 'all'
-
 const TroveOnboardingContent = () => {
-
 
 	const accessor = useAccessor()
 	const troveSettingsService = accessor.get('ITroveSettingsService')
@@ -456,64 +401,6 @@ const TroveOnboardingContent = () => {
 
 	const [pageIndex, setPageIndex] = useState(0)
 
-
-	// page 1 state
-	const [wantToUseOption, setWantToUseOption] = useState<WantToUseOption>('smart')
-
-	// Replace the single selectedProviderName with four separate states
-	// page 2 state - each tab gets its own state
-	const [selectedIntelligentProvider, setSelectedIntelligentProvider] = useState<ProviderName>('anthropic');
-	const [selectedPrivateProvider, setSelectedPrivateProvider] = useState<ProviderName>('ollama');
-	const [selectedAffordableProvider, setSelectedAffordableProvider] = useState<ProviderName>('gemini');
-	const [selectedAllProvider, setSelectedAllProvider] = useState<ProviderName>('anthropic');
-
-	// Helper function to get the current selected provider based on active tab
-	const getSelectedProvider = (): ProviderName => {
-		switch (wantToUseOption) {
-			case 'smart': return selectedIntelligentProvider;
-			case 'private': return selectedPrivateProvider;
-			case 'cheap': return selectedAffordableProvider;
-			case 'all': return selectedAllProvider;
-		}
-	}
-
-	// Helper function to set the selected provider for the current tab
-	const setSelectedProvider = (provider: ProviderName) => {
-		switch (wantToUseOption) {
-			case 'smart': setSelectedIntelligentProvider(provider); break;
-			case 'private': setSelectedPrivateProvider(provider); break;
-			case 'cheap': setSelectedAffordableProvider(provider); break;
-			case 'all': setSelectedAllProvider(provider); break;
-		}
-	}
-
-	const providerNamesOfWantToUseOption: { [wantToUseOption in WantToUseOption]: ProviderName[] } = {
-		smart: ['anthropic', 'openAI', 'gemini', 'openRouter'],
-		private: ['ollama', 'vLLM', 'openAICompatible', 'lmStudio'],
-		cheap: ['gemini', 'deepseek', 'openRouter', 'ollama', 'vLLM'],
-		all: providerNames,
-	}
-
-
-	const selectedProviderName = getSelectedProvider();
-	const didFillInProviderSettings = selectedProviderName && troveSettingsState.settingsOfProvider[selectedProviderName]._didFillInProviderSettings
-	const isApiKeyLongEnoughIfApiKeyExists = selectedProviderName && troveSettingsState.settingsOfProvider[selectedProviderName].apiKey ? troveSettingsState.settingsOfProvider[selectedProviderName].apiKey.length > 15 : true
-	const isAtLeastOneModel = selectedProviderName && troveSettingsState.settingsOfProvider[selectedProviderName].models.length >= 1
-
-	const didFillInSelectedProviderSettings = !!(didFillInProviderSettings && isApiKeyLongEnoughIfApiKeyExists && isAtLeastOneModel)
-
-	const prevAndNextButtons = <div className="max-w-[600px] w-full mx-auto flex flex-col items-end">
-		<div className="flex items-center gap-2">
-			<PreviousButton
-				onClick={() => { setPageIndex(pageIndex - 1) }}
-			/>
-			<NextButton
-				onClick={() => { setPageIndex(pageIndex + 1) }}
-			/>
-		</div>
-	</div>
-
-
 	const lastPagePrevAndNextButtons = <div className="max-w-[600px] w-full mx-auto flex flex-col items-end">
 		<div className="flex items-center gap-2">
 			<PreviousButton
@@ -522,52 +409,19 @@ const TroveOnboardingContent = () => {
 			<PrimaryActionButton
 				onClick={() => {
 					troveSettingsService.setGlobalSetting('isOnboardingComplete', true);
-					voidMetricsService.capture('Completed Onboarding', { selectedProviderName, wantToUseOption })
+					voidMetricsService.capture('Completed Onboarding', {})
 				}}
 				ringSize={troveSettingsState.globalSettings.isOnboardingComplete ? 'screen' : undefined}
 			>Enter Trove</PrimaryActionButton>
 		</div>
 	</div>
 
-
-	// cannot be md
-	const basicDescOfWantToUseOption: { [wantToUseOption in WantToUseOption]: string } = {
-		smart: "Models with the best performance on benchmarks.",
-		private: "Host on your computer or local network for full data privacy.",
-		cheap: "Free and affordable options.",
-		all: "",
-	}
-
-	// can be md
-	const detailedDescOfWantToUseOption: { [wantToUseOption in WantToUseOption]: string } = {
-		smart: "Most intelligent and best for agent mode.",
-		private: "Private-hosted so your data never leaves your computer or network. [Email us](mailto:founders@troveeditor.com) for help setting up at your company.",
-		cheap: "Use great deals like Gemini 2.5 Pro, or self-host a model with Ollama or vLLM for free.",
-		all: "",
-	}
-
-	// Modified: initialize separate provider states on initial render instead of watching wantToUseOption changes
-	useEffect(() => {
-		if (selectedIntelligentProvider === undefined) {
-			setSelectedIntelligentProvider(providerNamesOfWantToUseOption['smart'][0]);
-		}
-		if (selectedPrivateProvider === undefined) {
-			setSelectedPrivateProvider(providerNamesOfWantToUseOption['private'][0]);
-		}
-		if (selectedAffordableProvider === undefined) {
-			setSelectedAffordableProvider(providerNamesOfWantToUseOption['cheap'][0]);
-		}
-		if (selectedAllProvider === undefined) {
-			setSelectedAllProvider(providerNamesOfWantToUseOption['all'][0]);
-		}
-	}, []);
-
 	// reset the page to page 0 if the user redos onboarding
 	useEffect(() => {
 		if (!troveSettingsState.globalSettings.isOnboardingComplete) {
 			setPageIndex(0)
 		}
-	}, [setPageIndex, troveSettingsState.globalSettings.isOnboardingComplete])
+	}, [troveSettingsState.globalSettings.isOnboardingComplete])
 
 
 	const contentOfIdx: { [pageIndex: number]: React.ReactNode } = {

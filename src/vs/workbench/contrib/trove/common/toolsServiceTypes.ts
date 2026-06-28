@@ -2,6 +2,9 @@ import { URI } from '../../../../base/common/uri.js'
 import { RawMCPToolCall } from './mcpServiceTypes.js';
 import { builtinTools } from './prompt/prompts.js';
 import { RawToolParamsObj } from './sendLLMMessageTypes.js';
+import type { StaasBuiltinToolCallParams, StaasBuiltinToolResultType } from '../extensions/staas/staasToolTypes.js';
+
+export type { StaasBuiltinToolCallParams, StaasBuiltinToolResultType, StaasImpactLevel, StaasConfigDriftEntry } from '../extensions/staas/staasToolTypes.js';
 
 
 
@@ -45,7 +48,7 @@ export const toolApprovalTypes = new Set<ToolApprovalType>([
 
 
 // PARAMS OF TOOL CALL
-export type BuiltinToolCallParams = {
+export type CoreBuiltinToolCallParams = {
 	'read_file': { uri: URI, startLine: number | null, endLine: number | null, pageNumber: number },
 	'ls_dir': { uri: URI, pageNumber: number },
 	'get_dir_tree': { uri: URI },
@@ -56,15 +59,9 @@ export type BuiltinToolCallParams = {
 	'get_symbol': { uri: URI, symbolName: string },
 	'search_symbols': { query: string, maxResults: number },
 	'search_web': { query: string, maxResults: number },
-	'query_service_topology': { query: string },
-	'resolve_api_contract': { httpMethod: string, pathPattern: string },
-	'get_maven_impact': { artifactId: string },
-	'get_npm_impact': { packageName: string },
-	'get_config_drift': { serviceName: string },
 	'get_import_graph': { uri: URI; direction?: 'imports' | 'importedBy' | 'both' },
 	'get_tests_for_file': { uri: URI },
 	'get_recently_changed': { limit?: number },
-	'verify_security_compliance': { code: string; fileExtension: string },
 	'search_in_file': { uri: URI, query: string, isRegex: boolean },
 	'read_lint_errors': { uri: URI },
 	// ---
@@ -79,8 +76,10 @@ export type BuiltinToolCallParams = {
 	'kill_persistent_terminal': { persistentTerminalId: string },
 }
 
+export type BuiltinToolCallParams = CoreBuiltinToolCallParams & StaasBuiltinToolCallParams;
+
 // RESULT OF TOOL CALL
-export type BuiltinToolResultType = {
+export type CoreBuiltinToolResultType = {
 	'read_file': { fileContents: string, totalFileLen: number, totalNumLines: number, hasNextPage: boolean },
 	'ls_dir': { children: ShallowDirectoryItem[] | null, hasNextPage: boolean, hasPrevPage: boolean, itemsRemaining: number },
 	'get_dir_tree': { str: string, },
@@ -91,19 +90,9 @@ export type BuiltinToolResultType = {
 	'get_symbol': { source?: string, startLine?: number, endLine?: number, error?: string },
 	'search_symbols': { results: string },
 	'search_web': { results: { title: string, url: string, snippet: string }[], query: string },
-	'query_service_topology': { summary: string },
-	'resolve_api_contract': { contract: string },
-	'get_maven_impact': { consumers: string[], impactLevel: 'critical' | 'high' | 'medium' | 'low' },
-	'get_npm_impact': { consumers: string[]; impactLevel: 'critical' | 'high' | 'medium' | 'low' },
-	'get_config_drift': { drifts: { key: string; envValues: Record<string, string> }[]; summary: string },
 	'get_import_graph': { imports: string[]; importedBy: string[]; externalDeps: string[] },
 	'get_tests_for_file': { tests: { testFile: string; confidence: 'high' | 'medium' }[] },
 	'get_recently_changed': { files: { file: string; changeCount: number; lastChanged: string }[] },
-	'verify_security_compliance': {
-		violations: { rule: string; severity: string; message: string }[];
-		passed: boolean;
-		summary: string;
-	},
 	'search_in_file': { lines: number[]; },
 	'read_lint_errors': { lintErrors: LintErrorItem[] | null },
 	// ---
@@ -117,6 +106,8 @@ export type BuiltinToolResultType = {
 	'open_persistent_terminal': { persistentTerminalId: string },
 	'kill_persistent_terminal': {},
 }
+
+export type BuiltinToolResultType = CoreBuiltinToolResultType & StaasBuiltinToolResultType;
 
 
 export type ToolCallParams<T extends BuiltinToolName | (string & {})> = T extends BuiltinToolName ? BuiltinToolCallParams[T] : RawToolParamsObj

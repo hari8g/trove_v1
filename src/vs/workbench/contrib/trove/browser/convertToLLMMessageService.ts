@@ -669,7 +669,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const contextualProfile = workspaceFolders[0] && activeURI
 			? await this._repoIntelligenceService.getContextualProfile(workspaceFolders[0], { activeUri: activeURI, recentlyEditedUris: openedURIs }).catch(() => null)
 			: null
-		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode })
+		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, orgExtensions: globalSettings.orgExtensions, repoProfile, workspaceRules, userMemory, repoProfileMode })
 		const volatileBlock = chat_systemMessage_volatile({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, gitDiffStat, contextualProfile })
 		return { stableBlock, volatileBlock }
 	}

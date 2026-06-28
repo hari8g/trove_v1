@@ -6,6 +6,7 @@
 
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative } from 'path';
+import { DEFAULT_ORG_EXTENSION_NPM_SCOPES } from '../../extensions/staas/staasIndexerDefaults.js';
 import { NpmPackageEdge } from './repoIntelligenceDb.js';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next']);
@@ -33,7 +34,7 @@ export type NpmImpactResult = {
 export function indexNpmDependencies(workspaceRoot: string, scopeFilter?: string[]): NpmImpactResult {
 	const packageJsonFiles = findPackageJsonFiles(workspaceRoot);
 	const edges: NpmPackageEdge[] = [];
-	const defaultScopes = scopeFilter ?? ['@mobilitystore', '@bosch'];
+	const defaultScopes = scopeFilter ?? [...DEFAULT_ORG_EXTENSION_NPM_SCOPES];
 
 	for (const pkgPath of packageJsonFiles) {
 		let pkg: any;

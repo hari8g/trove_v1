@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import stylisticTs from '@stylistic/eslint-plugin-ts';
 import pluginLocal from 'eslint-plugin-local';
 import pluginJsdoc from 'eslint-plugin-jsdoc';
+import reactHooks from 'eslint-plugin-react-hooks';
 
 import pluginHeader from 'eslint-plugin-header';
 pluginHeader.rules.header.meta.schema = false;
@@ -1410,6 +1411,19 @@ export default tseslint.config(
 					'leadingUnderscore': 'forbid'
 				}
 			]
+		}
+	},
+	// trove react UI
+	{
+		files: [
+			'src/vs/workbench/contrib/trove/browser/react/**/*.{tsx,jsx}',
+		],
+		plugins: {
+			'react-hooks': reactHooks,
+		},
+		rules: {
+			'react-hooks/rules-of-hooks': 'error',
+			'react-hooks/exhaustive-deps': 'warn',
 		}
 	},
 	// typescript-language-features

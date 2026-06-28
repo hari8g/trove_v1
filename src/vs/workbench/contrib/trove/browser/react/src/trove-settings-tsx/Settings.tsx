@@ -34,6 +34,7 @@ type Tab =
 	| 'rules'
 	| 'general'
 	| 'usage'
+	| 'mcp'
 	| 'all';
 
 
@@ -239,9 +240,10 @@ const SimpleModelSettingsDialog = ({
 	onClose: () => void;
 	modelInfo: { modelName: string; providerName: ProviderName; type: 'autodetected' | 'custom' | 'default' } | null;
 }) => {
-	if (!isOpen || !modelInfo) return null;
+	const modelName = modelInfo?.modelName ?? '';
+	const providerName = modelInfo?.providerName ?? 'anthropic';
+	const type = modelInfo?.type ?? 'custom';
 
-	const { modelName, providerName, type } = modelInfo;
 	const accessor = useAccessor()
 	const settingsState = useSettingsState()
 	const mouseDownInsideModal = useRef(false); // Ref to track mousedown origin
@@ -265,13 +267,14 @@ const SimpleModelSettingsDialog = ({
 
 	// reset when dialog toggles
 	useEffect(() => {
-		if (!isOpen) return;
+		if (!isOpen || !modelInfo) return;
 		const cur = settingsState.overridesOfModel?.[providerName]?.[modelName];
 		setOverrideEnabled(!!cur);
 		setErrorMsg(null);
-	}, [isOpen, providerName, modelName, settingsState.overridesOfModel, placeholder]);
+	}, [isOpen, modelInfo, providerName, modelName, settingsState.overridesOfModel, placeholder]);
 
 	const onSave = async () => {
+		if (!modelInfo) return;
 		// if disabled override, reset overrides
 		if (!overrideEnabled) {
 			await settingsStateService.setOverridesOfModel(providerName, modelName, undefined);
@@ -309,6 +312,8 @@ const SimpleModelSettingsDialog = ({
 	};
 
 	const sourcecodeOverridesLink = `https://github.com/troveeditor/void/blob/2e5ecb291d33afbe4565921664fb7e183189c1c5/src/vs/workbench/contrib/trove/common/modelCapabilities.ts#L146-L172`
+
+	if (!isOpen || !modelInfo) return null;
 
 	return (
 		<div // Backdrop
@@ -1249,7 +1254,8 @@ export const Settings = () => {
 						{/* All sections in flex container with gap-12 */}
 						<div className='flex flex-col gap-12'>
 							{/* Models section (formerly FeaturesTab) */}
-							<div className={shouldShowTab('models') ? `` : 'hidden'}>
+							{shouldShowTab('models') ? (
+							<div>
 								<ErrorBoundary>
 									<h2 className={`text-3xl mb-2`}>Models</h2>
 									<ModelDump />
@@ -1258,9 +1264,11 @@ export const Settings = () => {
 									<RefreshableModels />
 								</ErrorBoundary>
 							</div>
+							) : null}
 
 							{/* Local Providers section */}
-							<div className={shouldShowTab('localProviders') ? `` : 'hidden'}>
+							{shouldShowTab('localProviders') ? (
+							<div>
 								<ErrorBoundary>
 									<h2 className={`text-3xl mb-2`}>Local Providers</h2>
 									<h3 className={`text-trove-fg-3 mb-2`}>{`Trove can access any model that you host locally. We automatically detect your local models by default.`}</h3>
@@ -1272,9 +1280,11 @@ export const Settings = () => {
 									<TroveProviderSettings providerNames={localProviderNames} />
 								</ErrorBoundary>
 							</div>
+							) : null}
 
 							{/* Main Providers section */}
-							<div className={shouldShowTab('providers') ? `` : 'hidden'}>
+							{shouldShowTab('providers') ? (
+							<div>
 								<ErrorBoundary>
 									<h2 className={`text-3xl mb-2`}>Main Providers</h2>
 									<h3 className={`text-trove-fg-3 mb-2`}>{`Trove can access models from Anthropic, OpenAI, OpenRouter, and more.`}</h3>
@@ -1282,9 +1292,11 @@ export const Settings = () => {
 									<TroveProviderSettings providerNames={nonlocalProviderNames} />
 								</ErrorBoundary>
 							</div>
+							) : null}
 
 							{/* Feature Options section */}
-							<div className={shouldShowTab('featureOptions') ? `` : 'hidden'}>
+							{shouldShowTab('featureOptions') ? (
+							<div>
 								<ErrorBoundary>
 									<h2 className={`text-3xl mb-2`}>Feature Options</h2>
 
@@ -1440,6 +1452,14 @@ export const Settings = () => {
 													<div className='flex items-center gap-x-2 my-2'>
 														<TroveSwitch
 															size='xs'
+															value={settingsState.globalSettings.orgExtensions}
+															onChange={(newVal) => troveSettingsService.setGlobalSetting('orgExtensions', newVal)}
+														/>
+														<span className='text-trove-fg-3 text-xs pointer-events-none'>Organization extensions (service topology, impact analysis, security verifier)</span>
+													</div>
+													<div className='flex items-center gap-x-2 my-2'>
+														<TroveSwitch
+															size='xs'
 															value={settingsState.globalSettings.enableParallelReadBatching}
 															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableParallelReadBatching', newVal)}
 														/>
@@ -1590,9 +1610,11 @@ export const Settings = () => {
 									</div>
 								</ErrorBoundary>
 							</div>
+							) : null}
 
 							{/* General section */}
-							<div className={`${shouldShowTab('general') ? `` : 'hidden'} flex flex-col gap-12`}>
+							{shouldShowTab('general') ? (
+							<div className="flex flex-col gap-12">
 								{/* One-Click Switch section */}
 								<div>
 									<ErrorBoundary>
@@ -1726,11 +1748,13 @@ Alternatively, place a \`.troverules\` file in the root of your workspace.
 								</div>
 
 							</div>
+							) : null}
 
 
 
 							{/* Rules section */}
-							<div className={shouldShowTab('rules') ? '' : 'hidden'}>
+							{shouldShowTab('rules') ? (
+							<div>
 								<ErrorBoundary>
 									<h2 className='text-3xl mb-2'>Rules</h2>
 									<h4 className='text-trove-fg-3 mb-4'>
@@ -1739,9 +1763,11 @@ Alternatively, place a \`.troverules\` file in the root of your workspace.
 									<RulesTabContent />
 								</ErrorBoundary>
 							</div>
+							) : null}
 
 							{/* Usage section */}
-							<div className={shouldShowTab('usage') ? '' : 'hidden'}>
+							{shouldShowTab('usage') ? (
+							<div>
 								<ErrorBoundary>
 									<h2 className='text-3xl mb-2'>Usage</h2>
 									<h4 className='text-trove-fg-3 mb-4'>
@@ -1750,9 +1776,11 @@ Alternatively, place a \`.troverules\` file in the root of your workspace.
 									<UsageDashboard />
 								</ErrorBoundary>
 							</div>
+							) : null}
 
 							{/* MCP section */}
-							<div className={shouldShowTab('mcp') ? `` : 'hidden'}>
+							{shouldShowTab('mcp') ? (
+							<div>
 								<ErrorBoundary>
 									<h2 className='text-3xl mb-2'>MCP</h2>
 									<h4 className={`text-trove-fg-3 mb-4`}>
@@ -1771,7 +1799,7 @@ Use Model Context Protocol to provide Agent mode with more tools.
 									</ErrorBoundary>
 								</ErrorBoundary>
 							</div>
-
+							) : null}
 
 
 

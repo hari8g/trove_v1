@@ -5,6 +5,22 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import type { OrgExtensionIndexerOptions } from '../extensions/staas/staasIndexerDefaults.js';
+import type {
+	IStaasRepoIntelligenceMethods,
+	StaasWorkspaceProfileFields,
+} from '../extensions/staas/staasRepoIntelligenceTypes.js';
+
+export type {
+	ApiContractResult,
+	ConfigDriftSummary,
+	IStaasRepoIntelligenceMethods,
+	MavenImpactSummary,
+	NpmImpactSummary,
+	ServiceTopologySummary,
+	StaasWorkspaceProfileFields,
+} from '../extensions/staas/staasRepoIntelligenceTypes.js';
+export type { OrgExtensionIndexerOptions } from '../extensions/staas/staasIndexerDefaults.js';
 
 export const REPO_INTEL_CHANNEL = 'trove-channel-repoIntelligence';
 
@@ -23,7 +39,7 @@ export type FrameworkEntry = {
 	confidence: 'high' | 'medium' | 'low';
 };
 
-export type WorkspaceProfile = {
+export type CoreWorkspaceProfile = {
 	workspaceRoot: string;
 	lastScannedAt: number;
 	languageStack: string[];
@@ -38,15 +54,6 @@ export type WorkspaceProfile = {
 	fileCount: number;
 	totalLoc: number;
 	isStale: boolean;
-	// ── STaaS polyglot context ─────────────────────────────────────────────
-	/** Detected service topology summary for the active workspace */
-	serviceTopologySummary?: ServiceTopologySummary | null;
-	/** Maven artifact impact graph (library → consumer count) */
-	mavenImpactSummary?: MavenImpactSummary | null;
-	/** NPM shared package impact summary (@mobilitystore/*, @bosch/*) */
-	npmImpactSummary?: NpmImpactSummary | null;
-	/** Multi-environment config drift summary */
-	configDriftSummary?: ConfigDriftSummary | null;
 	/** Terraform IaC resource summary */
 	terraformSummary?: TerraformSummary | null;
 	/** GitLab CI pipeline structure summary */
@@ -55,36 +62,7 @@ export type WorkspaceProfile = {
 	k8sResourceCount?: number;
 };
 
-export type ServiceTopologySummary = {
-	/** Total number of Spring Boot microservices detected */
-	serviceCount: number;
-	/** List of service names detected in this workspace */
-	serviceNames: string[];
-	/** Gateway route mappings: pathPattern → targetService */
-	gatewayRoutes: { pathPattern: string; targetService: string }[];
-	/** Feign call edges: caller → [targets] */
-	feignEdges: { caller: string; targets: string[] }[];
-	/** Total @RestController endpoints indexed */
-	totalEndpoints: number;
-};
-
-export type MavenImpactSummary = {
-	/** Shared library artifact IDs with their consumer counts */
-	sharedLibs: { artifactId: string; consumerCount: number }[];
-	/** Total pom.xml files indexed */
-	pomCount: number;
-};
-
-export type NpmImpactSummary = {
-	sharedPackages: { packageName: string; consumerCount: number }[];
-	packageJsonCount: number;
-};
-
-export type ConfigDriftSummary = {
-	driftCount: number;
-	fileCount: number;
-	topDriftedServices: string[];
-};
+export type WorkspaceProfile = CoreWorkspaceProfile & StaasWorkspaceProfileFields;
 
 export type TerraformSummary = {
 	resourceCount: number;
@@ -151,17 +129,6 @@ export type UCGGraphData = {
 	metrics: UCGGraphMetrics | null;
 };
 
-export type ApiContractResult = {
-	pathPattern: string;
-	httpMethod: string;
-	backendService: string;
-	controllerClass: string;
-	handlerMethod: string;
-	requestDto?: string;
-	responseDto?: string;
-	filePath: string;
-};
-
 export type FileMetadataEntry = {
 	filePath: string;
 	language: string | null;
@@ -224,10 +191,10 @@ export type RepoIntelligenceIndexingStats = {
 	statsSource?: 'database' | 'profile';
 };
 
-export interface IRepoIntelligenceMainService {
+export interface ICoreRepoIntelligenceMainService {
 	readonly _serviceBrand: undefined;
 	getProfile(workspaceRoot: string): Promise<WorkspaceProfile | null>;
-	refreshProfile(workspaceRoot: string): Promise<WorkspaceProfile>;
+	refreshProfile(workspaceRoot: string, indexerOptions?: OrgExtensionIndexerOptions): Promise<WorkspaceProfile>;
 	searchCodebase(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]>;
 	getChunkCount(workspaceRoot: string): Promise<number>;
 	getFileOutline(workspaceRoot: string, filePath: string): Promise<ExtractedSymbol[]>;
@@ -235,11 +202,6 @@ export interface IRepoIntelligenceMainService {
 	searchSymbols(workspaceRoot: string, query: string, maxResults?: number): Promise<ExtractedSymbol[]>;
 	getUserMemory(): string | null;
 	appendToUserMemory(text: string): Promise<void>;
-	getServiceTopology(workspaceRoot: string): Promise<ServiceTopologySummary | null>;
-	getMavenImpact(workspaceRoot: string, artifactId: string): Promise<string[]>;
-	resolveApiContract(workspaceRoot: string, httpMethod: string, pathPattern: string): Promise<ApiContractResult | null>;
-	getNpmConsumers(workspaceRoot: string, packageName: string): Promise<string[]>;
-	getConfigDrift(workspaceRoot: string, serviceName: string): Promise<{ key: string; envValues: Record<string, string> }[]>;
 	getTerraformResources(workspaceRoot: string, resourceType?: string): Promise<TerraformResourceRow[]>;
 	getPipelineJobs(workspaceRoot: string, stage?: string): Promise<PipelineJobRow[]>;
 	getUCGGraph(workspaceRoot: string): Promise<UCGGraphData | null>;
@@ -252,6 +214,8 @@ export interface IRepoIntelligenceMainService {
 	searchCodebaseHybrid(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]>;
 	indexEmbeddingsForWorkspace(workspaceRoot: string): Promise<void>;
 }
+
+export interface IRepoIntelligenceMainService extends ICoreRepoIntelligenceMainService, IStaasRepoIntelligenceMethods {}
 
 export type ImportGraphResult = {
 	imports: string[];       // files this file imports (resolved relative paths)
@@ -304,7 +268,7 @@ export const REPO_INTEL_PROFILE_STALE_MS = 24 * 60 * 60 * 1000;
 
 // Injection char budget caps (per mode). CHARS_PER_TOKEN ≈ 4 in wireMessageTrim.
 export const REPO_PROFILE_MAX_CHARS: Record<'agent' | 'gather' | 'normal', number> = {
-	agent: 8_000,  // expanded for STaaS multi-service topology
+	agent: 8_000,
 	gather: 3_200, // ~800 tokens — commands + framework
 	normal: 1_600, // ~400 tokens — language + minimal facts
 };

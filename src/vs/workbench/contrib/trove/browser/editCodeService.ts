@@ -6,12 +6,15 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { ICodeEditor, IOverlayWidget, IViewZone } from '../../../../editor/browser/editorBrowser.js';
+import { ICodeEditor, IViewZone } from '../../../../editor/browser/editorBrowser.js';
 
 // import { IUndoRedoService } from '../../../../platform/undoRedo/common/undoRedo.js';
 import { ICodeEditorService } from '../../../../editor/browser/services/codeEditorService.js';
 // import { throttle } from '../../../../base/common/decorators.js';
 import { findDiffs } from './helpers/findDiffs.js';
+import { computeDiffAreaDiffs, sliceDiffAreaCodeFromFile } from './helpers/computeDiffAreaDiffs.js';
+import { AcceptRejectInlineWidget } from './acceptRejectInlineWidget.js';
+import { getAcceptRejectWidgetPlacement } from './helpers/getAcceptRejectWidgetPlacement.js';
 import { EndOfLinePreference, IModelDecorationOptions, ITextModel } from '../../../../editor/common/model.js';
 import { IRange } from '../../../../editor/common/core/range.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
@@ -19,14 +22,9 @@ import { IUndoRedoElement, IUndoRedoService, UndoRedoElementType } from '../../.
 import { RenderOptions } from '../../../../editor/browser/widget/diffEditor/components/diffEditorViewZones/renderLines.js';
 // import { IModelService } from '../../../../editor/common/services/model.js';
 
-import * as dom from '../../../../base/browser/dom.js';
-import { Widget } from '../../../../base/browser/ui/widget.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConsistentEditorItemService, IConsistentItemService } from './helperServices/consistentItemService.js';
 import { voidPrefixAndSuffix, ctrlKStream_userMessage, ctrlKStream_systemMessage, defaultQuickEditFimTags, rewriteCode_systemMessage, rewriteCode_userMessage, searchReplaceGivenDescription_systemMessage, searchReplaceGivenDescription_userMessage, tripleTick, } from '../common/prompt/prompts.js';
-import { ITroveCommandBarService } from './troveCommandBarService.js';
-import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
-import { TROVE_ACCEPT_DIFF_ACTION_ID, TROVE_REJECT_DIFF_ACTION_ID } from './actionIDs.js';
 
 import { mountCtrlK } from './react/out/quick-edit-tsx/index.js'
 import { QuickEditPropsType } from './quickEditActions.js';
@@ -44,7 +42,6 @@ import { FeatureName } from '../common/troveSettingsTypes.js';
 import { ITroveModelService } from '../common/troveModelService.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { errorEditDiagnostic, logEditDiagnostic, uriPathForLog, warnEditDiagnostic } from './agentEditDiagnostics.js';
-import { acceptBg, acceptBorder, buttonFontSize, buttonTextColor, rejectBg, rejectBorder } from '../common/helpers/colors.js';
 import { DiffArea, Diff, CtrlKZone, VoidFileSnapshot, DiffAreaSnapshotEntry, diffAreaSnapshotKeys, DiffZone, TrackingZone, ComputedDiff } from '../common/editCodeServiceTypes.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 // import { isMacintosh } from '../../../../base/common/platform.js';
@@ -353,16 +350,9 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			const diffArea = this.diffAreaOfId[diffareaid]
 			if (diffArea.type !== 'DiffZone') continue
 
-			const newDiffAreaCode = fullFileText.split('\n').slice((diffArea.startLine - 1), (diffArea.endLine - 1) + 1).join('\n')
-			const computedDiffs = findDiffs(diffArea.originalCode, newDiffAreaCode)
+			const newDiffAreaCode = sliceDiffAreaCodeFromFile(fullFileText, diffArea.startLine, diffArea.endLine)
+			const computedDiffs = computeDiffAreaDiffs(diffArea.originalCode, newDiffAreaCode, diffArea.startLine)
 			for (let computedDiff of computedDiffs) {
-				if (computedDiff.type === 'deletion') {
-					computedDiff.startLine += diffArea.startLine - 1
-				}
-				if (computedDiff.type === 'edit' || computedDiff.type === 'insertion') {
-					computedDiff.startLine += diffArea.startLine - 1
-					computedDiff.endLine += diffArea.startLine - 1
-				}
 				this._addDiff(computedDiff, diffArea)
 			}
 
@@ -564,30 +554,10 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 		const diffZone = this.diffAreaOfId[diff.diffareaid]
 		if (diffZone.type === 'DiffZone' && !diffZone._streamState.isStreaming) {
-			// Accept | Reject widget
+			const { startLine, offsetLines } = getAcceptRejectWidgetPlacement(diff)
 			const consistentWidgetId = this._consistentItemService.addConsistentItemToURI({
 				uri,
 				fn: (editor) => {
-					let startLine: number
-					let offsetLines: number
-					if (diff.type === 'insertion' || diff.type === 'edit') {
-						startLine = diff.startLine // green start
-						offsetLines = 0
-					}
-					else if (diff.type === 'deletion') {
-						// if diff.startLine is out of bounds
-						if (diff.startLine === 1) {
-							const numRedLines = diff.originalEndLine - diff.originalStartLine + 1
-							startLine = diff.startLine
-							offsetLines = -numRedLines
-						}
-						else {
-							startLine = diff.startLine - 1
-							offsetLines = 1
-						}
-					}
-					else { throw new Error('Trove 1') }
-
 					const buttonsWidget = this._instantiationService.createInstance(AcceptRejectInlineWidget, {
 						editor,
 						onAccept: () => {
@@ -2293,191 +2263,5 @@ class EditCodeService extends Disposable implements IEditCodeService {
 }
 
 registerSingleton(IEditCodeService, EditCodeService, InstantiationType.Eager);
-
-
-
-
-class AcceptRejectInlineWidget extends Widget implements IOverlayWidget {
-
-	public getId(): string {
-		return this.ID || ''; // Ensure we always return a string
-	}
-	public getDomNode(): HTMLElement {
-		return this._domNode;
-	}
-	public getPosition() {
-		return null;
-	}
-
-	private readonly _domNode: HTMLElement; // Using the definite assignment assertion
-	private readonly editor: ICodeEditor;
-	private readonly ID: string;
-	private readonly startLine: number;
-
-	constructor(
-		{ editor, onAccept, onReject, diffid, startLine, offsetLines }: {
-			editor: ICodeEditor;
-			onAccept: () => void;
-			onReject: () => void;
-			diffid: string,
-			startLine: number,
-			offsetLines: number
-		},
-		@ITroveCommandBarService private readonly _troveCommandBarService: ITroveCommandBarService,
-		@IKeybindingService private readonly _keybindingService: IKeybindingService,
-		@IEditCodeService private readonly _editCodeService: IEditCodeService,
-	) {
-		super();
-
-		const uri = editor.getModel()?.uri;
-		// Initialize with default values
-		this.ID = ''
-		this.editor = editor;
-		this.startLine = startLine;
-
-		if (!uri) {
-			const { dummyDiv } = dom.h('div@dummyDiv');
-			this._domNode = dummyDiv
-			return;
-		}
-
-		this.ID = uri.fsPath + diffid;
-
-		const lineHeight = editor.getOption(EditorOption.lineHeight);
-
-		const getAcceptRejectText = () => {
-			const acceptKeybinding = this._keybindingService.lookupKeybinding(TROVE_ACCEPT_DIFF_ACTION_ID);
-			const rejectKeybinding = this._keybindingService.lookupKeybinding(TROVE_REJECT_DIFF_ACTION_ID);
-
-			// Use the standalone function directly since we're in a nested class that
-			// can't access EditCodeService's methods
-			const acceptKeybindLabel = this._editCodeService.processRawKeybindingText(acceptKeybinding && acceptKeybinding.getLabel() || '');
-			const rejectKeybindLabel = this._editCodeService.processRawKeybindingText(rejectKeybinding && rejectKeybinding.getLabel() || '');
-
-			const commandBarStateAtUri = this._troveCommandBarService.stateOfURI[uri.fsPath];
-			const selectedDiffIdx = commandBarStateAtUri?.diffIdx ?? 0; // 0th item is selected by default
-			const thisDiffIdx = commandBarStateAtUri?.sortedDiffIds.indexOf(diffid) ?? null;
-
-			const showLabel = thisDiffIdx === selectedDiffIdx
-
-			const acceptText = `Accept${showLabel ? ` ` + acceptKeybindLabel : ''}`;
-			const rejectText = `Reject${showLabel ? ` ` + rejectKeybindLabel : ''}`;
-
-			return { acceptText, rejectText }
-		}
-
-		const { acceptText, rejectText } = getAcceptRejectText()
-
-		// Create container div with buttons
-		const { acceptButton, rejectButton, buttons } = dom.h('div@buttons', [
-			dom.h('button@acceptButton', []),
-			dom.h('button@rejectButton', [])
-		]);
-
-		// Style the container
-		buttons.style.display = 'flex';
-		buttons.style.position = 'absolute';
-		buttons.style.gap = '4px';
-		buttons.style.paddingRight = '4px';
-		buttons.style.zIndex = '1';
-		buttons.style.transform = `translateY(${offsetLines * lineHeight}px)`;
-		buttons.style.justifyContent = 'flex-end';
-		buttons.style.width = '100%';
-		buttons.style.pointerEvents = 'none';
-
-
-		// Style accept button
-		acceptButton.onclick = onAccept;
-		acceptButton.textContent = acceptText;
-		acceptButton.style.backgroundColor = acceptBg;
-		acceptButton.style.border = acceptBorder;
-		acceptButton.style.color = buttonTextColor;
-		acceptButton.style.fontSize = buttonFontSize;
-		acceptButton.style.borderTop = 'none';
-		acceptButton.style.padding = '1px 4px';
-		acceptButton.style.borderBottomLeftRadius = '6px';
-		acceptButton.style.borderBottomRightRadius = '6px';
-		acceptButton.style.borderTopLeftRadius = '0';
-		acceptButton.style.borderTopRightRadius = '0';
-		acceptButton.style.cursor = 'pointer';
-		acceptButton.style.height = '100%';
-		acceptButton.style.boxShadow = '0 2px 3px rgba(0,0,0,0.2)';
-		acceptButton.style.pointerEvents = 'auto';
-
-
-		// Style reject button
-		rejectButton.onclick = onReject;
-		rejectButton.textContent = rejectText;
-		rejectButton.style.backgroundColor = rejectBg;
-		rejectButton.style.border = rejectBorder;
-		rejectButton.style.color = buttonTextColor;
-		rejectButton.style.fontSize = buttonFontSize;
-		rejectButton.style.borderTop = 'none';
-		rejectButton.style.padding = '1px 4px';
-		rejectButton.style.borderBottomLeftRadius = '6px';
-		rejectButton.style.borderBottomRightRadius = '6px';
-		rejectButton.style.borderTopLeftRadius = '0';
-		rejectButton.style.borderTopRightRadius = '0';
-		rejectButton.style.cursor = 'pointer';
-		rejectButton.style.height = '100%';
-		rejectButton.style.boxShadow = '0 2px 3px rgba(0,0,0,0.2)';
-		rejectButton.style.pointerEvents = 'auto';
-
-
-
-		this._domNode = buttons;
-
-		const updateTop = () => {
-			const topPx = editor.getTopForLineNumber(this.startLine) - editor.getScrollTop()
-			this._domNode.style.top = `${topPx}px`
-		}
-		const updateLeft = () => {
-			const layoutInfo = editor.getLayoutInfo();
-			const minimapWidth = layoutInfo.minimap.minimapWidth;
-			const verticalScrollbarWidth = layoutInfo.verticalScrollbarWidth;
-			const buttonWidth = this._domNode.offsetWidth;
-
-			const leftPx = layoutInfo.width - minimapWidth - verticalScrollbarWidth - buttonWidth;
-			this._domNode.style.left = `${leftPx}px`;
-		}
-
-		// Mount first, then update positions
-		setTimeout(() => {
-			updateTop()
-			updateLeft()
-		}, 0)
-
-		this._register(editor.onDidScrollChange(e => { updateTop() }))
-		this._register(editor.onDidChangeModelContent(e => { updateTop() }))
-		this._register(editor.onDidLayoutChange(e => { updateTop(); updateLeft() }))
-
-
-		// Listen for state changes in the command bar service
-		this._register(this._troveCommandBarService.onDidChangeState(e => {
-			if (uri && e.uri.fsPath === uri.fsPath) {
-
-				const { acceptText, rejectText } = getAcceptRejectText()
-
-				acceptButton.textContent = acceptText;
-				rejectButton.textContent = rejectText;
-
-			}
-		}));
-
-		// mount this widget
-
-		editor.addOverlayWidget(this);
-		// console.log('created elt', this._domNode)
-	}
-
-	public override dispose(): void {
-		this.editor.removeOverlayWidget(this);
-		super.dispose();
-	}
-
-}
-
-
-
 
 

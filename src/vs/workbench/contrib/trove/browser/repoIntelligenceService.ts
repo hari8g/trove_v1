@@ -334,7 +334,11 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		if (workspaceRoot === this._getWorkspaceRoot()) {
 			this._onDidChangeChunkIndex.fire(-1);
 		}
-		const profile = await this._mainProxy.refreshProfile(workspaceRoot);
+		const { orgExtensionNpmScopes, orgExtensionConfigServerDirs } = this._troveSettingsService.state.globalSettings;
+		const profile = await this._mainProxy.refreshProfile(workspaceRoot, {
+			npmScopes: orgExtensionNpmScopes,
+			configServerDirs: orgExtensionConfigServerDirs,
+		});
 		if (workspaceRoot === this._getWorkspaceRoot()) {
 			this._cachedProfile = profile;
 			await this._refreshChunkCount();

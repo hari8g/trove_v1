@@ -901,7 +901,6 @@ export const LiveReasoningBlock = ({
 	const hasContent = !!(reasoning?.trim() || anthropicText);
 	const isLiveThinking = isStreaming && !hasDisplayContent;
 
-	if (!hasContent && !isLiveThinking) return null;
 	const thinkingStartRef = useRef(Date.now());
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const [thoughtSeconds, setThoughtSeconds] = useState<number | null>(null);
@@ -928,6 +927,8 @@ export const LiveReasoningBlock = ({
 			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
 		}
 	}, [isLiveThinking, reasoning, anthropicText, children]);
+
+	if (!hasContent && !isLiveThinking) return null;
 
 	if (isLiveThinking) {
 		return (

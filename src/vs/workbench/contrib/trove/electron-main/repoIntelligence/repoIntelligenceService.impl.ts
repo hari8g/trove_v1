@@ -12,7 +12,7 @@ import { IEnvironmentMainService } from '../../../../../platform/environment/ele
 import { IEncryptionMainService } from '../../../../../platform/encryption/common/encryptionService.js';
 import { IApplicationStorageMainService } from '../../../../../platform/storage/electron-main/storageMainService.js';
 import { StorageScope } from '../../../../../platform/storage/common/storage.js';
-import { CodebaseSearchResult, ContextualProfile, ExtractedSymbol, FileMetadataEntry, GitFileStats, IRepoIntelligenceMainService, MavenImpactSummary, REPO_INTEL_PROFILE_STALE_MS, ServiceTopologySummary, UCGGraphData, UCGGraphMetrics, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { ApiContractResult, CodebaseSearchResult, ContextualProfile, ExtractedSymbol, FileMetadataEntry, GitFileStats, IRepoIntelligenceMainService, MavenImpactSummary, REPO_INTEL_PROFILE_STALE_MS, ServiceTopologySummary, UCGGraphData, UCGGraphMetrics, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 import { getTroveMemoryFilePath } from '../../common/troveMemoryPaths.js';
 import { TROVE_SETTINGS_STORAGE_KEY } from '../../common/storageKeys.js';
 import { TroveSettingsState } from '../../common/troveSettingsService.js';
@@ -24,6 +24,7 @@ import { indexGatewayRoutes } from './gatewayRouteIndexer.js';
 import { indexGitlabPipelines } from './gitlabCiIndexer.js';
 import { indexAllSpringServices } from './javaSpringIndexer.js';
 import { indexConfigEnvironments } from './configEnvIndexer.js';
+import { resolveOrgExtensionIndexerOptions, OrgExtensionIndexerOptions } from '../../extensions/staas/staasIndexerDefaults.js';
 import { getGitDiffStat, getRecentlyChangedFiles } from './gitContextIndexer.js';
 import { embedText, embedTexts } from './embeddingService.js';
 import { indexKubernetesManifests } from './kubernetesYamlIndexer.js';
@@ -117,19 +118,19 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		return this._ensureScan(workspaceRoot);
 	}
 
-	async refreshProfile(workspaceRoot: string): Promise<WorkspaceProfile> {
+	async refreshProfile(workspaceRoot: string, indexerOptions?: OrgExtensionIndexerOptions): Promise<WorkspaceProfile> {
 		const hash = hashWorkspaceRoot(workspaceRoot);
 		await this._db.init();
 		await this._db.markStale(hash);
 		this._scanInProgress.delete(workspaceRoot);
-		return this._ensureScan(workspaceRoot);
+		return this._ensureScan(workspaceRoot, indexerOptions);
 	}
 
-	private async _ensureScan(workspaceRoot: string): Promise<WorkspaceProfile> {
+	private async _ensureScan(workspaceRoot: string, indexerOptions?: OrgExtensionIndexerOptions): Promise<WorkspaceProfile> {
 		const inProgress = this._scanInProgress.get(workspaceRoot);
 		if (inProgress) return inProgress;
 
-		const promise = this._scanWorkspace(workspaceRoot);
+		const promise = this._scanWorkspace(workspaceRoot, indexerOptions);
 		this._scanInProgress.set(workspaceRoot, promise);
 		try {
 			return await promise;
@@ -138,8 +139,9 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		}
 	}
 
-	private async _scanWorkspace(workspaceRoot: string): Promise<WorkspaceProfile> {
+	private async _scanWorkspace(workspaceRoot: string, indexerOptions?: OrgExtensionIndexerOptions): Promise<WorkspaceProfile> {
 		const hash = hashWorkspaceRoot(workspaceRoot);
+		const resolvedIndexerOptions = resolveOrgExtensionIndexerOptions(indexerOptions);
 		const scan = scanWorkspace(workspaceRoot);
 		const commands = detectCommands(workspaceRoot);
 
@@ -207,7 +209,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 				this._metricsService.capture('STaaS Gateway Indexed', { routeCount: gatewayRoutes.length });
 			}
 
-			const npmResult = indexNpmDependencies(workspaceRoot);
+			const npmResult = indexNpmDependencies(workspaceRoot, [...resolvedIndexerOptions.npmScopes]);
 			if (npmResult.edges.length > 0) {
 				await this._db.replaceNpmEdges(hash, npmResult.edges);
 				this._metricsService.capture('STaaS NPM Indexed', {
@@ -216,7 +218,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 				});
 			}
 
-			const configResult = indexConfigEnvironments(workspaceRoot);
+			const configResult = indexConfigEnvironments(workspaceRoot, { configServerDirs: resolvedIndexerOptions.configServerDirs });
 			if (configResult.fileCount > 0) {
 				await this._db.replaceConfigDrift(hash, configResult.envDrift);
 				this._metricsService.capture('STaaS Config Indexed', {
@@ -879,7 +881,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		workspaceRoot: string,
 		httpMethod: string,
 		pathPattern: string,
-	): Promise<import('../../common/repoIntelligenceTypes.js').ApiContractResult | null> {
+	): Promise<ApiContractResult | null> {
 		const hash = hashWorkspaceRoot(workspaceRoot);
 		await this._db.init();
 		const endpoints = await this._db.getSpringEndpoints(hash);

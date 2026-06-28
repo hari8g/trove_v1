@@ -117,3 +117,7 @@ export type VoidFileSnapshot = {
 	entireFileCode: string;
 }
 
+export const pickDiffAreaSnapshotFields = <T extends DiffArea>(diffArea: T): DiffAreaSnapshotEntry<T> => {
+	return Object.fromEntries(diffAreaSnapshotKeys.map(key => [key, diffArea[key]])) as DiffAreaSnapshotEntry<T>;
+};
+

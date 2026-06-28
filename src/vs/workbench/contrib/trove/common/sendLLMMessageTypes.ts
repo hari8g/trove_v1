@@ -143,6 +143,7 @@ export type SendLLMMessageParams = {
 	overridesOfModel: OverridesOfModel | undefined;
 
 	enablePromptCache?: boolean;
+	orgExtensions?: boolean;
 
 	volatileSystemMessage?: string;
 	threadId?: string;

@@ -11,6 +11,7 @@ import { StagingSelectionItem } from '../chatThreadServiceTypes.js';
 import { os } from '../helpers/systemInfo.js';
 import { RawToolParamsObj } from '../sendLLMMessageTypes.js';
 import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, BuiltinToolResultType, ToolName } from '../toolsServiceTypes.js';
+import { filterStaasBuiltinToolNames, DEFAULT_ORG_EXTENSIONS_ENABLED } from '../../extensions/staas/staasToolNames.js';
 import { ChatMode } from '../troveSettingsTypes.js';
 import { REPO_PROFILE_MAX_CHARS, type WorkspaceProfile } from '../repoIntelligenceTypes.js';
 
@@ -564,14 +565,24 @@ export const isABuiltinToolName = (toolName: string): toolName is BuiltinToolNam
 
 
 
-export const availableTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined) => {
+export const availableTools = (
+	chatMode: ChatMode | null,
+	mcpTools: InternalToolInfo[] | undefined,
+	options?: { orgExtensions?: boolean },
+) => {
+
+	const orgExtensions = options?.orgExtensions ?? DEFAULT_ORG_EXTENSIONS_ENABLED;
 
 	const builtinToolNames: BuiltinToolName[] | undefined = chatMode === 'normal' ? undefined
 		: chatMode === 'gather' ? (Object.keys(builtinTools) as BuiltinToolName[]).filter(toolName => !(toolName in approvalTypeOfBuiltinToolName))
 			: chatMode === 'agent' ? Object.keys(builtinTools) as BuiltinToolName[]
 				: undefined
 
-	const effectiveBuiltinTools = builtinToolNames?.map(toolName => builtinTools[toolName]) ?? undefined
+	const filteredBuiltinToolNames: BuiltinToolName[] | undefined = builtinToolNames
+		? filterStaasBuiltinToolNames(builtinToolNames, orgExtensions)
+		: undefined;
+
+	const effectiveBuiltinTools = filteredBuiltinToolNames?.map((toolName: BuiltinToolName) => builtinTools[toolName]) ?? undefined
 	const effectiveMCPTools = chatMode === 'agent' ? mcpTools : undefined
 
 	const tools: InternalToolInfo[] | undefined = !(builtinToolNames || mcpTools) ? undefined
@@ -605,8 +616,8 @@ export const reParsedToolXMLString = (toolName: ToolName, toolParams: RawToolPar
 
 /* We expect tools to come at the end - not a hard limit, but that's just how we process them, and the flow makes more sense that way. */
 // - You are allowed to call multiple tools by specifying them consecutively. However, there should be NO text or writing between tool calls or after them.
-const systemToolsXMLPrompt = (chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined) => {
-	const tools = availableTools(chatMode, mcpTools)
+const systemToolsXMLPrompt = (chatMode: ChatMode, mcpTools: InternalToolInfo[] | undefined, orgExtensions: boolean) => {
+	const tools = availableTools(chatMode, mcpTools, { orgExtensions })
 	if (!tools || tools.length === 0) return null
 
 	const toolXMLDefinitions = (`\
@@ -830,6 +841,7 @@ type ChatSystemMessageOpts = {
 	chatMode: ChatMode;
 	mcpTools: InternalToolInfo[] | undefined;
 	includeXMLToolDefinitions: boolean;
+	orgExtensions?: boolean;
 	repoProfile?: WorkspaceProfile | null;
 	workspaceRules?: string | null;
 	userMemory?: string | null;
@@ -838,7 +850,7 @@ type ChatSystemMessageOpts = {
 	contextualProfile?: { activeFile: string; relatedFiles: string[]; coveringTests: string[] } | null;
 };
 
-export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'persistentTerminalIDs' | 'activeURI'>): string => {
+export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, orgExtensions = DEFAULT_ORG_EXTENSIONS_ENABLED, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'persistentTerminalIDs' | 'activeURI'>): string => {
 	const header = (`You are an expert coding ${mode === 'agent' ? 'agent' : 'assistant'} whose job is \
 ${mode === 'agent' ? `to help the user develop, run, and make changes to their codebase.`
 			: mode === 'gather' ? `to search, understand, and reference files in the user's codebase.`
@@ -855,7 +867,7 @@ Please assist the user with their query.`)
 ${workspaceFolders.join('\n') || 'NO FOLDERS OPEN'}
 </system_info>`)
 
-	const toolDefinitions = includeXMLToolDefinitions ? systemToolsXMLPrompt(mode, mcpTools) : null
+	const toolDefinitions = includeXMLToolDefinitions ? systemToolsXMLPrompt(mode, mcpTools, orgExtensions) : null
 
 	const details: string[] = []
 

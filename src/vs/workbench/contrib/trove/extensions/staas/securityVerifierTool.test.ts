@@ -1,7 +1,10 @@
 import * as assert from 'assert';
-import { verifySecurityCompliance } from '../securityVerifierTool.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { verifySecurityCompliance } from './securityVerifierTool.js';
 
 suite('SecurityVerifierTool', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('flags missing tenant filter in Java @Query', () => {
 		const code = `

@@ -22,6 +22,7 @@ import { getSendableReasoningInfo, getModelCapabilities, getProviderCapabilities
 import { getAnthropicBetaHeaders, getEffectiveMaxOutputTokens } from '../../common/agentOutputTokenLimits.js';
 import { extractReasoningWrapper, extractXMLToolsWrapper } from './extractGrammar.js';
 import { availableTools, InternalToolInfo } from '../../common/prompt/prompts.js';
+import { DEFAULT_ORG_EXTENSIONS_ENABLED } from '../../extensions/staas/staasToolNames.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 
 const getGoogleApiKey = async () => {
@@ -55,6 +56,7 @@ type SendChatParams_Internal = InternalCommonMessageParams & {
 	chatMode: ChatMode | null;
 	mcpTools: InternalToolInfo[] | undefined;
 	enablePromptCache?: boolean;
+	orgExtensions?: boolean;
 }
 type SendFIMParams_Internal = InternalCommonMessageParams & { messages: LLMFIMMessage; separateSystemMessage: string | undefined; }
 export type ListParams_Internal<ModelResponse> = ModelListParams<ModelResponse>
@@ -236,8 +238,8 @@ const toOpenAICompatibleTool = (toolInfo: InternalToolInfo) => {
 	} satisfies OpenAI.Chat.Completions.ChatCompletionTool
 }
 
-const openAITools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined) => {
-	const allowedTools = availableTools(chatMode, mcpTools)
+const openAITools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined, orgExtensions = DEFAULT_ORG_EXTENSIONS_ENABLED) => {
+	const allowedTools = availableTools(chatMode, mcpTools, { orgExtensions })
 	if (!allowedTools || allowedTools.length === 0) return null
 
 	const openAITools: OpenAI.Chat.Completions.ChatCompletionTool[] = []
@@ -318,7 +320,7 @@ const pickBestAnthropicToolCall = (
 // ------------ OPENAI-COMPATIBLE ------------
 
 
-const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, volatileSystemMessage, threadId, overridesOfModel, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
+const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, modelName: modelName_, _setAborter, providerName, chatMode, separateSystemMessage, volatileSystemMessage, threadId, overridesOfModel, mcpTools, enablePromptCache = false, orgExtensions = DEFAULT_ORG_EXTENSIONS_ENABLED }: SendChatParams_Internal) => {
 	const {
 		modelName,
 		specialToolFormat,
@@ -338,7 +340,7 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 	}
 
 	// tools
-	const potentialTools = openAITools(chatMode, mcpTools)
+	const potentialTools = openAITools(chatMode, mcpTools, orgExtensions)
 	const nativeToolsObj = potentialTools && specialToolFormat === 'openai-style' ?
 		{ tools: potentialTools } as const
 		: {}
@@ -386,7 +388,7 @@ const _sendOpenAICompatibleChat = async ({ messages, onText, onFinalMessage, onE
 
 	// manually parse out tool results if XML
 	if (!specialToolFormat) {
-		const { newOnText, newOnFinalMessage } = extractXMLToolsWrapper(onText, onFinalMessage, chatMode, mcpTools)
+		const { newOnText, newOnFinalMessage } = extractXMLToolsWrapper(onText, onFinalMessage, chatMode, mcpTools, orgExtensions)
 		onText = newOnText
 		onFinalMessage = newOnFinalMessage
 	}
@@ -520,8 +522,8 @@ const toAnthropicTool = (toolInfo: InternalToolInfo) => {
 	} satisfies Anthropic.Messages.Tool
 }
 
-const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined, enablePromptCache: boolean) => {
-	const allowedTools = availableTools(chatMode, mcpTools)
+const anthropicTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined, enablePromptCache: boolean, orgExtensions = DEFAULT_ORG_EXTENSIONS_ENABLED) => {
+	const allowedTools = availableTools(chatMode, mcpTools, { orgExtensions })
 	if (!allowedTools || allowedTools.length === 0) return null
 
 	const anthropicTools: Anthropic.Messages.ToolUnion[] = []
@@ -631,7 +633,7 @@ const addConversationCacheBreakpoints = (
 	return result;
 };
 
-const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName: modelName_, _setAborter, separateSystemMessage, volatileSystemMessage, chatMode, mcpTools, enablePromptCache = false }: SendChatParams_Internal) => {
+const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessage, onError, settingsOfProvider, modelSelectionOptions, overridesOfModel, modelName: modelName_, _setAborter, separateSystemMessage, volatileSystemMessage, chatMode, mcpTools, enablePromptCache = false, orgExtensions = DEFAULT_ORG_EXTENSIONS_ENABLED }: SendChatParams_Internal) => {
 	const {
 		modelName,
 		specialToolFormat,
@@ -649,7 +651,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 	const maxTokens = getEffectiveMaxOutputTokens(providerName, chatMode, baseMaxTokens)
 
 	// tools
-	const potentialTools = anthropicTools(chatMode, mcpTools, enablePromptCache)
+	const potentialTools = anthropicTools(chatMode, mcpTools, enablePromptCache, orgExtensions)
 	const nativeToolsObj = potentialTools && specialToolFormat === 'anthropic-style' ?
 		{ tools: potentialTools, tool_choice: { type: 'auto' } } as const
 		: {}
@@ -684,7 +686,7 @@ const sendAnthropicChat = async ({ messages, providerName, onText, onFinalMessag
 
 	// manually parse out tool results if XML
 	if (!specialToolFormat) {
-		const { newOnText, newOnFinalMessage } = extractXMLToolsWrapper(onText, onFinalMessage, chatMode, mcpTools)
+		const { newOnText, newOnFinalMessage } = extractXMLToolsWrapper(onText, onFinalMessage, chatMode, mcpTools, orgExtensions)
 		onText = newOnText
 		onFinalMessage = newOnFinalMessage
 	}
@@ -937,8 +939,8 @@ const toGeminiFunctionDecl = (toolInfo: InternalToolInfo) => {
 	} satisfies FunctionDeclaration
 }
 
-const geminiTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined): GeminiTool[] | null => {
-	const allowedTools = availableTools(chatMode, mcpTools)
+const geminiTools = (chatMode: ChatMode | null, mcpTools: InternalToolInfo[] | undefined, orgExtensions = DEFAULT_ORG_EXTENSIONS_ENABLED): GeminiTool[] | null => {
+	const allowedTools = availableTools(chatMode, mcpTools, { orgExtensions })
 	if (!allowedTools || allowedTools.length === 0) return null
 	const functionDecls: FunctionDeclaration[] = []
 	for (const toolInfo of allowedTools) {
@@ -965,6 +967,7 @@ const sendGeminiChat = async ({
 	modelSelectionOptions,
 	chatMode,
 	mcpTools,
+	orgExtensions = DEFAULT_ORG_EXTENSIONS_ENABLED,
 }: SendChatParams_Internal) => {
 
 	if (providerName !== 'gemini') throw new Error(`Sending Gemini chat, but provider was ${providerName}`)
@@ -990,7 +993,7 @@ const sendGeminiChat = async ({
 			: undefined
 
 	// tools
-	const potentialTools = geminiTools(chatMode, mcpTools)
+	const potentialTools = geminiTools(chatMode, mcpTools, orgExtensions)
 	const toolConfig = potentialTools && specialToolFormat === 'gemini-style' ?
 		potentialTools
 		: undefined
@@ -1001,7 +1004,7 @@ const sendGeminiChat = async ({
 
 	// manually parse out tool results if XML
 	if (!specialToolFormat) {
-		const { newOnText, newOnFinalMessage } = extractXMLToolsWrapper(onText, onFinalMessage, chatMode, mcpTools)
+		const { newOnText, newOnFinalMessage } = extractXMLToolsWrapper(onText, onFinalMessage, chatMode, mcpTools, orgExtensions)
 		onText = newOnText
 		onFinalMessage = newOnFinalMessage
 	}

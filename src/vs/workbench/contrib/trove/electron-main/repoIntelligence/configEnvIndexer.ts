@@ -3,6 +3,8 @@
  * Boot services and identifies property drift between environments.
  *---------------------------------------------------------------------------*/
 
+import { DEFAULT_ORG_EXTENSION_CONFIG_SERVER_DIRS } from '../../extensions/staas/staasIndexerDefaults.js';
+
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative, sep } from 'path';
 
@@ -88,16 +90,15 @@ export type ConfigIndexResult = {
 	fileCount: number;
 };
 
-export function indexConfigEnvironments(workspaceRoot: string): ConfigIndexResult {
+export type ConfigIndexOptions = {
+	configServerDirs?: readonly string[];
+};
+
+export function indexConfigEnvironments(workspaceRoot: string, options?: ConfigIndexOptions): ConfigIndexResult {
 	const configFiles = collectConfigFiles(workspaceRoot);
 
-	// Also scan known Spring Cloud Config server directories explicitly
-	const configServiceCandidates = [
-		join(workspaceRoot, 'staas-cloud-config-service-dev'),
-		join(workspaceRoot, 'cloud-config'),
-		join(workspaceRoot, 'config-service'),
-		join(workspaceRoot, 'config-server'),
-	];
+	const configServiceCandidates = (options?.configServerDirs ?? DEFAULT_ORG_EXTENSION_CONFIG_SERVER_DIRS)
+		.map(dir => join(workspaceRoot, dir));
 	for (const candidate of configServiceCandidates) {
 		try {
 			statSync(candidate);
