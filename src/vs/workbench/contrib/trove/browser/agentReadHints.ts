@@ -78,6 +78,31 @@ You have made ${counts.total} read/search calls this run. Stop exploring — use
 </agent_hints>`;
 };
 
+/**
+ * Emits a one-shot hint on the very first turn of a new query when the thread
+ * already has file-read history from previous queries.  This tells the model
+ * upfront which files it has already seen so it does not re-read them.
+ * Only fires on the first message of a new run (nMessagesSent === 1).
+ */
+export const buildCrossQueryFileReadHint = (
+	fileReads: Map<string, FileReadRecord>,
+	nMessagesSent: number,
+): string => {
+	if (nMessagesSent !== 1) return '';
+	// Only list files that were read in a previous run (count is carried over from history,
+	// so any entry with count >= 1 that exists before this run starts was pre-seeded).
+	// We suppress the hint when fileReads is empty (first-ever query in thread).
+	if (fileReads.size === 0) return '';
+	const files = [...fileReads.keys()]
+		.map(k => k.split(/[/\\]/).pop() ?? k)
+		.slice(0, 20) // cap to avoid prompt bloat
+		.join(', ');
+	return `\n\n<agent_hints>
+Files already read in this thread earlier: ${files}.
+Their content is likely still in the conversation above. Search the thread before calling read_file on these paths again.
+</agent_hints>`;
+};
+
 export const buildAgentTailHints = (opts: {
 	repeatEditHint: string;
 	repeatReadHint: string;
@@ -86,6 +111,7 @@ export const buildAgentTailHints = (opts: {
 	explorationBudgetHint: string;
 	sandboxVerificationHint?: string;
 	editCompletionHint?: string;
+	crossQueryFileReadHint?: string;
 }): string => {
-	return (opts.repeatEditHint + opts.repeatReadHint + opts.repeatFileReadHint + (opts.largeFileEditHint ?? '') + opts.explorationBudgetHint + (opts.sandboxVerificationHint ?? '') + (opts.editCompletionHint ?? '')).trim();
+	return (opts.repeatEditHint + opts.repeatReadHint + opts.repeatFileReadHint + (opts.largeFileEditHint ?? '') + opts.explorationBudgetHint + (opts.sandboxVerificationHint ?? '') + (opts.editCompletionHint ?? '') + (opts.crossQueryFileReadHint ?? '')).trim();
 };

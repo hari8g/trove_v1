@@ -24,6 +24,8 @@ export const COMPACTABLE_TOOL_NAMES: ReadonlySet<ToolName> = new Set([
 	'search_pathnames_only',
 	'get_dir_tree',
 	'ls_dir',
+	'run_command',
+	'run_persistent_command',
 ]);
 
 export const isCompactableToolName = (toolName: ToolName): boolean => {
@@ -41,6 +43,17 @@ const formatReadFileCompact = (params: BuiltinToolCallParams['read_file'], conte
 const formatGenericCompact = (toolName: ToolName, content: string): string => {
 	const lineCount = content.split('\n').length;
 	return `${toolName}(...) → <${lineCount} lines>; re-run if needed`;
+};
+
+const formatTerminalCommandCompact = (
+	params: BuiltinToolCallParams['run_command'] | BuiltinToolCallParams['run_persistent_command'],
+	content: string,
+): string => {
+	const command = (params as { command: string }).command;
+	const lineCount = content.split('\n').length;
+	const exitMatch = content.match(/\(exit code (\d+)\)/);
+	const statusSuffix = exitMatch ? `, exit ${exitMatch[1]}` : '';
+	return `run_command(${JSON.stringify(command)}) → <${lineCount} lines${statusSuffix}>; re-run if needed`;
 };
 
 const getReadFileUriKey = (message: ChatMessage): string | undefined => {
@@ -99,6 +112,11 @@ export const compactStaleToolResults = (chatMessages: ChatMessage[]): ChatMessag
 		if (message.name === 'read_file') {
 			compactContent = formatReadFileCompact(
 				message.params as BuiltinToolCallParams['read_file'],
+				message.content,
+			);
+		} else if (message.name === 'run_command' || message.name === 'run_persistent_command') {
+			compactContent = formatTerminalCommandCompact(
+				message.params as BuiltinToolCallParams['run_command'] | BuiltinToolCallParams['run_persistent_command'],
 				message.content,
 			);
 		} else {

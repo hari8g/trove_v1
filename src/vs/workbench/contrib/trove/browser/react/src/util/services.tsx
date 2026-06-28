@@ -60,6 +60,7 @@ import { AgentDeliverySummary } from '../../../../common/agentDeliveryTypes.js';
 import type { QueuedUserMessage } from '../../../../common/chatMessageQueueTypes.js';
 import { IStorageService, StorageScope } from '../../../../../../../platform/storage/common/storage.js'
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js'
+import { INotepadsService } from '../../../notepadsService.js'
 
 
 // normally to do this you'd use a useEffect that calls .onDidChangeState(), but useEffect mounts too late and misses initial state changes
@@ -279,6 +280,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IRiafAgentService: accessor.get(IRiafAgentService),
 		IUsageMeteringService: accessor.get(IUsageMeteringService),
 		IRepoIntelligenceService: accessor.get(IRepoIntelligenceService),
+		INotepadsService: accessor.get(INotepadsService),
 
 	} as const
 	return reactAccessor

@@ -66,6 +66,9 @@ import './fileService.js'
 // register source control management
 import './troveSCMService.js'
 
+// register notepads service
+import './notepadsService.js'
+
 // register repository intelligence
 import './repoIntelligenceService.js'
 import './webSearchService.js'

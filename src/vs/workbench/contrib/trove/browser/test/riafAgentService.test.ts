@@ -24,6 +24,7 @@ type FinishEvent = { threadId: string; pendingDiffCount: number; filesChanged: s
 function createTestHarness(ds: Pick<DisposableStore, 'add'>, opts?: { workspaceRoot?: string | null; fileExists?: boolean }) {
 	const finishEmitter = ds.add(new Emitter<FinishEvent>());
 	const threadState = { currentThreadId: 'thread-initial' };
+	let openThreadForAgentRunCalls = 0;
 	let openNewThreadCalls = 0;
 	let streamResolve: (() => void) | null = null;
 	let abortCalls = 0;
@@ -37,7 +38,7 @@ function createTestHarness(ds: Pick<DisposableStore, 'add'>, opts?: { workspaceR
 	};
 	const setCalls: Array<{ name: string; value: unknown }> = [];
 
-	let lastUserMessageOpts: { userMessage: string; displayMessage?: string; threadId: string } | null = null;
+	let lastUserMessageOpts: { userMessage: string; displayMessage?: string; threadId: string; _internalPrompt?: boolean } | null = null;
 
 	const chatThread = {
 		state: threadState,
@@ -46,7 +47,12 @@ function createTestHarness(ds: Pick<DisposableStore, 'add'>, opts?: { workspaceR
 			openNewThreadCalls += 1;
 			threadState.currentThreadId = `thread-${openNewThreadCalls}`;
 		},
-		addUserMessageAndStreamResponse: async (opts: { userMessage: string; displayMessage?: string; threadId: string }) => {
+		openThreadForAgentRun: () => {
+			openThreadForAgentRunCalls += 1;
+			threadState.currentThreadId = `thread-${openThreadForAgentRunCalls}`;
+			return threadState.currentThreadId;
+		},
+		addUserMessageAndStreamResponse: async (opts: { userMessage: string; displayMessage?: string; threadId: string; _internalPrompt?: boolean }) => {
 			lastUserMessageOpts = opts;
 			await new Promise<void>(resolve => {
 				streamResolve = resolve;
@@ -94,6 +100,7 @@ function createTestHarness(ds: Pick<DisposableStore, 'add'>, opts?: { workspaceR
 		setCalls,
 		files,
 		get openNewThreadCalls() { return openNewThreadCalls; },
+		get openThreadForAgentRunCalls() { return openThreadForAgentRunCalls; },
 		get abortCalls() { return abortCalls; },
 		get lastUserMessageOpts() { return lastUserMessageOpts; },
 		resolveStream: () => {
@@ -189,9 +196,9 @@ suite('Trove - riafAgentRunController', () => {
 			const first = harness.service.startRun();
 			await flushAsync();
 			assert.strictEqual(harness.service.state.status, 'running');
-			const callsBefore = harness.openNewThreadCalls;
+			const callsBefore = harness.openThreadForAgentRunCalls;
 			await harness.service.startRun();
-			assert.strictEqual(harness.openNewThreadCalls, callsBefore);
+			assert.strictEqual(harness.openThreadForAgentRunCalls, callsBefore);
 			harness.resolveStream();
 			await first;
 		});
@@ -204,6 +211,7 @@ suite('Trove - riafAgentRunController', () => {
 
 			assert.ok(harness.lastUserMessageOpts);
 			assert.strictEqual(harness.lastUserMessageOpts!.displayMessage, RIAF_USER_DISPLAY_MESSAGE);
+			assert.strictEqual(harness.lastUserMessageOpts!._internalPrompt, true);
 			assert.ok(harness.lastUserMessageOpts!.userMessage.includes('repository analysis'));
 			assert.notStrictEqual(harness.lastUserMessageOpts!.userMessage, RIAF_USER_DISPLAY_MESSAGE);
 

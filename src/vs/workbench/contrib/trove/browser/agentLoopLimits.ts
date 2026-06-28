@@ -13,14 +13,39 @@ export const DEFAULT_MAX_READONLY_CALLS = 12;
 export const DEFAULT_MAX_CONSECUTIVE_TOOL_FAILS = 3;
 
 /** Default silence window before aborting a stalled LLM stream. */
-export const DEFAULT_LLM_STREAM_STALL_TIMEOUT_MS = 60_000;
+export const DEFAULT_LLM_STREAM_STALL_TIMEOUT_MS = 120_000;
 
 /** Large rewrite_file / edit_file tool JSON can take several minutes to stream. */
 export const EDIT_LLM_STREAM_STALL_TIMEOUT_MS = 300_000;
 
+/** Extended thinking (budget/effort sliders) can be silent for minutes before text/tool tokens arrive. */
+export const REASONING_LLM_STREAM_STALL_TIMEOUT_MS = 600_000;
+
+/** Any streaming tool call (JSON args) can pause between chunks on slow proxies. */
+export const TOOL_LLM_STREAM_STALL_TIMEOUT_MS = 300_000;
+
+export type LlmStreamStallTimeoutOpts = {
+	editToolStreaming?: boolean;
+	toolStreaming?: boolean;
+	reasoningEnabled?: boolean;
+};
+
 export const getLlmStreamStallTimeoutMs = (
 	baseTimeoutMs: number,
-	editToolStreaming: boolean,
-): number => editToolStreaming
-	? Math.max(baseTimeoutMs, EDIT_LLM_STREAM_STALL_TIMEOUT_MS)
-	: baseTimeoutMs;
+	opts: LlmStreamStallTimeoutOpts | boolean = {},
+): number => {
+	const normalized: LlmStreamStallTimeoutOpts = typeof opts === 'boolean'
+		? { editToolStreaming: opts }
+		: opts;
+	let timeoutMs = baseTimeoutMs;
+	if (normalized.reasoningEnabled) {
+		timeoutMs = Math.max(timeoutMs, REASONING_LLM_STREAM_STALL_TIMEOUT_MS);
+	}
+	if (normalized.toolStreaming) {
+		timeoutMs = Math.max(timeoutMs, TOOL_LLM_STREAM_STALL_TIMEOUT_MS);
+	}
+	if (normalized.editToolStreaming) {
+		timeoutMs = Math.max(timeoutMs, EDIT_LLM_STREAM_STALL_TIMEOUT_MS);
+	}
+	return timeoutMs;
+};

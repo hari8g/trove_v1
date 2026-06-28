@@ -7,8 +7,9 @@ import { createHash } from 'crypto';
 import { join } from 'path';
 import type { Database } from '@vscode/sqlite3';
 import { CommandEntry, CodeChunk, CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, FrameworkEntry, RepoIntelligenceIndexingStats, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { EmbeddingVector, cosineSimilarity, serializeEmbedding, deserializeEmbedding } from './embeddingService.js';
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS workspace_profiles (
@@ -545,6 +546,14 @@ export class RepoIntelligenceDb {
 				workspace_hash TEXT PRIMARY KEY, file_count INTEGER NOT NULL, has_manual_gates INTEGER NOT NULL
 			)`);
 
+		await this._ensureTable(db, 'chunk_file_hashes',
+			`CREATE TABLE IF NOT EXISTS chunk_file_hashes (
+				workspace_hash  TEXT NOT NULL,
+				file_path       TEXT NOT NULL,
+				content_hash    TEXT NOT NULL,
+				PRIMARY KEY (workspace_hash, file_path)
+			)`);
+
 		await this._ensureTable(db, 'ucg_file_nodes',
 			`CREATE TABLE IF NOT EXISTS ucg_file_nodes (
 				workspace_hash TEXT NOT NULL, file_path TEXT NOT NULL, language TEXT NOT NULL,
@@ -566,6 +575,16 @@ export class RepoIntelligenceDb {
 				hot_files_json TEXT NOT NULL DEFAULT '[]', ext_deps_json TEXT NOT NULL DEFAULT '{}',
 				computed_at INTEGER NOT NULL
 			)`);
+
+		await this._ensureTable(db, 'chunk_embeddings',
+			`CREATE TABLE IF NOT EXISTS chunk_embeddings (
+				workspace_hash  TEXT NOT NULL,
+				file_path       TEXT NOT NULL,
+				start_line      INTEGER NOT NULL,
+				embedding       BLOB NOT NULL,
+				PRIMARY KEY (workspace_hash, file_path, start_line)
+			)`);
+		await this._exec(db, `CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_workspace ON chunk_embeddings(workspace_hash)`);
 
 		await this._exec(db, `PRAGMA user_version = ${SCHEMA_VERSION}`);
 	}
@@ -1080,7 +1099,7 @@ export class RepoIntelligenceDb {
 				await this._run(
 					`INSERT INTO chunks_fts (chunk_text, file_path, workspace_hash, start_line, end_line, chunk_type)
 					 VALUES (?, ?, ?, ?, ?, ?)`,
-					[chunk.chunkText, chunk.filePath, workspaceHash, chunk.startLine, chunk.endLine, chunk.chunkType],
+					[splitIdentifiers(chunk.chunkText), chunk.filePath, workspaceHash, chunk.startLine, chunk.endLine, chunk.chunkType],
 				);
 			}
 			await this._run(`COMMIT`);
@@ -1088,6 +1107,59 @@ export class RepoIntelligenceDb {
 			await this._run(`ROLLBACK`).catch(() => { });
 			throw err;
 		}
+	}
+
+	/** Replace chunks for a single file only — used by the incremental rebuild path. */
+	async replaceChunksForFile(workspaceHash: string, filePath: string, chunks: CodeChunk[]): Promise<void> {
+		await this._run(`BEGIN IMMEDIATE`);
+		try {
+			await this._run(
+				`DELETE FROM code_chunks WHERE workspace_hash = ? AND file_path = ?`,
+				[workspaceHash, filePath],
+			);
+			await this._run(
+				`DELETE FROM chunks_fts WHERE workspace_hash = ? AND file_path = ?`,
+				[workspaceHash, filePath],
+			);
+			for (const chunk of chunks) {
+				await this._run(
+					`INSERT INTO code_chunks (id, workspace_hash, file_path, chunk_text, start_line, end_line, chunk_type)
+					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+					[chunk.id, workspaceHash, chunk.filePath, chunk.chunkText, chunk.startLine, chunk.endLine, chunk.chunkType],
+				);
+				await this._run(
+					`INSERT INTO chunks_fts (chunk_text, file_path, workspace_hash, start_line, end_line, chunk_type)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					[splitIdentifiers(chunk.chunkText), chunk.filePath, workspaceHash, chunk.startLine, chunk.endLine, chunk.chunkType],
+				);
+			}
+			await this._run(`COMMIT`);
+		} catch (err) {
+			await this._run(`ROLLBACK`).catch(() => { });
+			throw err;
+		}
+	}
+
+	async getChunkFileHashes(workspaceHash: string): Promise<Map<string, string>> {
+		const rows = await this._all<{ file_path: string; content_hash: string }>(
+			`SELECT file_path, content_hash FROM chunk_file_hashes WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return new Map(rows.map(r => [r.file_path, r.content_hash]));
+	}
+
+	async upsertChunkFileHash(workspaceHash: string, filePath: string, contentHash: string): Promise<void> {
+		await this._run(
+			`INSERT OR REPLACE INTO chunk_file_hashes (workspace_hash, file_path, content_hash) VALUES (?, ?, ?)`,
+			[workspaceHash, filePath, contentHash],
+		);
+	}
+
+	async deleteChunkFileHash(workspaceHash: string, filePath: string): Promise<void> {
+		await this._run(
+			`DELETE FROM chunk_file_hashes WHERE workspace_hash = ? AND file_path = ?`,
+			[workspaceHash, filePath],
+		);
 	}
 
 	async searchChunks(workspaceHash: string, query: string, limit: number): Promise<CodebaseSearchResult[]> {
@@ -1118,6 +1190,121 @@ export class RepoIntelligenceDb {
 			snippet: truncateSnippet(row.chunk_text, 400),
 			score: row.score,
 		}));
+	}
+
+	// ── vector embedding methods ──────────────────────────────────────────────
+
+	async upsertChunkEmbedding(
+		workspaceHash: string,
+		filePath: string,
+		startLine: number,
+		embedding: EmbeddingVector,
+	): Promise<void> {
+		const blob = serializeEmbedding(embedding);
+		await this._run(
+			`INSERT OR REPLACE INTO chunk_embeddings (workspace_hash, file_path, start_line, embedding)
+			 VALUES (?, ?, ?, ?)`,
+			[workspaceHash, filePath, startLine, blob],
+		);
+	}
+
+	async deleteChunkEmbeddingsForFile(workspaceHash: string, filePath: string): Promise<void> {
+		await this._run(
+			`DELETE FROM chunk_embeddings WHERE workspace_hash = ? AND file_path = ?`,
+			[workspaceHash, filePath],
+		);
+	}
+
+	async getEmbeddedFiles(workspaceHash: string): Promise<Set<string>> {
+		type Row = { file_path: string };
+		const rows = await this._all<Row>(
+			`SELECT DISTINCT file_path FROM chunk_embeddings WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return new Set(rows.map(r => r.file_path));
+	}
+
+	async getChunksWithoutEmbeddings(workspaceHash: string, limit: number): Promise<{ file_path: string; start_line: number; chunk_text: string }[]> {
+		type ChunkRow = { file_path: string; start_line: number; chunk_text: string };
+		return this._all<ChunkRow>(
+			`SELECT file_path, start_line, chunk_text FROM code_chunks
+			 WHERE workspace_hash = ? AND file_path NOT IN (SELECT DISTINCT file_path FROM chunk_embeddings WHERE workspace_hash = ?)
+			 LIMIT ?`,
+			[workspaceHash, workspaceHash, limit],
+		);
+	}
+
+	async getChunksForFile(workspaceHash: string, filePath: string): Promise<{ file_path: string; start_line: number; chunk_text: string }[]> {
+		type ChunkRow = { file_path: string; start_line: number; chunk_text: string };
+		return this._all<ChunkRow>(
+			`SELECT file_path, start_line, chunk_text FROM code_chunks
+			 WHERE workspace_hash = ? AND file_path = ?`,
+			[workspaceHash, filePath],
+		);
+	}
+
+	/** Hybrid BM25 + vector search with Reciprocal Rank Fusion (RRF). */
+	async searchChunksHybrid(
+		workspaceHash: string,
+		query: string,
+		queryEmbedding: EmbeddingVector | null,
+		limit: number,
+	): Promise<CodebaseSearchResult[]> {
+		// BM25 results (rank-indexed)
+		const bm25Results = await this.searchChunks(workspaceHash, query, limit * 2);
+		const bm25Ranks = new Map<string, number>(); // key = "filePath:startLine"
+		bm25Results.forEach((r, idx) => bm25Ranks.set(`${r.filePath}:${r.startLine}`, idx + 1));
+
+		if (!queryEmbedding) {
+			return bm25Results.slice(0, limit);
+		}
+
+		// Vector results: load all embeddings for this workspace and rank by cosine similarity
+		type EmbRow = { file_path: string; start_line: number; end_line: number; chunk_text: string; embedding: Buffer };
+		const embRows = await this._all<EmbRow>(
+			`SELECT ce.file_path, ce.start_line, cc.end_line, cc.chunk_text, ce.embedding
+			 FROM chunk_embeddings ce
+			 JOIN code_chunks cc ON cc.workspace_hash = ce.workspace_hash
+			   AND cc.file_path = ce.file_path AND cc.start_line = ce.start_line
+			 WHERE ce.workspace_hash = ?`,
+			[workspaceHash],
+		);
+
+		const vectorScored = embRows.map(r => {
+			const vec = deserializeEmbedding(r.embedding);
+			const sim = cosineSimilarity(queryEmbedding, vec);
+			return { filePath: r.file_path, startLine: r.start_line, endLine: r.end_line, snippet: truncateSnippet(r.chunk_text, 400), sim };
+		});
+		vectorScored.sort((a, b) => b.sim - a.sim);
+		const vecTopK = vectorScored.slice(0, limit * 2);
+		const vecRanks = new Map<string, number>();
+		vecTopK.forEach((r, idx) => vecRanks.set(`${r.filePath}:${r.startLine}`, idx + 1));
+
+		// Collect all candidate keys
+		const allKeys = new Set([...bm25Ranks.keys(), ...vecRanks.keys()]);
+		const K = 60; // RRF constant
+		const rrfScores: { key: string; score: number }[] = [];
+		for (const key of allKeys) {
+			const b = bm25Ranks.get(key);
+			const v = vecRanks.get(key);
+			let score = 0;
+			if (b !== undefined) score += 1 / (K + b);
+			if (v !== undefined) score += 1 / (K + v);
+			rrfScores.push({ key, score });
+		}
+		rrfScores.sort((a, b) => b.score - a.score);
+
+		// Build result list from top RRF keys
+		const bm25ByKey = new Map(bm25Results.map(r => [`${r.filePath}:${r.startLine}`, r]));
+		const vecByKey = new Map(vecTopK.map(r => [`${r.filePath}:${r.startLine}`, r]));
+		const final: CodebaseSearchResult[] = [];
+		for (const { key, score } of rrfScores.slice(0, limit)) {
+			const bm25r = bm25ByKey.get(key);
+			if (bm25r) { final.push({ ...bm25r, score }); continue; }
+			const vecr = vecByKey.get(key);
+			if (vecr) final.push({ filePath: vecr.filePath, startLine: vecr.startLine, endLine: vecr.endLine, snippet: vecr.snippet, score });
+		}
+		return final;
 	}
 
 	// ── α methods ────────────────────────────────────────────────────────────
@@ -1528,6 +1715,34 @@ export class RepoIntelligenceDb {
 		);
 	}
 
+	/** Returns edges where `fromFile` is the given file (what it imports). */
+	async getImportEdgesFrom(workspaceHash: string, filePath: string): Promise<UCGImportEdge[]> {
+		type Row = { from_file: string; to_module: string; resolved_file: string | null; is_external: number; edge_type: string };
+		const rows = await this._all<Row>(
+			`SELECT from_file, to_module, resolved_file, is_external, edge_type
+			 FROM ucg_import_edges WHERE workspace_hash = ? AND from_file = ?`,
+			[workspaceHash, filePath],
+		);
+		return rows.map(r => ({
+			fromFile: r.from_file, toModule: r.to_module, resolvedFile: r.resolved_file,
+			isExternal: r.is_external === 1, edgeType: r.edge_type,
+		}));
+	}
+
+	/** Returns edges where `resolved_file` is the given file (who imports it). */
+	async getImportEdgesTo(workspaceHash: string, filePath: string): Promise<UCGImportEdge[]> {
+		type Row = { from_file: string; to_module: string; resolved_file: string | null; is_external: number; edge_type: string };
+		const rows = await this._all<Row>(
+			`SELECT from_file, to_module, resolved_file, is_external, edge_type
+			 FROM ucg_import_edges WHERE workspace_hash = ? AND resolved_file = ?`,
+			[workspaceHash, filePath],
+		);
+		return rows.map(r => ({
+			fromFile: r.from_file, toModule: r.to_module, resolvedFile: r.resolved_file,
+			isExternal: r.is_external === 1, edgeType: r.edge_type,
+		}));
+	}
+
 	async getUCGNodeCount(workspaceHash: string): Promise<number> {
 		const row = await this._get<{ count: number }>(
 			`SELECT COUNT(*) AS count FROM ucg_file_nodes WHERE workspace_hash = ?`,
@@ -1626,8 +1841,27 @@ const truncateSnippet = (text: string, maxLen: number): string => {
 
 const FTS_SPECIAL_CHARS = /["\-^*():]/g;
 
+/**
+ * Pre-process identifiers so SQLite's porter/ascii FTS tokenizer can find them.
+ * Splits camelCase, PascalCase, snake_case, kebab-case, and dot.notation into
+ * separate tokens, allowing queries like "order controller" to match OrderController.
+ */
+const splitIdentifiers = (text: string): string => {
+	return text
+		// camelCase → camel Case
+		.replace(/([a-z])([A-Z])/g, '$1 $2')
+		// PascalCase sequences → Pascal Case
+		.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+		// snake_case → snake case
+		.replace(/_/g, ' ')
+		// kebab-case in identifiers → kebab case
+		.replace(/([a-zA-Z])-([a-zA-Z])/g, '$1 $2')
+		// dot.notation → dot notation
+		.replace(/([a-zA-Z])\.([a-zA-Z])/g, '$1 $2');
+};
+
 const buildFtsQuery = (query: string): string | null => {
-	const tokens = query
+	const tokens = splitIdentifiers(query)
 		.toLowerCase()
 		.replace(FTS_SPECIAL_CHARS, ' ')
 		.split(/\s+/)

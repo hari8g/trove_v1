@@ -13,6 +13,7 @@ import type { IUsageMeteringService } from './usageMeteringService.js';
 import { ToolCallParams, ToolName } from '../common/toolsServiceTypes.js';
 
 export const PLAN_OUTPUT_TOKEN_CAP = 300;
+export const PLAN_GENERATION_TIMEOUT_MS = 45_000;
 
 const PLAN_SYSTEM_MESSAGE = [
 	'You help a coding agent plan its work before using tools.',
@@ -68,7 +69,7 @@ const summarizeUserTask = (chatMessages: ChatMessage[]): string => {
 	for (let i = chatMessages.length - 1; i >= 0; i--) {
 		const m = chatMessages[i];
 		if (m.role === 'user') {
-			const text = m.displayContent?.trim() || m.content?.trim();
+			const text = m.content?.trim() || m.displayContent?.trim();
 			if (text) return text.slice(0, 2000);
 		}
 	}
@@ -111,35 +112,40 @@ export const generateAgentPlan = async (opts: {
 
 	let fullText = '';
 	try {
-		fullText = await new Promise<string>((resolve, reject) => {
-			const requestId = opts.llmMessageService.sendLLMMessage({
-				messagesType: 'chatMessages',
-				chatMode: opts.chatMode,
-				messages,
-				separateSystemMessage,
-				modelSelection: opts.modelSelection,
-				modelSelectionOptions: planModelOptions,
-				overridesOfModel: planOverrides,
-				logging: { loggingName: 'Agent Plan' },
-				onText: () => { },
-				onFinalMessage: ({ fullText: text, usage }) => {
-					if (usage && opts.usageMeteringService) {
-						opts.usageMeteringService.recordTurn({
-							usage,
-							providerName: opts.modelSelection.providerName,
-							modelName: opts.modelSelection.modelName,
-							threadId: opts.threadId,
-						});
-					}
-					resolve(text);
-				},
-				onError: ({ message }) => reject(new Error(message)),
-				onAbort: () => reject(new Error('Plan generation aborted')),
-			});
-			if (!requestId) {
-				reject(new Error('Could not start plan generation'));
-			}
-		});
+		fullText = await Promise.race([
+			new Promise<string>((resolve, reject) => {
+				const requestId = opts.llmMessageService.sendLLMMessage({
+					messagesType: 'chatMessages',
+					chatMode: opts.chatMode,
+					messages,
+					separateSystemMessage,
+					modelSelection: opts.modelSelection,
+					modelSelectionOptions: planModelOptions,
+					overridesOfModel: planOverrides,
+					logging: { loggingName: 'Agent Plan' },
+					onText: () => { },
+					onFinalMessage: ({ fullText: text, usage }) => {
+						if (usage && opts.usageMeteringService) {
+							opts.usageMeteringService.recordTurn({
+								usage,
+								providerName: opts.modelSelection.providerName,
+								modelName: opts.modelSelection.modelName,
+								threadId: opts.threadId,
+							});
+						}
+						resolve(text);
+					},
+					onError: ({ message }) => reject(new Error(message)),
+					onAbort: () => reject(new Error('Plan generation aborted')),
+				});
+				if (!requestId) {
+					reject(new Error('Could not start plan generation'));
+				}
+			}),
+			new Promise<string>((_, reject) => {
+				setTimeout(() => reject(new Error('Plan generation timed out')), PLAN_GENERATION_TIMEOUT_MS);
+			}),
+		]);
 	} catch {
 		return null;
 	}

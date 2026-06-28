@@ -11,14 +11,50 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
-import { CodebaseSearchResult, IRepoIntelligenceMainService, IRepoIntelligenceService, REPO_INTEL_CHANNEL, REPO_INTEL_PROFILE_STALE_MS, WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
+import { ITroveSettingsService } from '../common/troveSettingsService.js';
+import { CodebaseSearchResult, IRepoIntelligenceMainService, IRepoIntelligenceService, REPO_INTEL_CHANNEL, REPO_INTEL_PROFILE_STALE_MS, ScopedRuleInfo, WorkspaceProfile } from '../common/repoIntelligenceTypes.js';
 import { buildIndexingStatsFromProfile, formatRepoIntelligenceIndexingReport } from '../common/repoIntelligenceIndexingReport.js';
+
+/** One parsed rule file from either `.troverules` root file or `.troverules/*.md` */
+interface ScopedRule {
+	content: string;
+	globs: string[];
+	alwaysApply: boolean;
+	source: string;
+}
+
+/** Minimatch-style glob check (supports `**`, `*`, `?`). */
+function globMatches(pattern: string, filePath: string): boolean {
+	const escapedPattern = pattern
+		.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+		.replace(/\*\*/g, '\u0000GLOBSTAR\u0000')
+		.replace(/\*/g, '[^/]*')
+		.replace(/\?/g, '[^/]')
+		.replace(/\u0000GLOBSTAR\u0000/g, '.*');
+	const re = new RegExp(`(^|/)${escapedPattern}($|/)`, 'i');
+	return re.test(filePath) || new RegExp(`^${escapedPattern}$`, 'i').test(filePath);
+}
+
+function parseFrontmatter(raw: string): { globs: string[]; alwaysApply: boolean; content: string } {
+	const fmMatch = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+	if (!fmMatch) return { globs: [], alwaysApply: true, content: raw.trim() };
+	const yaml = fmMatch[1];
+	const body = fmMatch[2].trim();
+	const globsMatch = yaml.match(/globs\s*:\s*\[([^\]]*)\]/);
+	const alwaysApplyMatch = yaml.match(/alwaysApply\s*:\s*(true|false)/i);
+	const globs = globsMatch
+		? globsMatch[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+		: [];
+	const alwaysApply = alwaysApplyMatch ? alwaysApplyMatch[1].toLowerCase() === 'true' : globs.length === 0;
+	return { globs, alwaysApply, content: body };
+}
 
 class RepoIntelligenceService extends Disposable implements IRepoIntelligenceService {
 	readonly _serviceBrand: undefined;
 
 	private _cachedProfile: WorkspaceProfile | null = null;
 	private _cachedWorkspaceRules: string | null = null;
+	private _cachedScopedRules: ScopedRule[] = [];
 	private _cachedUserMemory: string | null = null;
 	private _troverulesUris: URI[] = [];
 	private readonly _rulesWatchers = this._register(new DisposableStore());
@@ -34,11 +70,13 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 	private readonly _mainProxy: IRepoIntelligenceMainService;
 	private _initInFlight: Promise<void> | null = null;
 	private _initAttempts = 0;
+	private _embeddingIndexTimeout: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly _fileService: IFileService,
+		@ITroveSettingsService private readonly _troveSettingsService: ITroveSettingsService,
 	) {
 		super();
 		this._mainProxy = ProxyChannel.toService<IRepoIntelligenceMainService>(
@@ -69,6 +107,30 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		}));
 
 		void this.ensureInitialized();
+
+		this._register(this.onDidChangeChunkIndex((count) => {
+			if (count > 0) {
+				this._scheduleEmbeddingIndex();
+			}
+		}));
+	}
+
+	private _scheduleEmbeddingIndex(): void {
+		if (!this._troveSettingsService.state.globalSettings.enableVectorSearch) {
+			return;
+		}
+		const root = this._getWorkspaceRoot();
+		if (!root) {
+			return;
+		}
+		if (this._embeddingIndexTimeout) {
+			clearTimeout(this._embeddingIndexTimeout);
+		}
+		this._embeddingIndexTimeout = setTimeout(() => {
+			void this._mainProxy.indexEmbeddingsForWorkspace(root).catch(err => {
+				console.warn('[RepoIntelligence] Embedding index failed:', err);
+			});
+		}, 5000);
 	}
 
 	ensureInitialized(): Promise<void> {
@@ -150,26 +212,61 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 	private async _loadWorkspaceRules(): Promise<void> {
 		this._rulesWatchers.clear();
 		const troverulesUris: URI[] = [];
-		const parts: string[] = [];
+		const alwaysApplyParts: string[] = [];
+		const scopedRules: ScopedRule[] = [];
 
 		for (const folder of this._workspaceContextService.getWorkspace().folders) {
-			const uri = URI.joinPath(folder.uri, '.troverules');
+			// Load root .troverules file (treated as alwaysApply)
+			const rootUri = URI.joinPath(folder.uri, '.troverules');
 			try {
-				await this._fileService.stat(uri);
-				const fileContent = await this._fileService.readFile(uri);
+				await this._fileService.stat(rootUri);
+				const fileContent = await this._fileService.readFile(rootUri);
 				const text = fileContent.value.toString().trim();
 				if (text) {
-					parts.push(text);
+					alwaysApplyParts.push(text);
+					scopedRules.push({ content: text, globs: [], alwaysApply: true, source: '.troverules' });
 				}
-				troverulesUris.push(uri);
-				this._rulesWatchers.add(this._fileService.watch(uri));
+				troverulesUris.push(rootUri);
+				this._rulesWatchers.add(this._fileService.watch(rootUri));
 			} catch {
 				// missing or unreadable .troverules is normal
+			}
+
+			// Scan .troverules/ directory for scoped rule files
+			const dirUri = URI.joinPath(folder.uri, '.troverules');
+			try {
+				const stat = await this._fileService.stat(dirUri);
+				if (stat.isDirectory) {
+					// It's a directory — scan for *.md / *.mdc rule files
+					const children = await this._fileService.resolve(dirUri);
+					for (const child of children.children ?? []) {
+						if (!child.isDirectory && /\.(md|mdc)$/i.test(child.name)) {
+							try {
+								const childContent = await this._fileService.readFile(child.resource);
+								const raw = childContent.value.toString();
+								const parsed = parseFrontmatter(raw);
+								scopedRules.push({ ...parsed, source: child.name });
+								if (parsed.alwaysApply) {
+									alwaysApplyParts.push(parsed.content);
+								}
+								troverulesUris.push(child.resource);
+								this._rulesWatchers.add(this._fileService.watch(child.resource));
+							} catch {
+								// skip unreadable rule files
+							}
+						}
+					}
+					// Watch the directory for new/deleted rule files
+					this._rulesWatchers.add(this._fileService.watch(dirUri));
+				}
+			} catch {
+				// .troverules dir doesn't exist — normal
 			}
 		}
 
 		this._troverulesUris = troverulesUris;
-		const newRules = parts.length > 0 ? parts.join('\n\n') : null;
+		this._cachedScopedRules = scopedRules;
+		const newRules = alwaysApplyParts.length > 0 ? alwaysApplyParts.join('\n\n') : null;
 		const changed = newRules !== this._cachedWorkspaceRules;
 		this._cachedWorkspaceRules = newRules;
 		if (changed) {
@@ -181,8 +278,25 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 		return this._cachedProfile;
 	}
 
-	getWorkspaceRules(): string | null {
-		return this._cachedWorkspaceRules;
+	getWorkspaceRules(activeFilePath?: string): string | null {
+		if (!activeFilePath || this._cachedScopedRules.length === 0) {
+			return this._cachedWorkspaceRules;
+		}
+		// Return alwaysApply rules + rules whose globs match the active file
+		const applicable = this._cachedScopedRules.filter(rule =>
+			rule.alwaysApply || rule.globs.some(glob => globMatches(glob, activeFilePath))
+		);
+		const combined = applicable.map(r => r.content).join('\n\n').trim();
+		return combined || null;
+	}
+
+	getScopedRulesList(): ScopedRuleInfo[] {
+		return this._cachedScopedRules.map(r => ({
+			source: r.source,
+			content: r.content,
+			globs: r.globs,
+			alwaysApply: r.alwaysApply,
+		}));
 	}
 
 	private async _loadUserMemory(): Promise<void> {
@@ -291,6 +405,34 @@ class RepoIntelligenceService extends Disposable implements IRepoIntelligenceSer
 
 	async getUCGMetrics(workspaceRoot: string) {
 		return this._mainProxy.getUCGMetrics(workspaceRoot);
+	}
+
+	async getImportGraph(workspaceRoot: string, relFilePath: string, direction: 'imports' | 'importedBy' | 'both') {
+		return this._mainProxy.getImportGraph(workspaceRoot, relFilePath, direction);
+	}
+
+	async getTestsForFile(workspaceRoot: string, relFilePath: string) {
+		return this._mainProxy.getTestsForFile(workspaceRoot, relFilePath);
+	}
+
+	async getGitDiffStat(workspaceRoot: string) {
+		return this._mainProxy.getGitDiffStat(workspaceRoot);
+	}
+
+	async getGitRecentlyChanged(workspaceRoot: string, limit?: number) {
+		return this._mainProxy.getGitRecentlyChanged(workspaceRoot, limit);
+	}
+
+	async getContextualProfile(workspaceRoot: string, opts: { activeUri?: string; recentlyEditedUris?: string[] }) {
+		return this._mainProxy.getContextualProfile(workspaceRoot, opts);
+	}
+
+	async searchCodebaseHybrid(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]> {
+		return this._mainProxy.searchCodebaseHybrid(workspaceRoot, query, maxResults);
+	}
+
+	async indexEmbeddingsForWorkspace(workspaceRoot: string): Promise<void> {
+		return this._mainProxy.indexEmbeddingsForWorkspace(workspaceRoot);
 	}
 
 	async getIndexingReport(workspaceRoot: string): Promise<string> {

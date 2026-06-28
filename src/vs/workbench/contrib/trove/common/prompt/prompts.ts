@@ -58,7 +58,13 @@ export const isDevServerCommand = (command: string): boolean => {
 export const stripBackgroundShellSuffix = (command: string): string =>
 	command.trim().replace(/\s&\s*$/, '')
 
+/** Shell heredoc (cat << EOF) — cannot complete via single-line terminal.sendText; hangs waiting for delimiter. */
+export const isHeredocTerminalCommand = (command: string): boolean =>
+	/<<\s*-?\s*['"]?\w*['"]?/.test(command.trim())
+
 export const getTerminalInactiveTimeoutSeconds = (command: string): number => {
+	// Heredocs wait for interactive input — fail fast instead of hanging for minutes
+	if (isHeredocTerminalCommand(command)) return 15
 	// Fast npm/pnpm install often finishes in seconds then goes silent — don't wait 10 minutes
 	if (isPackageInstallCommand(command)) return 20
 	if (isLongRunningTerminalCommand(command)) return MAX_TERMINAL_INACTIVE_TIME_LONG
@@ -400,6 +406,38 @@ Use before modifying any shared frontend library in the dependencies-fe/ or api-
 file to understand environment-specific constraints and avoid accidental config divergence.`,
 		params: {
 			service_name: { description: 'Spring Boot service name, e.g. staas-order-management or staas-pricing-management' },
+		},
+	},
+
+	get_import_graph: {
+		name: 'get_import_graph',
+		description: `Returns the import graph for a given source file — which files it imports and which files import it.
+Use before refactoring, moving, or deleting a file to understand its blast radius.
+Use after creating a new file to understand where it can be imported from.
+Especially valuable for shared services, utility modules, and types files.`,
+		params: {
+			uri: { description: 'Absolute path to the source file.' },
+			direction: { description: 'Which direction to traverse: "imports" (what this file imports), "importedBy" (what imports this file), or "both" (default).' },
+		},
+	},
+
+	get_tests_for_file: {
+		name: 'get_tests_for_file',
+		description: `Returns the test files that cover a given source file, based on naming proximity and import analysis.
+Use after editing a source file to identify exactly which test to run for verification.
+Pairs with run_command to execute the test automatically — no manual search needed.`,
+		params: {
+			uri: { description: 'Absolute path to the source file being tested.' },
+		},
+	},
+
+	get_recently_changed: {
+		name: 'get_recently_changed',
+		description: `Returns the most frequently changed files in the repository based on git commit history.
+Use to understand which files are "hot" and likely related to the current task.
+Use to prioritize which files to look at when investigating a bug or planning a refactor.`,
+		params: {
+			limit: { description: 'Maximum number of files to return (default 20).' },
 		},
 	},
 
@@ -796,6 +834,8 @@ type ChatSystemMessageOpts = {
 	workspaceRules?: string | null;
 	userMemory?: string | null;
 	repoProfileMode?: ChatMode;
+	gitDiffStat?: string | null;
+	contextualProfile?: { activeFile: string; relatedFiles: string[]; coveringTests: string[] } | null;
 };
 
 export const chat_systemMessage_stable = ({ workspaceFolders, chatMode: mode, mcpTools, includeXMLToolDefinitions, repoProfile = null, workspaceRules = null, userMemory = null, repoProfileMode }: Omit<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'persistentTerminalIDs' | 'activeURI'>): string => {
@@ -932,7 +972,7 @@ Compliance constraints (India region):
 	return '';
 }
 
-export const chat_systemMessage_volatile = ({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode: mode }: Pick<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'activeURI' | 'persistentTerminalIDs' | 'chatMode'>): string => {
+export const chat_systemMessage_volatile = ({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode: mode, gitDiffStat, contextualProfile }: Pick<ChatSystemMessageOpts, 'openedURIs' | 'directoryStr' | 'activeURI' | 'persistentTerminalIDs' | 'chatMode' | 'gitDiffStat' | 'contextualProfile'>): string => {
 	const parts: string[] = [];
 
 	const workspaceState = (`Here is the current workspace state:
@@ -946,6 +986,24 @@ ${openedURIs.join('\n') || 'NO OPENED FILES'}${mode === 'agent' && persistentTer
 - Persistent terminal IDs available for you to run commands in: ${persistentTerminalIDs.join(', ')}` : ''}
 </workspace_state>`)
 	parts.push(workspaceState)
+
+	if (gitDiffStat) {
+		parts.push(`Current git changes (git diff HEAD --stat):
+<git_diff_stat>
+${gitDiffStat}
+</git_diff_stat>`)
+	}
+
+	if (contextualProfile && (contextualProfile.relatedFiles.length > 0 || contextualProfile.coveringTests.length > 0)) {
+		const lines = [`Active context for ${contextualProfile.activeFile}:`];
+		if (contextualProfile.relatedFiles.length > 0) {
+			lines.push(`Related files (imports/importedBy): ${contextualProfile.relatedFiles.slice(0, 10).join(', ')}`);
+		}
+		if (contextualProfile.coveringTests.length > 0) {
+			lines.push(`Covering tests: ${contextualProfile.coveringTests.join(', ')}`);
+		}
+		parts.push(`<active_context>\n${lines.join('\n')}\n</active_context>`);
+	}
 
 	if (directoryStr) {
 		parts.push(`Here is an overview of the user's file system:
@@ -1104,6 +1162,31 @@ export const messageOfSelection = async (
 		}))
 		const contentStr = [folderStructure, ...strOfFiles].join('\n\n')
 		return contentStr
+	}
+	else if (s.type === 'Notepad') {
+		return `<notepad name="${s.title}">\n${s.content}\n</notepad>`
+	}
+	else if (s.type === 'CodebaseSearch') {
+		return `<codebase_search query="${s.query}">\n${s.content}\n</codebase_search>`
+	}
+	else if (s.type === 'SymbolSearch') {
+		return `<symbol name="${s.symbolName}">\n${s.content}\n</symbol>`
+	}
+	else if (s.type === 'TerminalOutput') {
+		return `<terminal_output>\n${s.content}\n</terminal_output>`
+	}
+	else if (s.type === 'GitContext') {
+		return `<git_context>\n${s.content}\n</git_context>`
+	}
+	else if (s.type === 'PackageDocs') {
+		return `<package_docs name="${s.packageName}">\n${s.content}\n</package_docs>`
+	}
+	else if (s.type === 'Image') {
+		return `[Image: ${s.fileName ?? s.mimeType}]`
+	}
+	else if (s.type === 'Pdf') {
+		const pageInfo = s.pageCount ? ` pages="${s.pageCount}"` : '';
+		return `<pdf_attachment name="${s.fileName}"${pageInfo}>\n${s.extractedText}\n</pdf_attachment>`
 	}
 	else
 		return ''

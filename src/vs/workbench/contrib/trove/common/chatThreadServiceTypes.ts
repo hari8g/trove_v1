@@ -95,6 +95,63 @@ export type StagingSelectionItem = {
 	uri: URI;
 	language?: undefined;
 	state?: undefined;
+} | {
+	type: 'Notepad';
+	notepadId: string;
+	title: string;
+	content: string;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
+} | {
+	type: 'CodebaseSearch';
+	query: string;
+	content: string;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
+} | {
+	type: 'SymbolSearch';
+	symbolName: string;
+	content: string;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
+} | {
+	type: 'TerminalOutput';
+	content: string;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
+} | {
+	type: 'GitContext';
+	content: string;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
+} | {
+	type: 'PackageDocs';
+	packageName: string;
+	content: string;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
+} | {
+	type: 'Image';
+	dataUrl: string;
+	mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+	fileName?: string;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
+} | {
+	type: 'Pdf';
+	fileName: string;
+	extractedText: string;
+	pageCount?: number;
+	language?: undefined;
+	uri?: undefined;
+	state?: undefined;
 }
 
 

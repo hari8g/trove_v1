@@ -259,11 +259,18 @@ const PastThreadElement = ({ pastThread, idx, hoveredIdx, setHoveredIdx, isRunni
 		<div className="flex items-center justify-between gap-1">
 			<span className="flex items-center gap-2 min-w-0 overflow-hidden">
 				{/* spinner */}
-				{isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle' ? <LoaderCircle className="animate-spin bg-trove-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
+			{isRunning === 'LLM' || isRunning === 'tool' || isRunning === 'idle' ? <LoaderCircle className="animate-spin bg-trove-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
+				:
+				isRunning === 'awaiting_user' ? <MessageCircleQuestion className="bg-trove-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
+				:
+				isRunning === 'background' ? (
+					<span
+						className="text-[9px] font-semibold px-1 py-0 rounded bg-blue-500/20 text-blue-400 flex-shrink-0 animate-pulse"
+						title="Running in background"
+					>BG</span>
+				)
 					:
-					isRunning === 'awaiting_user' ? <MessageCircleQuestion className="bg-trove-stroke-1 flex-shrink-0 flex-grow-0" size={14} />
-						:
-						null}
+					null}
 				{/* name */}
 				{isRenaming ? (
 					<input

@@ -447,6 +447,7 @@ export type GlobalSettings = {
 	enableFastApply: boolean;
 	chatMode: ChatMode;
 	autoApprove: { [approvalType in ToolApprovalType]?: boolean };
+	autoApproveAll: boolean;
 	showInlineSuggestions: boolean;
 	includeToolLintErrors: boolean;
 	isOnboardingComplete: boolean;
@@ -463,17 +464,20 @@ export type GlobalSettings = {
 	maxConsecutiveToolFails: number;
 	llmStreamStallTimeoutMs: number;
 	enableAutocompleteCodebaseContext: boolean;
+	enableVectorSearch: boolean;
+	enableNextEditMode: boolean;
 }
 
 export const defaultGlobalSettings: GlobalSettings = {
 	autoRefreshModels: true,
 	aiInstructions: '',
-	enableAutocomplete: false,
+	enableAutocomplete: true,
 	syncApplyToChat: true,
 	syncSCMToChat: true,
 	enableFastApply: true,
 	chatMode: 'agent',
 	autoApprove: { edits: true, terminal: true },
+	autoApproveAll: false,
 	showInlineSuggestions: true,
 	includeToolLintErrors: true,
 	isOnboardingComplete: false,
@@ -488,8 +492,10 @@ export const defaultGlobalSettings: GlobalSettings = {
 	maxAgentIterations: 25,
 	maxReadOnlyCalls: 12,
 	maxConsecutiveToolFails: 3,
-	llmStreamStallTimeoutMs: 60_000,
+	llmStreamStallTimeoutMs: 120_000,
 	enableAutocompleteCodebaseContext: true,
+	enableVectorSearch: false,
+	enableNextEditMode: true,
 }
 
 export type GlobalSettingName = keyof GlobalSettings

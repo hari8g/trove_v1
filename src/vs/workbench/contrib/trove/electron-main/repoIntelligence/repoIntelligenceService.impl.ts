@@ -7,23 +7,25 @@ import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { promises as fs } from 'fs';
-import { join } from 'path';
+import { basename, extname, join } from 'path';
 import { IEnvironmentMainService } from '../../../../../platform/environment/electron-main/environmentMainService.js';
 import { IEncryptionMainService } from '../../../../../platform/encryption/common/encryptionService.js';
 import { IApplicationStorageMainService } from '../../../../../platform/storage/electron-main/storageMainService.js';
 import { StorageScope } from '../../../../../platform/storage/common/storage.js';
-import { CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, IRepoIntelligenceMainService, MavenImpactSummary, REPO_INTEL_PROFILE_STALE_MS, ServiceTopologySummary, UCGGraphData, UCGGraphMetrics, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
+import { CodebaseSearchResult, ContextualProfile, ExtractedSymbol, FileMetadataEntry, GitFileStats, IRepoIntelligenceMainService, MavenImpactSummary, REPO_INTEL_PROFILE_STALE_MS, ServiceTopologySummary, UCGGraphData, UCGGraphMetrics, WorkspaceProfile } from '../../common/repoIntelligenceTypes.js';
 import { getTroveMemoryFilePath } from '../../common/troveMemoryPaths.js';
 import { TROVE_SETTINGS_STORAGE_KEY } from '../../common/storageKeys.js';
 import { TroveSettingsState } from '../../common/troveSettingsService.js';
 import { IMetricsService } from '../../common/metricsService.js';
 import { sendLLMMessage } from '../llmMessage/sendLLMMessage.js';
 import { detectCommands } from './commandDetector.js';
-import { buildChunksForWorkspace, extractSymbolsFromFile, SKIP_LANGUAGES, supportsSymbolExtraction } from './codeChunker.js';
+import { buildChunksForWorkspace, chunkFile, extractSymbolsFromFile, SKIP_LANGUAGES, supportsSymbolExtraction } from './codeChunker.js';
 import { indexGatewayRoutes } from './gatewayRouteIndexer.js';
 import { indexGitlabPipelines } from './gitlabCiIndexer.js';
 import { indexAllSpringServices } from './javaSpringIndexer.js';
 import { indexConfigEnvironments } from './configEnvIndexer.js';
+import { getGitDiffStat, getRecentlyChangedFiles } from './gitContextIndexer.js';
+import { embedText, embedTexts } from './embeddingService.js';
 import { indexKubernetesManifests } from './kubernetesYamlIndexer.js';
 import { indexMavenDependencies } from './mavenDependencyIndexer.js';
 import { indexNpmDependencies } from './npmImpactIndexer.js';
@@ -32,6 +34,7 @@ import { formatRepoIntelligenceIndexingReport } from '../../common/repoIntellige
 import { getRepoIntelligenceDbPath, hashWorkspaceRoot, RepoIntelligenceDb, UCGFileNode, UCGImportEdge } from './repoIntelligenceDb.js';
 import { RawScanResult, scanWorkspace } from './workspaceScanner.js';
 import { extractImports } from './universalImportExtractor.js';
+import { FileChangeEvent, WorkspaceFileWatcher } from './fileWatcher.js';
 import { classifyNode, isEntryPoint } from './universalNodeClassifier.js';
 import { computeMetrics } from './universalGraphAnalyzer.js';
 
@@ -65,6 +68,8 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 	private readonly _scanInProgress = new Map<string, Promise<WorkspaceProfile>>();
 	private readonly _memoryFilePath: string;
 	private _cachedUserMemory: string | null = null;
+	private _fileWatcher: WorkspaceFileWatcher | null = null;
+	private _watchedRoot: string | null = null;
 
 	constructor(
 		@IEnvironmentMainService private readonly _environmentService: IEnvironmentMainService,
@@ -272,7 +277,75 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			}
 		}
 
+		// Start (or restart) the real-time file watcher for this workspace
+		this._startFileWatcher(workspaceRoot, hash);
+
 		return profile;
+	}
+
+	private _startFileWatcher(workspaceRoot: string, hash: string): void {
+		if (this._watchedRoot === workspaceRoot) return;
+		if (this._fileWatcher) {
+			this._fileWatcher.stop();
+			this._fileWatcher = null;
+		}
+		this._watchedRoot = workspaceRoot;
+		const watcher = new WorkspaceFileWatcher();
+		watcher.on('changes', (events: FileChangeEvent[]) => {
+			void this._handleFileChanges(workspaceRoot, hash, events);
+		});
+		watcher.start(workspaceRoot);
+		this._fileWatcher = watcher;
+		this._register({ dispose: () => { watcher.stop(); } });
+	}
+
+	private async _handleFileChanges(
+		workspaceRoot: string,
+		hash: string,
+		events: FileChangeEvent[],
+	): Promise<void> {
+		for (const event of events) {
+			const language = (() => {
+				const EXT_MAP: Record<string, string> = {
+					'.ts': 'TypeScript', '.tsx': 'TypeScript', '.mts': 'TypeScript', '.cts': 'TypeScript',
+					'.js': 'JavaScript', '.jsx': 'JavaScript', '.mjs': 'JavaScript', '.cjs': 'JavaScript',
+					'.py': 'Python', '.java': 'Java', '.kt': 'Kotlin', '.rs': 'Rust', '.go': 'Go',
+					'.cs': 'C#', '.cpp': 'C++', '.cc': 'C++', '.c': 'C', '.rb': 'Ruby', '.php': 'PHP',
+					'.swift': 'Swift', '.scala': 'Scala', '.sh': 'Shell', '.bash': 'Shell',
+					'.sql': 'SQL', '.yml': 'YAML', '.yaml': 'YAML', '.md': 'Markdown', '.mdx': 'Markdown',
+				};
+				return EXT_MAP[extname(event.filePath).toLowerCase()] ?? null;
+			})();
+
+			if (!language || SKIP_LANGUAGES.has(language)) continue;
+
+			if (event.type === 'unlink') {
+				await this._db.replaceChunksForFile(hash, event.filePath, []);
+				await this._db.deleteChunkFileHash(hash, event.filePath);
+				await this._db.deleteChunkEmbeddingsForFile(hash, event.filePath);
+				continue;
+			}
+
+			const absPath = join(workspaceRoot, event.filePath);
+			let content: string;
+			try { content = readFileSync(absPath, 'utf8'); } catch { continue; }
+
+			const currentHash = createHash('sha256').update(content).digest('hex').slice(0, 32);
+			const storedHash = (await this._db.getChunkFileHashes(hash)).get(event.filePath);
+			if (storedHash === currentHash) continue;
+
+			const chunks = chunkFile(hash, event.filePath, content, language);
+			await this._db.replaceChunksForFile(hash, event.filePath, chunks);
+			await this._db.upsertChunkFileHash(hash, event.filePath, currentHash);
+			void this._indexEmbeddingsForFile(hash, event.filePath).catch(err => {
+				console.warn('[RepoIntelligence] File embedding index failed:', err);
+			});
+
+			if (supportsSymbolExtraction(language)) {
+				const symbols = extractSymbolsFromFile(hash, event.filePath, content, language);
+				await this._db.replaceSymbolsForFile(hash, event.filePath, symbols);
+			}
+		}
 	}
 
 	private async _hydrateStaasSummaries(
@@ -559,10 +632,45 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 
 	private async _rebuildChunks(workspaceRoot: string, hash: string, fileMeta: FileMetadataEntry[]): Promise<void> {
 		const chunkStart = Date.now();
-		const chunks = buildChunksForWorkspace(workspaceRoot, hash, fileMeta);
-		await this._db.replaceChunks(hash, chunks);
-		console.log(`[RepoIntelligence] Indexed ${chunks.length} chunks in ${Date.now() - chunkStart}ms`);
-		this._metricsService.capture('RepoIntelligence Chunks Indexed', { chunkCount: chunks.length, workspaceRoot });
+
+		// Incremental: only rebuild chunks for files whose content has changed
+		const storedChunkHashes = await this._db.getChunkFileHashes(hash);
+		const indexable = fileMeta.filter(f => f.language && !SKIP_LANGUAGES.has(f.language));
+		let updatedFiles = 0;
+		let totalChunks = 0;
+
+		for (const file of indexable) {
+			const absPath = join(workspaceRoot, file.filePath);
+			let content: string;
+			try { content = readFileSync(absPath, 'utf8'); } catch { continue; }
+
+			const currentHash = createHash('sha256').update(content).digest('hex').slice(0, 32);
+			if (storedChunkHashes.get(file.filePath) === currentHash) continue;
+
+			const chunks = chunkFile(hash, file.filePath, content, file.language);
+			await this._db.replaceChunksForFile(hash, file.filePath, chunks);
+			await this._db.upsertChunkFileHash(hash, file.filePath, currentHash);
+			updatedFiles++;
+			totalChunks += chunks.length;
+		}
+
+		// Remove hashes for files no longer in the index
+		const currentPaths = new Set(indexable.map(f => f.filePath));
+		for (const storedPath of storedChunkHashes.keys()) {
+			if (!currentPaths.has(storedPath)) {
+				await this._db.replaceChunksForFile(hash, storedPath, []);
+				await this._db.deleteChunkFileHash(hash, storedPath);
+			}
+		}
+
+		const elapsed = Date.now() - chunkStart;
+		if (updatedFiles > 0) {
+			console.log(`[RepoIntelligence] Incrementally updated chunks for ${updatedFiles} files (${totalChunks} chunks) in ${elapsed}ms`);
+		} else {
+			console.log(`[RepoIntelligence] Chunk index up-to-date (${elapsed}ms)`);
+		}
+		this._metricsService.capture('RepoIntelligence Chunks Indexed', { updatedFiles, totalChunks, workspaceRoot });
+
 		try {
 			await this._indexSymbolsIncremental(workspaceRoot, hash, fileMeta);
 		} catch (err) {
@@ -847,6 +955,146 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		const hash = hashWorkspaceRoot(workspaceRoot);
 		await this._db.init();
 		return this._db.getUCGMetrics(hash);
+	}
+
+	async getImportGraph(workspaceRoot: string, relFilePath: string, direction: 'imports' | 'importedBy' | 'both'): Promise<{ imports: string[]; importedBy: string[]; externalDeps: string[] }> {
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this._db.init();
+		await this._ensureUCGIndexed(workspaceRoot, hash);
+
+		const normPath = relFilePath.replace(/\\/g, '/');
+		const [outEdges, inEdges] = await Promise.all([
+			(direction === 'importedBy') ? Promise.resolve([]) : this._db.getImportEdgesFrom(hash, normPath),
+			(direction === 'imports') ? Promise.resolve([]) : this._db.getImportEdgesTo(hash, normPath),
+		]);
+
+		return {
+			imports: outEdges.filter(e => !e.isExternal && e.resolvedFile).map(e => e.resolvedFile!),
+			importedBy: inEdges.map(e => e.fromFile),
+			externalDeps: outEdges.filter(e => e.isExternal).map(e => e.toModule),
+		};
+	}
+
+	async getTestsForFile(workspaceRoot: string, relFilePath: string): Promise<{ testFile: string; confidence: 'high' | 'medium' }[]> {
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		await this._db.init();
+
+		// Load all file paths from the index
+		const allFiles = await this._db.getFileMetadata(hash);
+
+		const TEST_PATTERNS = [/\.(test|spec)\.(ts|js|tsx|jsx|py|java|kt|rb)$/, /Test\.(java|kt)$/, /_test\.(py|go|rs)$/];
+		const isTestFile = (p: string) => TEST_PATTERNS.some(r => r.test(p));
+
+		const sourceBase = basename(relFilePath).replace(/\.[^.]+$/, '').toLowerCase();
+		const results: { testFile: string; confidence: 'high' | 'medium' }[] = [];
+
+		for (const f of allFiles) {
+			if (!isTestFile(f.filePath)) continue;
+
+			// Strategy 1: name proximity (OrderService.test.ts → OrderService.ts)
+			const testBase = basename(f.filePath)
+				.replace(/\.(test|spec|_test|Test)\.(ts|js|tsx|jsx|py|java|kt|rb)$/, '')
+				.replace(/Test$/, '')
+				.toLowerCase();
+
+			if (testBase === sourceBase) {
+				results.push({ testFile: f.filePath, confidence: 'high' });
+				continue;
+			}
+
+			// Strategy 2: import-based (test file imports the source file)
+			const outEdges = await this._db.getImportEdgesFrom(hash, f.filePath);
+			const importsSource = outEdges.some(e =>
+				e.resolvedFile?.replace(/\.[^.]+$/, '') === relFilePath.replace(/\.[^.]+$/, '')
+			);
+			if (importsSource) {
+				results.push({ testFile: f.filePath, confidence: 'medium' });
+			}
+		}
+
+		return results;
+	}
+
+	async getGitDiffStat(workspaceRoot: string): Promise<string | null> {
+		return getGitDiffStat(workspaceRoot);
+	}
+
+	async getGitRecentlyChanged(workspaceRoot: string, limit = 20): Promise<GitFileStats[]> {
+		return getRecentlyChangedFiles(workspaceRoot, limit);
+	}
+
+	async getContextualProfile(workspaceRoot: string, opts: { activeUri?: string; recentlyEditedUris?: string[] }): Promise<ContextualProfile | null> {
+		if (!opts.activeUri) return null;
+		await this._db.init();
+
+		const absPath = opts.activeUri;
+		const relPath = absPath.startsWith(workspaceRoot)
+			? absPath.slice(workspaceRoot.length).replace(/^[/\\]/, '').replace(/\\/g, '/')
+			: absPath.replace(/\\/g, '/');
+
+		// Get import graph
+		let imports: string[] = [];
+		let importedBy: string[] = [];
+		try {
+			const graph = await this.getImportGraph(workspaceRoot, relPath, 'both');
+			imports = graph.imports;
+			importedBy = graph.importedBy;
+		} catch { /* UCG may not be indexed yet */ }
+
+		// Get test files
+		let coveringTests: string[] = [];
+		try {
+			const tests = await this.getTestsForFile(workspaceRoot, relPath);
+			coveringTests = tests.map(t => t.testFile);
+		} catch { /* ignore */ }
+
+		const relatedFiles = [...new Set([...imports, ...importedBy])];
+		return { activeFile: relPath, relatedFiles, coveringTests };
+	}
+
+	async searchCodebaseHybrid(workspaceRoot: string, query: string, maxResults = 10): Promise<CodebaseSearchResult[]> {
+		await this._db.init();
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		const queryEmbedding = await embedText(query);
+		return this._db.searchChunksHybrid(hash, query, queryEmbedding, maxResults);
+	}
+
+	async indexEmbeddingsForWorkspace(workspaceRoot: string): Promise<void> {
+		await this._db.init();
+		const hash = hashWorkspaceRoot(workspaceRoot);
+		const rows = await this._db.getChunksWithoutEmbeddings(hash, 500);
+		if (rows.length === 0) return;
+
+		const texts = rows.map(r => r.chunk_text.slice(0, 512));
+		const embeddings = await embedTexts(texts);
+		if (!embeddings) return; // LiteLLM not available
+
+		for (let i = 0; i < rows.length; i++) {
+			const row = rows[i];
+			const emb = embeddings[i];
+			if (emb) {
+				await this._db.upsertChunkEmbedding(hash, row.file_path, row.start_line, emb);
+			}
+		}
+	}
+
+	private async _indexEmbeddingsForFile(workspaceHash: string, filePath: string): Promise<void> {
+		await this._db.init();
+		const rows = await this._db.getChunksForFile(workspaceHash, filePath);
+		if (rows.length === 0) {
+			await this._db.deleteChunkEmbeddingsForFile(workspaceHash, filePath);
+			return;
+		}
+		const texts = rows.map(r => r.chunk_text.slice(0, 512));
+		const embeddings = await embedTexts(texts);
+		if (!embeddings) return;
+		await this._db.deleteChunkEmbeddingsForFile(workspaceHash, filePath);
+		for (let i = 0; i < rows.length; i++) {
+			const emb = embeddings[i];
+			if (emb) {
+				await this._db.upsertChunkEmbedding(workspaceHash, rows[i].file_path, rows[i].start_line, emb);
+			}
+		}
 	}
 
 	async getIndexingReport(workspaceRoot: string): Promise<string> {

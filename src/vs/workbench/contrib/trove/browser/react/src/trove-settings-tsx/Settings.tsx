@@ -24,13 +24,14 @@ import { useMCPServiceState } from '../util/services.js';
 import { OPT_OUT_KEY } from '../../../../common/storageKeys.js';
 import { StorageScope, StorageTarget } from '../../../../../../../platform/storage/common/storage.js';
 import { UsageDashboard } from './UsageDashboard.js';
+import { IRepoIntelligenceService, ScopedRuleInfo } from '../../../../common/repoIntelligenceTypes.js';
 
 type Tab =
 	| 'models'
 	| 'localProviders'
 	| 'providers'
 	| 'featureOptions'
-	| 'mcp'
+	| 'rules'
 	| 'general'
 	| 'usage'
 	| 'all';
@@ -464,6 +465,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 			const { isHidden, type, modelName, providerName, providerEnabled } = m
 
 			const isNewProviderName = (i > 0 ? modelDump[i - 1] : undefined)?.providerName !== providerName
+			const rowKey = `${providerName}::${modelName}::${type}::${i}`
 
 			const providerTitle = displayInfoOfProviderName(providerName).title
 
@@ -485,7 +487,7 @@ export const ModelDump = ({ filteredProviders }: { filteredProviders?: ProviderN
 
 			const hasOverrides = !!settingsState.overridesOfModel?.[providerName]?.[modelName]
 
-			return <div key={`${providerName}::${modelName}::${type}`}
+			return <div key={rowKey}
 				className={`flex items-center justify-between gap-4 hover:bg-black/10 dark:hover:bg-gray-300/10 py-1 px-3 rounded-sm overflow-hidden cursor-default truncate group
 				`}
 			>
@@ -1053,6 +1055,52 @@ const MCPServersList = () => {
 	return <div className="my-2">{content}</div>
 };
 
+const RulesTabContent = () => {
+	const accessor = useAccessor();
+	const repoIntel = accessor.get('IRepoIntelligenceService') as IRepoIntelligenceService;
+	const getRulesList = () => typeof repoIntel.getScopedRulesList === 'function' ? repoIntel.getScopedRulesList() : [];
+	const [rules, setRules] = useState<ScopedRuleInfo[]>(() => getRulesList());
+
+	useEffect(() => {
+		const refresh = () => setRules(getRulesList());
+		const d = repoIntel.onDidChangeWorkspaceRules(refresh);
+		void repoIntel.ensureInitialized().then(refresh);
+		return () => d.dispose();
+	}, [repoIntel]);
+
+	if (rules.length === 0) {
+		return (
+			<div className="text-sm text-trove-fg-3 max-w-xl">
+				No workspace rules found. Add a <code className="text-trove-fg-2">.troverules</code> file at the workspace root,
+				or scoped rules in <code className="text-trove-fg-2">.troverules/*.md</code> with optional YAML frontmatter
+				(<code className="text-trove-fg-2">globs</code>, <code className="text-trove-fg-2">alwaysApply</code>).
+			</div>
+		);
+	}
+
+	return (
+		<div className="flex flex-col gap-3 max-w-3xl">
+			{rules.map(rule => (
+				<div key={rule.source} className="border border-trove-border-2 rounded-lg p-3 bg-trove-bg-2/30">
+					<div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+						<span className="text-xs font-semibold text-trove-fg-1">{rule.source}</span>
+						<span className="text-[10px] text-trove-fg-4">
+							{rule.alwaysApply
+								? 'always apply'
+								: rule.globs.length > 0
+									? `globs: ${rule.globs.join(', ')}`
+									: 'scoped (no globs)'}
+						</span>
+					</div>
+					<pre className="text-[11px] leading-relaxed whitespace-pre-wrap text-trove-fg-3 max-h-48 overflow-y-auto font-mono">
+						{rule.content}
+					</pre>
+				</div>
+			))}
+		</div>
+	);
+};
+
 export const Settings = () => {
 	const isDark = useIsDark()
 	// ─── sidebar nav ──────────────────────────
@@ -1064,6 +1112,7 @@ export const Settings = () => {
 		{ tab: 'localProviders', label: 'Local Providers' },
 		{ tab: 'providers', label: 'Main Providers' },
 		{ tab: 'featureOptions', label: 'Feature Options' },
+		{ tab: 'rules', label: 'Rules' },
 		{ tab: 'general', label: 'General' },
 		{ tab: 'usage', label: 'Usage' },
 		{ tab: 'mcp', label: 'MCP' },
@@ -1283,6 +1332,33 @@ export const Settings = () => {
 																onChange={(newVal) => troveSettingsService.setGlobalSetting('enableAutocompleteCodebaseContext', newVal)}
 															/>
 															<span className='text-trove-fg-3 text-xs pointer-events-none'>Include indexed codebase snippets in autocomplete</span>
+														</div>
+														<div className={`flex items-center gap-x-2 my-2 ${!settingsState.globalSettings.enableAutocomplete ? 'hidden' : ''}`}>
+															<TroveSwitch
+																size='xs'
+																value={settingsState.globalSettings.enableNextEditMode}
+																onChange={(newVal) => troveSettingsService.setGlobalSetting('enableNextEditMode', newVal)}
+															/>
+															<span className='text-trove-fg-3 text-xs pointer-events-none'>Next-edit tab completion (jump to next line after accept)</span>
+														</div>
+													</ErrorBoundary>
+
+													<ErrorBoundary>
+														<div className='flex items-center gap-x-2 my-2'>
+															<TroveSwitch
+																size='xs'
+																value={settingsState.globalSettings.enableVectorSearch}
+																onChange={(newVal) => {
+																	troveSettingsService.setGlobalSetting('enableVectorSearch', newVal);
+																	if (newVal) {
+																		const root = accessor.get('IWorkspaceContextService').getWorkspace().folders[0]?.uri.fsPath;
+																		if (root) {
+																			void accessor.get('IRepoIntelligenceService').indexEmbeddingsForWorkspace(root);
+																		}
+																	}
+																}}
+															/>
+															<span className='text-trove-fg-3 text-xs pointer-events-none'>Hybrid vector search (BM25 + embeddings via LiteLLM)</span>
 														</div>
 													</ErrorBoundary>
 
@@ -1652,6 +1728,17 @@ Alternatively, place a \`.troverules\` file in the root of your workspace.
 							</div>
 
 
+
+							{/* Rules section */}
+							<div className={shouldShowTab('rules') ? '' : 'hidden'}>
+								<ErrorBoundary>
+									<h2 className='text-3xl mb-2'>Rules</h2>
+									<h4 className='text-trove-fg-3 mb-4'>
+										Workspace rules from <code>.troverules</code> and scoped files in <code>.troverules/</code>.
+									</h4>
+									<RulesTabContent />
+								</ErrorBoundary>
+							</div>
 
 							{/* Usage section */}
 							<div className={shouldShowTab('usage') ? '' : 'hidden'}>

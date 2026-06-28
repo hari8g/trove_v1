@@ -244,14 +244,52 @@ export interface IRepoIntelligenceMainService {
 	getPipelineJobs(workspaceRoot: string, stage?: string): Promise<PipelineJobRow[]>;
 	getUCGGraph(workspaceRoot: string): Promise<UCGGraphData | null>;
 	getUCGMetrics(workspaceRoot: string): Promise<UCGGraphMetrics | null>;
+	getImportGraph(workspaceRoot: string, relFilePath: string, direction: 'imports' | 'importedBy' | 'both'): Promise<ImportGraphResult>;
+	getTestsForFile(workspaceRoot: string, relFilePath: string): Promise<TestCoverageEntry[]>;
+	getGitDiffStat(workspaceRoot: string): Promise<string | null>;
+	getGitRecentlyChanged(workspaceRoot: string, limit?: number): Promise<GitFileStats[]>;
+	getContextualProfile(workspaceRoot: string, opts: { activeUri?: string; recentlyEditedUris?: string[] }): Promise<ContextualProfile | null>;
+	searchCodebaseHybrid(workspaceRoot: string, query: string, maxResults?: number): Promise<CodebaseSearchResult[]>;
+	indexEmbeddingsForWorkspace(workspaceRoot: string): Promise<void>;
 }
+
+export type ImportGraphResult = {
+	imports: string[];       // files this file imports (resolved relative paths)
+	importedBy: string[];    // files that import this file
+	externalDeps: string[];  // unresolved external module names
+};
+
+export type TestCoverageEntry = {
+	testFile: string;
+	confidence: 'high' | 'medium';
+};
+
+export type GitFileStats = {
+	file: string;
+	changeCount: number;
+	lastChanged: string;
+};
+
+export type ContextualProfile = {
+	activeFile: string;
+	relatedFiles: string[];   // imports + importedBy
+	coveringTests: string[];  // test files for this source
+};
+
+export type ScopedRuleInfo = {
+	source: string;
+	content: string;
+	globs: string[];
+	alwaysApply: boolean;
+};
 
 export const IRepoIntelligenceMainService = createDecorator<IRepoIntelligenceMainService>('repoIntelligenceMainService');
 
 export interface IRepoIntelligenceService extends IRepoIntelligenceMainService {
 	getIndexingReport(workspaceRoot: string): Promise<string>;
 	getProfileSync(): WorkspaceProfile | null;
-	getWorkspaceRules(): string | null;
+	getWorkspaceRules(activeFilePath?: string): string | null;
+	getScopedRulesList(): ScopedRuleInfo[];
 	/** Idempotent — safe to call after workspace restore or folder changes. */
 	ensureInitialized(): Promise<void>;
 	readonly onDidChangeWorkspaceRules: Event<void>;

@@ -20,10 +20,11 @@ import { TROVE_OPEN_SETTINGS_ACTION_ID } from '../../../troveSettingsPane.js';
 import { ChatMode, displayInfoOfProviderName, FeatureName, isFeatureNameDisabled } from '../../../../../../../workbench/contrib/trove/common/troveSettingsTypes.js';
 import { ICommandService } from '../../../../../../../platform/commands/common/commands.js';
 import { WarningBox } from '../trove-settings-tsx/WarningBox.js';
-import { getModelCapabilities, getIsReasoningEnabledState } from '../../../../common/modelCapabilities.js';
+import { getModelCapabilities, getIsReasoningEnabledState, modelSupportsVision } from '../../../../common/modelCapabilities.js';
 import { AlertTriangle, File, Ban, Check, ChevronRight, Dot, FileIcon, Pencil, Undo, Undo2, X, Flag, Copy as CopyIcon, Info, CirclePlus, Ellipsis, CircleEllipsis, Folder, ALargeSmall, TypeOutline, Text } from 'lucide-react';
 import { ChatMessage, CheckpointEntry, StagingSelectionItem, ToolMessage } from '../../../../common/chatThreadServiceTypes.js';
 import { InlineContextPills } from './ContextPills.js';
+import { ChatAttachmentButton } from './ChatAttachmentButton.js';
 import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolName, ToolName, LintErrorItem, ToolApprovalType, toolApprovalTypes } from '../../../../common/toolsServiceTypes.js';
 import { CopyButton, EditToolAcceptRejectButtonsHTML, IconShell1, JumpToFileButton, JumpToTerminalButton, StatusIndicator, StatusIndicatorForApplyButton, useApplyStreamState, useEditToolStreamState } from '../markdown/ApplyBlockHoverButtons.js';
 import { IsRunningType } from '../../../chatThreadService.js';
@@ -42,6 +43,9 @@ import { PlanView } from './PlanView.js';
 import { ChatInlineDiffView, computeChatDiff } from './ChatInlineDiffView.js';
 import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
 import { ContextDocPanel } from './ContextDocPanel.js';
+import { ComposerPanel } from './ComposerPanel.js';
+import { NotepadsPanel } from './NotepadsPanel.js';
+import { INotepadsService } from '../../../notepadsService.js';
 
 
 
@@ -292,6 +296,27 @@ const ChatModeDropdown = ({ className }: { className: string }) => {
 
 }
 
+const YoloToggle = () => {
+	const accessor = useAccessor()
+	const troveSettingsService = accessor.get('ITroveSettingsService')
+	const settingsState = useSettingsState()
+	const enabled = settingsState.globalSettings.autoApproveAll
+
+	return (
+		<button
+			title={enabled ? 'YOLO mode ON — all tools auto-approved. Click to disable.' : 'YOLO mode OFF — tools require approval. Click to enable auto-approve all.'}
+			onClick={() => troveSettingsService.setGlobalSetting('autoApproveAll', !enabled)}
+			className={`text-[11px] rounded-md py-0.5 px-1.5 border transition-colors select-none cursor-pointer ${
+				enabled
+					? 'text-orange-400 bg-orange-400/10 border-orange-400/40 hover:bg-orange-400/20'
+					: 'text-trove-fg-3 bg-trove-bg-1/80 border-trove-border-3/50 hover:bg-trove-bg-2'
+			}`}
+		>
+			{enabled ? '⚡ YOLO' : 'YOLO'}
+		</button>
+	)
+}
+
 
 
 
@@ -346,6 +371,15 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 	featureName,
 	loadingIcon,
 }) => {
+	const settingsState = useSettingsState()
+	const yoloEnabled = featureName === 'Chat' && settingsState.globalSettings.autoApproveAll
+	const chatModelSelection = settingsState.modelSelectionOfFeature['Chat']
+	const hasImageSelections = (selections ?? []).some(s => s.type === 'Image')
+	const visionUnsupported = featureName === 'Chat'
+		&& hasImageSelections
+		&& chatModelSelection
+		&& !modelSupportsVision(chatModelSelection.providerName, chatModelSelection.modelName, settingsState.overridesOfModel)
+
 	return (
 		<div
 			ref={divRef}
@@ -361,6 +395,19 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 				onClickAnywhere?.()
 			}}
 		>
+			{/* YOLO mode warning banner */}
+			{yoloEnabled && (
+				<div className="flex items-center gap-1.5 px-3 py-1 text-[10px] text-orange-400 bg-orange-400/8 border-b border-orange-400/20 rounded-t-xl">
+					<span>⚡</span>
+					<span>Auto-approve active — all tools run without confirmation</span>
+				</div>
+			)}
+			{visionUnsupported && (
+				<div className="flex items-center gap-1.5 px-3 py-1 text-[10px] text-amber-400 bg-amber-400/8 border-b border-amber-400/20">
+					<AlertTriangle size={12} className="shrink-0" />
+					<span>Images attached — selected model may not support vision</span>
+				</div>
+			)}
 			{/* Input section */}
 			<div className="relative w-full px-3 pt-2.5 pb-1">
 				{children}
@@ -377,28 +424,37 @@ export const TroveChatArea: React.FC<TroveChatAreaProps> = ({
 				)}
 			</div>
 
-			{/* Bottom toolbar */}
-			<div className='flex flex-row justify-between items-center gap-2 px-2 pb-2 pt-0.5'>
-				{showModelDropdown ? (
-					<div className='flex items-center flex-wrap gap-1.5 min-w-0'>
-						{featureName === 'Chat' && (
-							<ChatModeDropdown className='text-[11px] text-trove-fg-3 bg-trove-bg-1/80 border border-trove-border-3/50 rounded-md py-0.5 px-1.5' />
-						)}
-						<ModelDropdown featureName={featureName} className='text-[11px] text-trove-fg-3 bg-trove-bg-1/80 border border-trove-border-3/50 rounded-md py-0.5 px-1.5' />
-						<ReasoningOptionSlider featureName={featureName} />
+			{/* Bottom toolbar — attachment in a fixed left slot so streaming controls cannot shift it */}
+			<div className='flex flex-row items-end gap-2 px-2 pb-2 pt-0.5 min-h-[30px]'>
+				{featureName === 'Chat' ? (
+					<div className="w-[26px] shrink-0 flex items-center justify-center self-end">
+						<ChatAttachmentButton
+							disabled={!!isFeatureNameDisabled('Chat', settingsState)}
+						/>
 					</div>
-				) : <div />}
+				) : null}
 
-				<div className="flex items-center gap-1.5 shrink-0">
+				{showModelDropdown ? (
+					<div className='flex flex-1 items-center flex-wrap gap-1.5 min-w-0 self-end pb-0.5'>
+					{featureName === 'Chat' && (
+						<ChatModeDropdown className='text-[11px] text-trove-fg-3 bg-trove-bg-1/80 border border-trove-border-3/50 rounded-md py-0.5 px-1.5' />
+					)}
+					<ModelDropdown featureName={featureName} className='text-[11px] text-trove-fg-3 bg-trove-bg-1/80 border border-trove-border-3/50 rounded-md py-0.5 px-1.5' />
+					<ReasoningOptionSlider featureName={featureName} />
+					{featureName === 'Chat' && <YoloToggle />}
+					</div>
+				) : <div className="flex-1 min-w-0" />}
 
-					{isStreaming ? (
-						<>
-							<span className="text-[10px] text-trove-fg-4 italic max-w-[min(420px,45vw)] truncate" title={streamingStatusText ?? 'Working…'}>
-								{streamingStatusText ?? 'Working…'}
-							</span>
-							{loadingIcon}
-							<ButtonStop onClick={onAbort} />
-							{!isDisabled ? (
+				<div className="flex items-center gap-1.5 shrink-0 self-end pb-0.5">
+				{isStreaming ? (
+					<>
+						<span className="text-[10px] text-trove-fg-4 italic max-w-[min(420px,45vw)] truncate" title={streamingStatusText ?? 'Working…'}>
+							{streamingStatusText ?? 'Working…'}
+						</span>
+						{loadingIcon}
+						<BackgroundRunButton />
+						<ButtonStop onClick={onAbort} />
+						{!isDisabled ? (
 								<ButtonSubmit
 									onClick={onSubmit}
 									disabled={false}
@@ -444,6 +500,30 @@ export const ButtonSubmit = ({ className, disabled, ...props }: ButtonProps & Re
 	>
 		<IconArrowUp size={DEFAULT_BUTTON_SIZE} className="stroke-[2] p-[2px]" />
 	</button>
+}
+
+/** Small button to send the current agent run to the background. */
+const BackgroundRunButton = () => {
+	const accessor = useAccessor()
+	const chatThreadsService = accessor.get('IChatThreadService')
+	return (
+		<button
+			type='button'
+			className='rounded flex-shrink-0 flex-grow-0 cursor-pointer flex items-center justify-center w-[22px] h-[22px] opacity-60 hover:opacity-100'
+			data-tooltip-id='trove-tooltip'
+			data-tooltip-content='Run in background (switch threads freely)'
+			data-tooltip-place='top'
+			onClick={() => chatThreadsService.runCurrentThreadInBackground()}
+		>
+			{/* minimise-to-background arrow icon */}
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+				<polyline points="4 14 10 14 10 20" />
+				<polyline points="20 10 14 10 14 4" />
+				<line x1="14" y1="10" x2="21" y2="3" />
+				<line x1="3" y1="21" x2="10" y2="14" />
+			</svg>
+		</button>
+	)
 }
 
 export const ButtonStop = ({ className, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) => {
@@ -908,7 +988,14 @@ const EditTool = ({ toolMessage, threadId, messageIdx, content }: Parameters<Res
 
 	const footer = <>
 		{showAcceptReject ? (
-			<div className="flex items-center justify-end">
+			<div className="flex items-center justify-end gap-2">
+				<button
+					type="button"
+					className="text-[10px] text-trove-fg-4 hover:text-violet-400 cursor-pointer"
+					onClick={() => chatThreadsService.requestSidebarTab('composer')}
+				>
+					View in Composer
+				</button>
 				<ChatInlineDiffButtons
 					onAccept={() => editCodeService.acceptOrRejectAllDiffAreas({ uri: params.uri, behavior: 'accept', removeCtrlKs: false })}
 					onReject={() => editCodeService.acceptOrRejectAllDiffAreas({ uri: params.uri, behavior: 'reject', removeCtrlKs: false })}
@@ -1286,6 +1373,7 @@ const AssistantMessageComponent = ({ chatMessage, isCheckpointGhost, isCommitted
 
 	const accessor = useAccessor()
 	const chatThreadsService = accessor.get('IChatThreadService')
+	const notepadsService = accessor.get('INotepadsService') as INotepadsService
 
 	const anthropicText = formatAnthropicReasoning(chatMessage.anthropicReasoning)
 	const reasoningStr = [chatMessage.reasoning?.trim(), anthropicText].filter(Boolean).join('\n\n') || null
@@ -1344,6 +1432,7 @@ const AssistantMessageComponent = ({ chatMessage, isCheckpointGhost, isCommitted
 						<span className="inline-block w-[6px] ml-0.5 text-violet-400/90 animate-pulse">▍</span>
 					</div>
 				) : (
+					<>
 					<ProseWrapper variant='assistant-summary'>
 						<ChatMarkdownRender
 							string={chatMessage.displayContent || ''}
@@ -1352,6 +1441,22 @@ const AssistantMessageComponent = ({ chatMessage, isCheckpointGhost, isCommitted
 							isLinkDetectionEnabled={true}
 						/>
 					</ProseWrapper>
+					{isCommitted && chatMessage.displayContent?.trim() ? (
+						<div className="mt-1 flex justify-end">
+							<button
+								type="button"
+								className="text-[10px] text-trove-fg-4 hover:text-trove-fg-2 cursor-pointer"
+								onClick={() => {
+									const firstLine = chatMessage.displayContent.trim().split('\n')[0].replace(/^#+\s*/, '').slice(0, 60);
+									notepadsService.createNotepad(firstLine || 'From chat', chatMessage.displayContent);
+									chatThreadsService.requestSidebarTab('notepads');
+								}}
+							>
+								Save to Notepad
+							</button>
+						</div>
+					) : null}
+					</>
 				)}
 			</div>
 		}
@@ -2686,11 +2791,20 @@ const EditToolSoFar = ({ toolCallSoFar, }: { toolCallSoFar: RawToolCallObj }) =>
 }
 
 
+type SidebarTab = 'chat' | 'composer' | 'notepads';
+
 export const SidebarChat = () => {
 	const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
 	const textAreaFnsRef = useRef<TextAreaFns | null>(null)
-
 	const accessor = useAccessor()
+	const [sidebarTab, setSidebarTab] = useState<SidebarTab>('chat')
+
+	useEffect(() => {
+		const chatThreadsService = accessor.get('IChatThreadService')
+		const disposable = chatThreadsService.onDidRequestSidebarTab(tab => setSidebarTab(tab))
+		return () => disposable.dispose()
+	}, [accessor])
+
 	const commandService = accessor.get('ICommandService')
 	const chatThreadsService = accessor.get('IChatThreadService')
 
@@ -3125,6 +3239,8 @@ export const SidebarChat = () => {
 			streamingStatusText={streamingStatusText}
 			isDisabled={isDisabled}
 			onClickAnywhere={() => { textAreaRef.current?.focus() }}
+			selections={selections}
+			setSelections={setSelections}
 		>
 			<TroveInputBox2
 				enableAtToMention
@@ -3213,19 +3329,52 @@ export const SidebarChat = () => {
 	// 		</ErrorBoundary>
 	// 	</div>
 	// </div>
+	const tabBar = (
+		<div className="flex items-center border-b border-trove-border-2 shrink-0 px-2 gap-0">
+			{(['chat', 'composer', 'notepads'] as SidebarTab[]).map(tab => (
+				<button
+					key={tab}
+					onClick={() => setSidebarTab(tab)}
+					className={`text-[11px] px-2 py-1.5 capitalize cursor-pointer transition-colors border-b-2 -mb-px ${
+						sidebarTab === tab
+							? 'border-blue-500 text-blue-400'
+							: 'border-transparent text-trove-fg-4 hover:text-trove-fg-2'
+					}`}
+				>
+					{tab}
+				</button>
+			))}
+		</div>
+	);
+
 	const threadPageContent = <div
 		ref={sidebarRef}
 		className='w-full h-full flex flex-col overflow-hidden'
 	>
-		<ErrorBoundary>
-			<ContextDocPanel />
-		</ErrorBoundary>
-		<ErrorBoundary>
-			{messagesHTML}
-		</ErrorBoundary>
-		<ErrorBoundary>
-			{threadPageInput}
-		</ErrorBoundary>
+		{tabBar}
+		{sidebarTab === 'chat' && (
+			<>
+				<ErrorBoundary>
+					<ContextDocPanel />
+				</ErrorBoundary>
+				<ErrorBoundary>
+					{messagesHTML}
+				</ErrorBoundary>
+				<ErrorBoundary>
+					{threadPageInput}
+				</ErrorBoundary>
+			</>
+		)}
+		{sidebarTab === 'composer' && (
+			<ErrorBoundary>
+				<ComposerPanel />
+			</ErrorBoundary>
+		)}
+		{sidebarTab === 'notepads' && (
+			<ErrorBoundary>
+				<NotepadsPanel />
+			</ErrorBoundary>
+		)}
 	</div>
 
 

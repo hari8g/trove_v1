@@ -14,7 +14,8 @@ const MIN_NON_EMPTY_LINES = 3;
 const FALLBACK_FILE_LINES = 120;
 
 const SKIP_LANGUAGES = new Set([
-	'Markdown', 'JSON', 'YAML', 'TOML', 'HTML', 'CSS', 'SCSS', 'Sass', 'Less',
+	'JSON', 'TOML', 'HTML', 'CSS', 'SCSS', 'Sass', 'Less',
+	// SQL, YAML, and Markdown are indexed with their own boundary patterns below
 ]);
 
 export { SKIP_LANGUAGES };
@@ -100,6 +101,21 @@ const LANGUAGE_BOUNDARIES: Record<string, BoundaryPattern[]> = {
 	'C#': [
 		{ regex: /^(?:public|private|protected|internal)?\s*(?:static\s+)?(?:\w+\s+)+?\w+\s*\([^)]*\)\s*\{/m, chunkType: 'function' },
 		{ regex: /^(?:public|private|protected|internal)?\s*class\s+\w/m, chunkType: 'class' },
+	],
+	SQL: [
+		{ regex: /^CREATE\s+TABLE\s+/im, chunkType: 'class' },
+		{ regex: /^CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+/im, chunkType: 'function' },
+		{ regex: /^ALTER\s+TABLE\s+/im, chunkType: 'block' },
+		{ regex: /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+/im, chunkType: 'block' },
+		{ regex: /^INSERT\s+INTO\s+/im, chunkType: 'block' },
+	],
+	YAML: [
+		// Top-level keys (no leading whitespace) as chunk boundaries
+		{ regex: /^\w[\w-]*\s*:/m, chunkType: 'block' },
+	],
+	Markdown: [
+		// H1 and H2 headings as chunk boundaries
+		{ regex: /^#{1,2}\s+\S/m, chunkType: 'block' },
 	],
 };
 

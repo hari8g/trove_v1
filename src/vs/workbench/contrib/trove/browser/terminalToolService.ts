@@ -440,6 +440,11 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 
 			const dataForLiveListener = terminal.onWillData(data => {
 				liveOutputAccumulator += data
+				// Cap raw accumulator (pre-ANSI-strip) to avoid unbounded memory growth in
+				// long-running commands — keep the tail so the final snapshot stays fresh.
+				if (liveOutputAccumulator.length > MAX_TERMINAL_CHARS * 2) {
+					liveOutputAccumulator = liveOutputAccumulator.slice(liveOutputAccumulator.length - MAX_TERMINAL_CHARS)
+				}
 				const cleaned = removeAnsiEscapeCodes(liveOutputAccumulator)
 				const preview = cleaned.length > MAX_TERMINAL_CHARS
 					? cleaned.slice(0, MAX_TERMINAL_CHARS / 2) + '\n...\n' + cleaned.slice(cleaned.length - MAX_TERMINAL_CHARS / 2)
@@ -478,6 +483,11 @@ export class TerminalToolService extends Disposable implements ITerminalToolServ
 			}
 			const oscListener = terminal.onWillData(data => {
 				oscDataBuffer += data
+				// OSC 633 sequences are short; only the tail is needed to detect them.
+				// Cap the buffer to avoid memory growth in commands that produce a lot of output.
+				if (oscDataBuffer.length > 8_000) {
+					oscDataBuffer = oscDataBuffer.slice(oscDataBuffer.length - 4_000)
+				}
 				const finished = parseShellIntegrationCommandFinished(oscDataBuffer)
 				if (!finished || resolveReason) return
 				tryOscDone(finished.exitCode)

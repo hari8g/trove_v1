@@ -11,7 +11,7 @@ const SKIP_DIRS = new Set([
 	'node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.venv', '.tox',
 	'.next', '.nuxt', 'coverage', '.cache', 'vendor', 'target', '.gradle',
 ]);
-const MAX_DEPTH = 12;
+const MAX_DEPTH = 14;
 const MAX_FILES = 50_000;
 
 const EXT_TO_LANGUAGE: Record<string, string> = {
@@ -124,10 +124,33 @@ const countLines = (filePath: string): number => {
 	}
 };
 
+/** Search for a target filename in subdirectories up to the given depth. */
+const findFileInSubdirs = (dir: string, targetFile: string, maxSubdepth = 3): string | null => {
+	const SKIP = ['node_modules', '.git', 'target', 'build', 'dist', '.gradle'];
+	let entries: string[];
+	try { entries = readdirSync(dir); } catch { return null; }
+	for (const entry of entries) {
+		if (SKIP.includes(entry)) continue;
+		const full = join(dir, entry);
+		if (entry === targetFile) return full;
+		if (maxSubdepth > 0) {
+			try {
+				if (statSync(full).isDirectory()) {
+					const found = findFileInSubdirs(full, targetFile, maxSubdepth - 1);
+					if (found) return found;
+				}
+			} catch { /* ignore */ }
+		}
+	}
+	return null;
+};
+
 const parsePackageJson = (workspaceRoot: string): { frameworks: FrameworkEntry[]; packageManagers: string[] } => {
 	const frameworks: FrameworkEntry[] = [];
 	const packageManagers: string[] = [];
-	const pkgPath = join(workspaceRoot, 'package.json');
+	// Check workspace root first; fall back to searching subdirectories up to depth 3
+	const rootPkg = join(workspaceRoot, 'package.json');
+	const pkgPath = exists(rootPkg) ? rootPkg : (findFileInSubdirs(workspaceRoot, 'package.json') ?? rootPkg);
 	try {
 		const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
 		const deps = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies };
@@ -211,18 +234,25 @@ const parseJavaBuild = (workspaceRoot: string): FrameworkEntry[] => {
 		{ file: 'build.gradle', markers: ['spring-boot', 'springframework', 'quarkus'] },
 		{ file: 'build.gradle.kts', markers: ['spring-boot', 'springframework', 'quarkus'] },
 	];
-	for (const { file, markers } of javaMarkers) {
-		const p = join(workspaceRoot, file);
-		if (!exists(p)) continue;
+	const seen = new Set<string>();
+	for (const { file } of javaMarkers) {
+		// Check workspace root first, then scan subdirectories up to depth 3
+		const rootPath = join(workspaceRoot, file);
+		const foundPath = exists(rootPath) ? rootPath : findFileInSubdirs(workspaceRoot, file);
+		if (!foundPath) continue;
 		try {
-			const content = readFileSync(p, 'utf8').toLowerCase();
-			if (content.includes('spring-boot') || content.includes('springframework')) {
+			const content = readFileSync(foundPath, 'utf8').toLowerCase();
+			if ((content.includes('spring-boot') || content.includes('springframework')) && !seen.has('Spring Boot')) {
 				frameworks.push({ name: 'Spring Boot', version: null, confidence: 'high' });
+				seen.add('Spring Boot');
 			}
-			if (content.includes('quarkus')) frameworks.push({ name: 'Quarkus', version: null, confidence: 'high' });
-			if (content.includes('micronaut')) frameworks.push({ name: 'Micronaut', version: null, confidence: 'high' });
-			for (const m of markers) {
-				if (content.includes(m)) { /* already handled */ }
+			if (content.includes('quarkus') && !seen.has('Quarkus')) {
+				frameworks.push({ name: 'Quarkus', version: null, confidence: 'high' });
+				seen.add('Quarkus');
+			}
+			if (content.includes('micronaut') && !seen.has('Micronaut')) {
+				frameworks.push({ name: 'Micronaut', version: null, confidence: 'high' });
+				seen.add('Micronaut');
 			}
 		} catch { /* ignore */ }
 	}

@@ -92,8 +92,9 @@ export const modelsWithSwappedInNewModels = (options: { existingModels: TroveSta
 		existingModelsMap[existingModel.modelName] = existingModel
 	}
 
-	const newDefaultModels = models.map((modelName, i) => ({ modelName, type, isHidden: !!existingModelsMap[modelName]?.isHidden, }))
-	const incomingModelNames = new Set(models)
+	const uniqueModels = [...new Set(models)]
+	const newDefaultModels = uniqueModels.map((modelName) => ({ modelName, type, isHidden: !!existingModelsMap[modelName]?.isHidden, }))
+	const incomingModelNames = new Set(uniqueModels)
 
 	return [
 		...newDefaultModels, // swap out all the models of this type for the new models of this type
@@ -342,6 +343,8 @@ class TroveSettingsService extends Disposable implements ITroveSettingsService {
 			if (readS.globalSettings.maxConsecutiveToolFails === undefined) readS.globalSettings.maxConsecutiveToolFails = 3;
 			if (readS.globalSettings.llmStreamStallTimeoutMs === undefined) readS.globalSettings.llmStreamStallTimeoutMs = 60_000;
 			if (readS.globalSettings.enableAutocompleteCodebaseContext === undefined) readS.globalSettings.enableAutocompleteCodebaseContext = true;
+			if (readS.globalSettings.enableVectorSearch === undefined) readS.globalSettings.enableVectorSearch = false;
+			if (readS.globalSettings.enableNextEditMode === undefined) readS.globalSettings.enableNextEditMode = true;
 		}
 		catch (e) {
 			readS = defaultState()

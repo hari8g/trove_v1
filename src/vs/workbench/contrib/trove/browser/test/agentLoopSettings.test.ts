@@ -7,7 +7,12 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { defaultGlobalSettings } from '../../common/troveSettingsTypes.js';
 import { getAgentLoopLimits } from '../agentLoopSettings.js';
-import { EDIT_LLM_STREAM_STALL_TIMEOUT_MS, getLlmStreamStallTimeoutMs } from '../agentLoopLimits.js';
+import {
+	EDIT_LLM_STREAM_STALL_TIMEOUT_MS,
+	REASONING_LLM_STREAM_STALL_TIMEOUT_MS,
+	TOOL_LLM_STREAM_STALL_TIMEOUT_MS,
+	getLlmStreamStallTimeoutMs,
+} from '../agentLoopLimits.js';
 
 suite('Trove - agentLoopSettings', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -17,7 +22,7 @@ suite('Trove - agentLoopSettings', () => {
 		assert.strictEqual(limits.maxAgentIterations, 25);
 		assert.strictEqual(limits.maxReadOnlyCalls, 12);
 		assert.strictEqual(limits.maxConsecutiveToolFails, 3);
-		assert.strictEqual(limits.llmStreamStallTimeoutMs, 60_000);
+		assert.strictEqual(limits.llmStreamStallTimeoutMs, 120_000);
 	});
 
 	test('getAgentLoopLimits clamps out-of-range values', () => {
@@ -33,7 +38,13 @@ suite('Trove - agentLoopSettings', () => {
 	});
 
 	test('getLlmStreamStallTimeoutMs extends timeout while edit tool is streaming', () => {
-		assert.strictEqual(getLlmStreamStallTimeoutMs(60_000, false), 60_000);
-		assert.strictEqual(getLlmStreamStallTimeoutMs(60_000, true), EDIT_LLM_STREAM_STALL_TIMEOUT_MS);
+		assert.strictEqual(getLlmStreamStallTimeoutMs(120_000, { editToolStreaming: false }), 120_000);
+		assert.strictEqual(getLlmStreamStallTimeoutMs(120_000, { editToolStreaming: true }), EDIT_LLM_STREAM_STALL_TIMEOUT_MS);
+	});
+
+	test('getLlmStreamStallTimeoutMs extends timeout for reasoning and tool streaming', () => {
+		assert.strictEqual(getLlmStreamStallTimeoutMs(120_000, { reasoningEnabled: true }), REASONING_LLM_STREAM_STALL_TIMEOUT_MS);
+		assert.strictEqual(getLlmStreamStallTimeoutMs(120_000, { toolStreaming: true }), TOOL_LLM_STREAM_STALL_TIMEOUT_MS);
+		assert.strictEqual(getLlmStreamStallTimeoutMs(120_000, true), EDIT_LLM_STREAM_STALL_TIMEOUT_MS);
 	});
 });

@@ -7,7 +7,7 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ChatMessage } from '../common/chatThreadServiceTypes.js';
-import { getIsReasoningEnabledState, getReservedOutputTokenSpace, getModelCapabilities } from '../common/modelCapabilities.js';
+import { getIsReasoningEnabledState, getReservedOutputTokenSpace, getModelCapabilities, modelSupportsVision } from '../common/modelCapabilities.js';
 import { reParsedToolXMLString, chat_systemMessage_stable, chat_systemMessage_volatile } from '../common/prompt/prompts.js';
 import { getEffectiveRepoProfileMode, isLightAgentEnabled } from '../common/lightAgent.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
@@ -28,6 +28,11 @@ export const EMPTY_MESSAGE = '(empty message)'
 
 
 
+type SimpleImageAttachment = {
+	dataUrl: string;
+	mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+};
+
 type SimpleLLMMessage = {
 	role: 'tool';
 	content: string;
@@ -37,6 +42,7 @@ type SimpleLLMMessage = {
 } | {
 	role: 'user';
 	content: string;
+	images?: SimpleImageAttachment[];
 } | {
 	role: 'assistant';
 	content: string;
@@ -94,7 +100,18 @@ const prepareMessages_openai_tools = (messages: SimpleLLMMessage[]): AnthropicOr
 		const currMsg = messages[i]
 
 		if (currMsg.role !== 'tool') {
-			newMessages.push(currMsg)
+			// For user messages with vision attachments, build multi-part content
+			if (currMsg.role === 'user' && currMsg.images && currMsg.images.length > 0) {
+				const parts: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[] = [];
+				for (const img of currMsg.images) {
+					parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+				}
+				const text = currMsg.content;
+				if (text) parts.push({ type: 'text', text });
+				newMessages.push({ role: 'user', content: parts });
+			} else {
+				newMessages.push(currMsg as OpenAILLMChatMessage);
+			}
 			continue
 		}
 
@@ -229,10 +246,28 @@ const prepareMessages_anthropic_tools = (messages: SimpleLLMMessage[], supportsA
 		}
 
 		if (currMsg.role === 'user') {
-			newMessages.push({
-				role: 'user',
-				content: toPlainText(currMsg.content),
-			});
+			if (currMsg.images && currMsg.images.length > 0) {
+				// Vision: build multi-part content with image blocks
+				const parts: (
+					{ type: 'text'; text: string }
+					| { type: 'image'; source: { type: 'base64'; media_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; data: string } }
+				)[] = [];
+				for (const img of currMsg.images) {
+					const base64Data = img.dataUrl.includes(',') ? img.dataUrl.split(',')[1] : img.dataUrl;
+					parts.push({
+						type: 'image',
+						source: { type: 'base64', media_type: img.mimeType, data: base64Data },
+					});
+				}
+				const text = toPlainText(currMsg.content);
+				if (text) parts.push({ type: 'text', text });
+				newMessages.push({ role: 'user', content: parts });
+			} else {
+				newMessages.push({
+					role: 'user',
+					content: toPlainText(currMsg.content),
+				});
+			}
 			continue;
 		}
 
@@ -623,10 +658,19 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 				.refreshProfile(workspaceFolders[0])
 				.catch(() => { /* non-fatal */ });
 		}
-		const workspaceRules = this._repoIntelligenceService.getWorkspaceRules()
+		// Pass the active file to get scoped workspace rules (alwaysApply + glob-matching rules)
+		const workspaceRules = this._repoIntelligenceService.getWorkspaceRules(activeURI)
 		const userMemory = this._repoIntelligenceService.getUserMemory()
+		// Auto-inject git diff stat when there are uncommitted changes
+		const gitDiffStat = workspaceFolders[0]
+			? await this._repoIntelligenceService.getGitDiffStat(workspaceFolders[0]).catch(() => null)
+			: null
+		// Smart context assembly: inject active file's related files and tests
+		const contextualProfile = workspaceFolders[0] && activeURI
+			? await this._repoIntelligenceService.getContextualProfile(workspaceFolders[0], { activeUri: activeURI, recentlyEditedUris: openedURIs }).catch(() => null)
+			: null
 		const stableBlock = chat_systemMessage_stable({ workspaceFolders, chatMode, mcpTools, includeXMLToolDefinitions, repoProfile, workspaceRules, userMemory, repoProfileMode })
-		const volatileBlock = chat_systemMessage_volatile({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode })
+		const volatileBlock = chat_systemMessage_volatile({ openedURIs, directoryStr, activeURI, persistentTerminalIDs, chatMode, gitDiffStat, contextualProfile })
 		return { stableBlock, volatileBlock }
 	}
 
@@ -670,9 +714,14 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 				})
 			}
 			else if (m.role === 'user') {
+				const images: SimpleImageAttachment[] = (m.selections ?? [])
+					.filter(s => s.type === 'Image')
+					.map(s => s.type === 'Image' ? { dataUrl: s.dataUrl, mimeType: s.mimeType } : null)
+					.filter(Boolean) as SimpleImageAttachment[];
 				simpleLLMMessages.push({
 					role: m.role,
 					content: m.content,
+					...(images.length > 0 ? { images } : {}),
 				})
 			}
 		}
@@ -774,6 +823,15 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		const reservedOutputTokenSpace = getReservedOutputTokenSpace(providerName, modelName, { isReasoningEnabled, overridesOfModel })
 		const compactedChatMessages = compactStaleToolResults(trimmedChatMessages)
 		const llmMessages = this._chatMessagesToSimpleMessages(compactedChatMessages)
+		if (!modelSupportsVision(providerName, modelName, overridesOfModel)) {
+			for (const msg of llmMessages) {
+				if (msg.role === 'user' && msg.images?.length) {
+					const note = `[Note: ${msg.images.length} image(s) attached but the selected model may not support vision.]`;
+					msg.content = msg.content ? `${note}\n\n${msg.content}` : note;
+					delete msg.images;
+				}
+			}
+		}
 		this._prependRecentlyViewedCodeToLatestUserMessage(llmMessages)
 		this._appendAgentTailHintsToLatestMessage(llmMessages, agentTailHints)
 

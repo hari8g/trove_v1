@@ -32,8 +32,8 @@ export type RiafSettingsSnapshot = {
 export type RiafChatThreadPort = {
 	readonly state: { currentThreadId: string };
 	readonly onDidFinishAgentRun: Event<{ threadId: string; pendingDiffCount: number; filesChanged: string[] }>;
-	openNewThread(): void;
-	addUserMessageAndStreamResponse(opts: { userMessage: string; threadId: string; displayMessage?: string }): Promise<void>;
+	openThreadForAgentRun(): string;
+	addUserMessageAndStreamResponse(opts: { userMessage: string; threadId: string; displayMessage?: string; _internalPrompt?: boolean }): Promise<void>;
 	abortRunning(threadId: string): Promise<void>;
 };
 
@@ -213,17 +213,25 @@ export class RiafAgentRunController extends Disposable implements IRiafAgentServ
 			}
 		}
 
-		this._chatThread.openNewThread();
-		const threadId = this._chatThread.state.currentThreadId;
+		const threadId = this._chatThread.openThreadForAgentRun();
+
+		const prompt = buildRiafAgentPrompt(root, folder.name, config, indexSnapshot);
+		if (!prompt.trim()) {
+			this._setState({ status: 'error', threadId, message: 'Failed to build repository analysis prompt.' });
+			return;
+		}
+
+		// Mark running before async settings work so double-clicks are ignored.
+		this._setState({ status: 'running', threadId });
 
 		await this._applyRiafSettingsOverrides();
-		this._setState({ status: 'running', threadId });
 
 		try {
 			await this._chatThread.addUserMessageAndStreamResponse({
-				userMessage: buildRiafAgentPrompt(root, folder.name, config, indexSnapshot),
+				userMessage: prompt,
 				displayMessage: RIAF_USER_DISPLAY_MESSAGE,
 				threadId,
+				_internalPrompt: true,
 			});
 		} catch (err) {
 			await this._restoreSettings();

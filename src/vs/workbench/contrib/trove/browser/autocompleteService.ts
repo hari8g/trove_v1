@@ -395,6 +395,11 @@ const toInlineCompletions = ({ autocompletionMatchup, autocompletion, prefixAndS
 		}
 	}
 
+	if (autocompletion.type === 'multi-line-start-on-next-line') {
+		const nextLine = position.lineNumber + 1;
+		rangeToReplace = new Range(nextLine, 1, nextLine, 1);
+	}
+
 	return [{
 		insertText: trimmedInsertText,
 		range: rangeToReplace,
@@ -535,7 +540,7 @@ type CompletionOptions = {
 	llmSuffix: string,
 	stopTokens: string[],
 }
-const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantContext: string, justAcceptedAutocompletion: boolean): CompletionOptions => {
+const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantContext: string, justAcceptedAutocompletion: boolean, enableNextEditMode: boolean): CompletionOptions => {
 
 	let { prefix, suffix, prefixToTheLeftOfCursor, suffixToTheRightOfCursor, suffixLines, prefixLines } = prefixAndSuffix
 
@@ -557,8 +562,8 @@ const getCompletionOptions = (prefixAndSuffix: PrefixAndSuffixInfo, relevantCont
 		? `${relevantContext}\n${llmPrefix}`
 		: llmPrefix
 
-	// if we just accepted an autocompletion, predict a multiline completion starting on the next line
-	if (justAcceptedAutocompletion && isLineSuffixEmpty) {
+	// if we just accepted an autocompletion, predict a multiline completion starting on the next line (next-edit mode)
+	if (enableNextEditMode && justAcceptedAutocompletion && isLineSuffixEmpty) {
 		const prefixWithNewline = prefix + _ln
 		completionOptions = {
 			predictionType: 'multi-line-start-on-next-line',
@@ -619,6 +624,33 @@ export interface IAutocompleteService {
 
 export const IAutocompleteService = createDecorator<IAutocompleteService>('AutocompleteService');
 
+interface RecentEditEntry {
+	filePath: string;
+	lineNumber: number;
+	addedText: string;
+	removedText: string;
+	timestamp: number;
+}
+
+const MAX_RECENT_EDITS = 5;
+const MAX_RECENT_EDIT_LINE_LENGTH = 200;
+
+/** Formats recent edits as a `<recent_edits>` block for the FIM prompt */
+function buildRecentEditsContext(edits: RecentEditEntry[]): string {
+	if (edits.length === 0) return '';
+	const lines = edits.map(e => {
+		const file = e.filePath.split('/').pop() ?? e.filePath;
+		const added = e.addedText.trim().slice(0, MAX_RECENT_EDIT_LINE_LENGTH);
+		const removed = e.removedText.trim().slice(0, MAX_RECENT_EDIT_LINE_LENGTH);
+		if (added && removed) return `  ${file}:${e.lineNumber} changed "${removed}" → "${added}"`;
+		if (added) return `  ${file}:${e.lineNumber} added "${added}"`;
+		if (removed) return `  ${file}:${e.lineNumber} removed "${removed}"`;
+		return null;
+	}).filter(Boolean);
+	if (lines.length === 0) return '';
+	return `<recent_edits>\n${lines.join('\n')}\n</recent_edits>\n\n`;
+}
+
 export class AutocompleteService extends Disposable implements IAutocompleteService {
 
 	static readonly ID = 'trove.autocompleteService'
@@ -630,6 +662,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 
 	private _lastCompletionStart = 0
 	private _lastCompletionAccept = 0
+	private _recentEdits: RecentEditEntry[] = []
 	// private _lastPrefix: string = ''
 
 	// used internally by vscode
@@ -760,7 +793,7 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		// Phase 4: prepend related codebase chunks (imports + symbol under cursor → FTS search)
 		const workspaceRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? null
 		const useCodebaseContext = this._settingsService.state.globalSettings.enableAutocompleteCodebaseContext
-		const relevantContext = useCodebaseContext
+		const codebaseContext = useCodebaseContext
 			? await fetchCodebaseContextForAutocomplete({
 				model,
 				position,
@@ -770,7 +803,12 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 			})
 			: ''
 
-		const { shouldGenerate, predictionType, llmPrefix, llmSuffix, stopTokens } = getCompletionOptions(prefixAndSuffix, relevantContext, justAcceptedAutocompletion)
+		// Phase 5: prepend recent-edit context for next-edit prediction
+		const recentEditsContext = buildRecentEditsContext(this._recentEdits)
+		const relevantContext = [recentEditsContext, codebaseContext].filter(Boolean).join('\n')
+
+		const enableNextEditMode = this._settingsService.state.globalSettings.enableNextEditMode
+		const { shouldGenerate, predictionType, llmPrefix, llmSuffix, stopTokens } = getCompletionOptions(prefixAndSuffix, relevantContext, justAcceptedAutocompletion, enableNextEditMode)
 
 		if (!shouldGenerate) return []
 
@@ -909,6 +947,26 @@ export class AutocompleteService extends Disposable implements IAutocompleteServ
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super()
+
+		// Track recent edits for next-edit context
+		this._register(this._modelService.onModelAdded(model => {
+			const disposable = model.onDidChangeContent(e => {
+				if (e.isUndoing || e.isRedoing) return;
+				const filePath = model.uri.fsPath;
+				for (const change of e.changes) {
+					if (!change.text && !change.rangeLength) continue;
+					const entry: RecentEditEntry = {
+						filePath,
+						lineNumber: change.range.startLineNumber,
+						addedText: change.text?.split('\n')[0] ?? '',
+						removedText: model.getValueInRange(change.range)?.split('\n')[0] ?? '',
+						timestamp: Date.now(),
+					};
+					this._recentEdits = [entry, ...this._recentEdits].slice(0, MAX_RECENT_EDITS);
+				}
+			});
+			this._register(disposable);
+		}));
 
 		this._register(this._langFeatureService.inlineCompletionsProvider.register('*', {
 			provideInlineCompletions: async (model, position, context, token) => {

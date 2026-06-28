@@ -18,9 +18,13 @@ import { inputBackground, inputForeground } from '../../../../../../../platform/
 import { useFloating, autoUpdate, offset, flip, shift, size, autoPlacement } from '@floating-ui/react';
 import { URI } from '../../../../../../../base/common/uri.js';
 import { getBasename, getFolderName } from '../sidebar-tsx/SidebarChat.js';
-import { ChevronRight, File, Folder, FolderClosed, LucideProps } from 'lucide-react';
+import { BookOpen, ChevronRight, File, FileText, Folder, FolderClosed, LucideProps } from 'lucide-react';
 import { StagingSelectionItem } from '../../../../common/chatThreadServiceTypes.js';
+import { INotepadsService } from '../../../notepadsService.js';
+import { IRepoIntelligenceService } from '../../../../common/repoIntelligenceTypes.js';
+import { ITerminalToolService } from '../../../terminalToolService.js';
 import { InlineContextPills } from '../sidebar-tsx/ContextPills.js';
+import { extractAttachmentsFromDataTransfer } from './attachmentUtils.js';
 import { DiffEditorWidget } from '../../../../../../../editor/browser/widget/diffEditor/diffEditorWidget.js';
 import { extractSearchReplaceBlocks, ExtractedSearchReplaceBlock } from '../../../../common/helpers/extractCodeFromResult.js';
 import { IAccessibilitySignalService } from '../../../../../../../platform/accessibilitySignal/browser/accessibilitySignalService.js';
@@ -68,6 +72,10 @@ type Option = {
 		| { leafNodeType?: undefined, nextOptions: Option[], generateNextOptions?: undefined, }
 		| { leafNodeType?: undefined, nextOptions?: undefined, generateNextOptions: GenerateNextOptions, }
 		| { leafNodeType: 'File' | 'Folder', uri: URI, nextOptions?: undefined, generateNextOptions?: undefined, }
+		| { leafNodeType: 'Notepad', notepadId: string, notepadTitle: string, notepadContent: string, uri?: undefined, nextOptions?: undefined, generateNextOptions?: undefined, }
+		| { leafNodeType: 'InstantContext', contextType: 'codebase' | 'terminal' | 'git', contextContent: string, query?: string, uri?: undefined, nextOptions?: undefined, generateNextOptions?: undefined, }
+		| { leafNodeType: 'Symbol', symbolName: string, symbolContent: string, uri?: undefined, nextOptions?: undefined, generateNextOptions?: undefined, }
+		| { leafNodeType: 'PackageDocs', packageName: string, docsContent: string, uri?: undefined, nextOptions?: undefined, generateNextOptions?: undefined, }
 	)
 
 
@@ -284,6 +292,10 @@ const getOptionsAtPath = async (accessor: ReturnType<typeof useAccessor>, path: 
 	};
 
 
+	const notepadsService = accessor.get('INotepadsService') as INotepadsService
+	const repoIntelligenceService = accessor.get('IRepoIntelligenceService') as IRepoIntelligenceService
+	const terminalToolService = accessor.get('ITerminalToolService') as ITerminalToolService
+
 	const allOptions: Option[] = [
 		{
 			fullName: 'files',
@@ -296,6 +308,157 @@ const getOptionsAtPath = async (accessor: ReturnType<typeof useAccessor>, path: 
 			abbreviatedName: 'folders',
 			iconInMenu: Folder,
 			generateNextOptions: async (t) => (await searchForFilesOrFolders(t, 'folders')) || [],
+		},
+		{
+			fullName: 'notepads',
+			abbreviatedName: 'notepads',
+			iconInMenu: BookOpen,
+			generateNextOptions: async (t) => {
+				const pads = notepadsService.notepads
+				return pads.map(np => ({
+					fullName: np.title || 'Untitled',
+					abbreviatedName: np.title || 'Untitled',
+					iconInMenu: BookOpen,
+					leafNodeType: 'Notepad' as const,
+					notepadId: np.id,
+					notepadTitle: np.title,
+					notepadContent: np.content,
+				}))
+			},
+		},
+		{
+			fullName: 'codebase',
+			abbreviatedName: 'codebase',
+			iconInMenu: File,
+			generateNextOptions: async (query) => {
+				if (!query.trim()) return [{
+					fullName: '(type a query to search the codebase)',
+					abbreviatedName: '(type a query)',
+					iconInMenu: File,
+					nextOptions: [],
+				}]
+				try {
+					const result = (await (await toolsService.callTool.search_codebase({ query, maxResults: 5 })).result)
+					const snippets = result.results.map(r => `${r.filePath}:${r.startLine}-${r.endLine}\n${r.snippet}`).join('\n\n---\n\n')
+					const content = snippets || '(no results found)'
+					return [{
+						fullName: `Search codebase: "${query}"`,
+						abbreviatedName: `"${query}"`,
+						iconInMenu: File,
+						leafNodeType: 'InstantContext' as const,
+						contextType: 'codebase' as const,
+						contextContent: content,
+						query,
+					}]
+				} catch {
+					return []
+				}
+			},
+		},
+		{
+			fullName: 'symbol',
+			abbreviatedName: 'symbol',
+			iconInMenu: File,
+			generateNextOptions: async (query) => {
+				if (!query.trim()) return []
+				try {
+					const result = (await (await toolsService.callTool.search_symbols({ query, maxResults: 10 })).result)
+					const content = result.results || '(no symbols found)'
+					return [{
+						fullName: `Symbol: "${query}"`,
+						abbreviatedName: `"${query}"`,
+						iconInMenu: File,
+						leafNodeType: 'Symbol' as const,
+						symbolName: query,
+						symbolContent: content,
+					}]
+				} catch {
+					return []
+				}
+			},
+		},
+		{
+			fullName: 'docs',
+			abbreviatedName: 'docs',
+			iconInMenu: FileText,
+			generateNextOptions: async (query) => {
+				if (!query.trim()) return [{
+					fullName: '(type a package name, e.g. react)',
+					abbreviatedName: '(type package)',
+					iconInMenu: FileText,
+					nextOptions: [],
+				}]
+				const pkg = query.trim().replace(/[^@a-zA-Z0-9/._-]/g, '')
+				if (!pkg) return []
+				try {
+					const cmd = `node -e "fetch('https://registry.npmjs.org/${pkg}/latest').then(r=>r.ok?r.json():Promise.reject()).then(j=>process.stdout.write(String(j.readme||j.description||'No documentation found').slice(0,8000))).catch(()=>process.stdout.write('Could not fetch docs for ${pkg}'))"`
+					const result = (await (await toolsService.callTool.run_command({ command: cmd, cwd: null })).result)
+					const content = (result.result || '').trim() || '(no documentation found)'
+					return [{
+						fullName: `Docs: ${pkg}`,
+						abbreviatedName: pkg,
+						iconInMenu: FileText,
+						leafNodeType: 'PackageDocs' as const,
+						packageName: pkg,
+						docsContent: content,
+					}]
+				} catch {
+					return []
+				}
+			},
+		},
+		{
+			fullName: 'terminal',
+			abbreviatedName: 'terminal',
+			iconInMenu: File,
+			generateNextOptions: async (_t) => {
+				const ids = terminalToolService.listPersistentTerminalIds()
+				if (ids.length === 0) return [{
+					fullName: 'No active terminal',
+					abbreviatedName: 'No terminal',
+					iconInMenu: File,
+					nextOptions: [],
+				}]
+				const outputs = await Promise.all(ids.map(async id => {
+					try { return `[Terminal ${id}]\n${await terminalToolService.readTerminal(id)}` } catch { return '' }
+				}))
+				const content = outputs.filter(Boolean).join('\n\n---\n\n')
+				return [{
+					fullName: 'Inject terminal output',
+					abbreviatedName: 'terminal output',
+					iconInMenu: File,
+					leafNodeType: 'InstantContext' as const,
+					contextType: 'terminal' as const,
+					contextContent: content,
+				}]
+			},
+		},
+		{
+			fullName: 'git',
+			abbreviatedName: 'git',
+			iconInMenu: File,
+			generateNextOptions: async (_t) => {
+				try {
+					const gitDiffResult = await (await toolsService.callTool.run_command({ command: 'git diff HEAD --stat', cwd: null })).result
+					const gitLogResult = await (await toolsService.callTool.run_command({ command: 'git log --oneline -10', cwd: null })).result
+					const gitStatusResult = await (await toolsService.callTool.run_command({ command: 'git status --short', cwd: null })).result
+					const content = [
+						'=== git status ===\n' + (gitStatusResult.result || '(clean)'),
+						'=== git diff HEAD --stat ===\n' + (gitDiffResult.result || '(no changes)'),
+						'=== git log (last 10) ===\n' + (gitLogResult.result || '(no commits)'),
+					].join('\n\n')
+					return [{
+						fullName: 'Inject git context',
+						abbreviatedName: 'git context',
+						iconInMenu: File,
+						leafNodeType: 'InstantContext' as const,
+						contextType: 'git' as const,
+						contextContent: content,
+					}]
+				} catch {
+					return []
+				}
+			},
 		},
 	]
 
@@ -443,6 +606,37 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 				uri: option.uri,
 				language: undefined,
 				state: undefined,
+			}
+			else if (option.leafNodeType === 'Notepad') newSelection = {
+				type: 'Notepad',
+				notepadId: option.notepadId,
+				title: option.notepadTitle,
+				content: option.notepadContent,
+			}
+			else if (option.leafNodeType === 'InstantContext') {
+				if (option.contextType === 'codebase') newSelection = {
+					type: 'CodebaseSearch',
+					query: option.query ?? '',
+					content: option.contextContent,
+				}
+				else if (option.contextType === 'terminal') newSelection = {
+					type: 'TerminalOutput',
+					content: option.contextContent,
+				}
+				else newSelection = {
+					type: 'GitContext',
+					content: option.contextContent,
+				}
+			}
+			else if (option.leafNodeType === 'Symbol') newSelection = {
+				type: 'SymbolSearch',
+				symbolName: option.symbolName,
+				content: option.symbolContent,
+			}
+			else if (option.leafNodeType === 'PackageDocs') newSelection = {
+				type: 'PackageDocs',
+				packageName: option.packageName,
+				content: option.docsContent,
 			}
 			else throw new Error(`Unexpected leafNodeType ${option.leafNodeType}`)
 
@@ -826,7 +1020,25 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 				onKeyDown?.(e)
 			}, [onKeyDown, onMenuKeyDown, multiline])}
 
-			rows={1}
+			onPaste={useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+				if (!setInlineSelections) return;
+				const attachments = await extractAttachmentsFromDataTransfer(e.clipboardData);
+				if (attachments.length > 0) {
+					e.preventDefault();
+					setInlineSelections([...(inlineSelections ?? []), ...attachments]);
+				}
+			}, [setInlineSelections, inlineSelections])}
+
+		onDrop={useCallback(async (e: React.DragEvent<HTMLTextAreaElement>) => {
+				if (!setInlineSelections) return;
+				const attachments = await extractAttachmentsFromDataTransfer(e.dataTransfer);
+				if (attachments.length > 0) {
+					e.preventDefault();
+					setInlineSelections([...(inlineSelections ?? []), ...attachments]);
+				}
+			}, [setInlineSelections, inlineSelections])}
+
+		rows={1}
 			cols={1}
 			wrap="soft"
 			placeholder={inlineSelections?.length ? undefined : placeholder}
@@ -873,7 +1085,7 @@ export const TroveInputBox2 = forwardRef<HTMLTextAreaElement, InputBox2Props>(fu
 									// Option
 									<div
 										ref={oIdx === optionIdx ? selectedOptionRef : null}
-										key={o.fullName}
+										key={`${o.fullName}::${oIdx}`}
 										className={`
 											flex items-center gap-2
 											px-3 py-1 cursor-pointer
@@ -1397,12 +1609,13 @@ export const TroveCustomDropdownBox = <T extends NonNullable<any>>({
 				className="opacity-0 pointer-events-none absolute -left-[999999px] -top-[999999px] flex flex-col"
 				aria-hidden="true"
 			>
-				{options.map((option) => {
+				{options.map((option, optionIdx) => {
 					const optionName = getOptionDropdownName(option);
-					const optionDetail = getOptionDropdownDetail?.(option) || '';
+					const optionDetail = getOptionDropdownDetail?.(option) ?? '';
+					const optionKey = `${optionName}::${optionDetail}::${optionIdx}`;
 
 					return (
-						<div key={optionName + optionDetail} className="flex items-center whitespace-nowrap">
+						<div key={optionKey} className="flex items-center whitespace-nowrap">
 							<div className="w-4" />
 							<span className="flex justify-between w-full">
 								<span>{optionName}</span>
@@ -1458,14 +1671,15 @@ export const TroveCustomDropdownBox = <T extends NonNullable<any>>({
 					onWheel={(e) => e.stopPropagation()}
 				><div className='overflow-auto max-h-80'>
 
-						{options.map((option) => {
+						{options.map((option, optionIdx) => {
 							const thisOptionIsSelected = getOptionsEqual(option, selectedOption);
 							const optionName = getOptionDropdownName(option);
-							const optionDetail = getOptionDropdownDetail?.(option) || '';
+							const optionDetail = getOptionDropdownDetail?.(option) ?? '';
+							const optionKey = `${optionName}::${optionDetail}::${optionIdx}`;
 
 							return (
 								<div
-									key={optionName}
+									key={optionKey}
 									className={`flex items-center px-2 py-1 pr-4 cursor-pointer whitespace-nowrap
 									transition-all duration-100
 									${thisOptionIsSelected ? 'bg-blue-500 text-white/80' : 'hover:bg-blue-500 hover:text-white/80'}

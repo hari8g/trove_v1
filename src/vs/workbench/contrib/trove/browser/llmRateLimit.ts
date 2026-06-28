@@ -148,7 +148,7 @@ export const getMaxLLMRetryAttempts = (error: LLMErrorLike): number => {
 		return 2;
 	}
 	if (isStreamStallLLMError(error)) {
-		return 2;
+		return 3;
 	}
 	const serialized = getSerializedError(error.fullError);
 	if (serialized?.status && serialized.status >= 500) {

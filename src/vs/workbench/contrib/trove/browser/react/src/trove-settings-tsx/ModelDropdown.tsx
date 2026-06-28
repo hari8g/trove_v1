@@ -57,13 +57,21 @@ const MemoizedModelDropdown = ({ featureName, className }: { featureName: Featur
 
 	useEffect(() => {
 		const oldOptions = oldOptionsRef.current
-		const newOptions = settingsState._modelOptions.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
+		const seen = new Set<string>()
+		const newOptions = settingsState._modelOptions
+			.filter((o) => filter(o.selection, { chatMode: settingsState.globalSettings.chatMode, overridesOfModel: settingsState.overridesOfModel }))
+			.filter((o) => {
+				const key = `${o.selection.providerName}::${o.selection.modelName}`
+				if (seen.has(key)) return false
+				seen.add(key)
+				return true
+			})
 
 		if (!optionsEqual(oldOptions, newOptions)) {
 			setMemoizedOptions(newOptions)
 		}
 		oldOptionsRef.current = newOptions
-	}, [settingsState._modelOptions, filter])
+	}, [settingsState._modelOptions, filter, settingsState.globalSettings.chatMode, settingsState.overridesOfModel])
 
 	if (memoizedOptions.length === 0) { // Pretty sure this will never be reached unless filter is enabled
 		return <WarningBox text={emptyMessage?.message || 'No models available'} />

@@ -183,6 +183,19 @@ export const endsWithAnyPrefixOf = (str: string, anyPrefix: string) => {
 	return null
 }
 
+/** Fix common LLM mistakes: missing <<<<<<< ORIGINAL for empty-file or full-file replacements. */
+export const normalizeSearchReplaceBlocks = (str: string): string => {
+	const trimmed = str.trim()
+	if (trimmed.includes(ORIGINAL)) {
+		return str
+	}
+	const dividerOnly = trimmed.match(/^={3,}\s*\n([\s\S]*?)\n\s*>>>>>>>\s*UPDATED\s*$/m)
+	if (dividerOnly) {
+		return `${ORIGINAL}\n\n${DIVIDER}\n${dividerOnly[1]}\n${FINAL}`
+	}
+	return str
+}
+
 // guarantees if you keep adding text, array length will strictly grow and state will progress without going back
 export const extractSearchReplaceBlocks = (str: string) => {
 

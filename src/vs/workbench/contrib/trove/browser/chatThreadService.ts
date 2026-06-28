@@ -15,7 +15,7 @@ import { chat_userMessageContent, findUnresolvedAtMentionsInText, isABuiltinTool
 import { AnthropicReasoning, getErrorMessage, RawToolCallObj, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ChatMode, FeatureName, ModelSelection, ModelSelectionOptions, OverridesOfModel } from '../common/troveSettingsTypes.js';
-import { ITroveSettingsService } from '../common/troveSettingsService.js';
+import { getIsReasoningEnabledState } from '../common/modelCapabilities.js';
 import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, TerminalResolveReason, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
 import { IToolsService } from './toolsService.js';
 import { IAgentDeliveryService } from './agentDeliveryService.js';
@@ -27,9 +27,9 @@ import { completeRemainingPlanItems, findLatestPlanMessageIdx, generateAgentPlan
 import { getAgentLoopLimits } from './agentLoopSettings.js';
 import { getLlmStreamStallTimeoutMs } from './agentLoopLimits.js';
 import { shouldGenerateAgentPlan, shouldUseParallelReadBatching } from '../common/lightAgent.js';
-import { shouldSkipDuplicateFileRead, buildRepeatFileReadHint, recordFileReadSize } from './fileReadDedup.js';
+import { shouldSkipDuplicateFileRead, buildRepeatFileReadHint, recordFileReadSize, FileReadRecord } from './fileReadDedup.js';
 import { buildRepeatEditHint, buildLargeFileEditHint, trackFileEdit } from './agentEditHints.js';
-import { buildAgentTailHints, buildExplorationBudgetHint, buildRepeatReadHint, createReadOnlyCallCounts, trackReadOnlyCall } from './agentReadHints.js';
+import { buildAgentTailHints, buildExplorationBudgetHint, buildRepeatReadHint, buildCrossQueryFileReadHint, createReadOnlyCallCounts, trackReadOnlyCall } from './agentReadHints.js';
 import {
 	buildSandboxVerificationHint,
 	createSandboxVerificationTracker,
@@ -106,6 +106,15 @@ const findStagingSelectionIndex = (currentSelections: StagingSelectionItem[] | u
 	for (let i = 0; i < currentSelections.length; i += 1) {
 		const s = currentSelections[i]
 
+		if (newSelection.type === 'Image' && s.type === 'Image') {
+			if (s.fileName === newSelection.fileName && s.dataUrl === newSelection.dataUrl) return i
+			continue
+		}
+		if (newSelection.type === 'Pdf' && s.type === 'Pdf') {
+			if (s.fileName === newSelection.fileName) return i
+			continue
+		}
+		if (!('uri' in s) || !('uri' in newSelection) || !s.uri || !newSelection.uri) continue
 		if (s.uri.fsPath !== newSelection.uri.fsPath) continue
 
 		if (s.type === 'File' && newSelection.type === 'File') {
@@ -222,7 +231,10 @@ export type IsRunningType =
 	| 'tool' // whether a tool is currently running
 	| 'awaiting_user' // awaiting user call
 	| 'idle' // nothing is running now, but the chat should still appear like it's going (used in-between calls)
+	| 'background' // running in background (non-blocking)
 	| undefined
+
+export type TroveSidebarTab = 'chat' | 'composer' | 'notepads';
 
 export type ThreadStreamState = {
 	[threadId: string]: undefined | {
@@ -269,6 +281,12 @@ export type ThreadStreamState = {
 		interrupt: 'not_needed' | Promise<() => void>; // calling this should have no effect on state - would be too confusing. it just cancels the tool
 		contextWasTrimmed?: boolean;
 		idleStatus?: { title: string; detail?: string };
+	} | {
+		isRunning: 'background';
+		error?: undefined;
+		llmInfo?: undefined;
+		toolInfo?: undefined;
+		interrupt: Promise<() => void>;
 	}
 }
 
@@ -306,6 +324,8 @@ export interface IChatThreadService {
 
 	getCurrentThread(): ThreadType;
 	openNewThread(): void;
+	/** Always creates a fresh thread for an agent run (never reuses empty threads). Returns the new thread id. */
+	openThreadForAgentRun(): string;
 	switchToThread(threadId: string): void;
 
 	// thread selector
@@ -344,12 +364,16 @@ export interface IChatThreadService {
 	// entry pts
 	abortRunning(threadId: string): Promise<void>;
 	dismissStreamError(threadId: string): void;
+	runCurrentThreadInBackground(): void;
+
+	requestSidebarTab(tab: TroveSidebarTab): void;
+	readonly onDidRequestSidebarTab: Event<TroveSidebarTab>;
 
 	// call to edit a message
 	editUserMessageAndStreamResponse({ userMessage, messageIdx, threadId }: { userMessage: string, messageIdx: number, threadId: string }): Promise<void>;
 
 	// call to add a message
-	addUserMessageAndStreamResponse(opts: { userMessage: string, threadId: string, displayMessage?: string }): Promise<void>;
+	addUserMessageAndStreamResponse(opts: { userMessage: string, threadId: string, displayMessage?: string, _internalPrompt?: boolean }): Promise<void>;
 
 	getMessageQueue(threadId: string): readonly QueuedUserMessage[];
 	removeQueuedMessage(threadId: string, messageId: string): void;
@@ -383,8 +407,15 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	private readonly _onDidChangeMessageQueue = this._register(new Emitter<{ threadId: string }>());
 	readonly onDidChangeMessageQueue: Event<{ threadId: string }> = this._onDidChangeMessageQueue.event;
 
+	private readonly _onDidRequestSidebarTab = this._register(new Emitter<TroveSidebarTab>());
+	readonly onDidRequestSidebarTab: Event<TroveSidebarTab> = this._onDidRequestSidebarTab.event;
+
 	readonly streamState: ThreadStreamState = {}
 	private readonly _messageQueueByThread = new Map<string, QueuedUserMessage[]>();
+	/** Persists file-read records across queries within the same thread so the dedup/skip logic works cross-turn. */
+	private readonly _threadFileReadHistory = new Map<string, Map<string, FileReadRecord>>();
+	/** Skip the pre-run agent plan step for internal/system prompts (e.g. RIAF). */
+	private readonly _suppressAgentPlanByThread = new Map<string, boolean>();
 	state: ThreadsState // allThreads is persisted, currentThread is not
 
 	// used in checkpointing
@@ -678,6 +709,25 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		return this._mcpService.getMCPTools()?.find(t => t.name === toolName)?.mcpServerName
 	}
 
+	runCurrentThreadInBackground() {
+		const threadId = this.state.currentThreadId;
+		const current = this.streamState[threadId];
+		if (!current?.isRunning || current.isRunning === 'background') return;
+		if (current.isRunning === 'idle' || current.isRunning === 'LLM' || current.isRunning === 'tool' || current.isRunning === 'awaiting_user') {
+			const interrupt = 'interrupt' in current ? current.interrupt : Promise.resolve(() => {});
+			this._setStreamState(threadId, { isRunning: 'background', interrupt: interrupt instanceof Promise ? interrupt : Promise.resolve(() => {}) });
+			this._notificationService.notify({
+				severity: Severity.Info,
+				message: `Running in background…`,
+				source: 'Trove Agent',
+			});
+		}
+	}
+
+	requestSidebarTab(tab: TroveSidebarTab): void {
+		this._onDidRequestSidebarTab.fire(tab);
+	}
+
 	async abortRunning(threadId: string) {
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
@@ -700,6 +750,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		}
 		else if (this.streamState[threadId]?.isRunning === 'idle') {
 			// do nothing
+		}
+		else if (this.streamState[threadId]?.isRunning === 'background') {
+			// abort a background run
 		}
 
 		this._addUserCheckpoint({ threadId })
@@ -786,10 +839,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 			const approvalType = isBuiltInTool ? approvalTypeOfBuiltinToolName[toolName] : 'MCP tools'
 			if (approvalType) {
-				const autoApprove = this._settingsService.state.globalSettings.autoApprove[approvalType]
+				const { autoApprove, autoApproveAll } = this._settingsService.state.globalSettings
+				const isApproved = autoApproveAll || autoApprove[approvalType]
 				// add a tool_request because we use it for UI if a tool is loading (this should be improved in the future)
 				this._addMessageToThread(threadId, { role: 'tool', type: 'tool_request', content: '(Awaiting user permission...)', result: null, name: toolName, params: toolParams, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName })
-				if (!autoApprove) {
+				if (!isApproved) {
 					if (isEditToolName(toolName)) {
 						warnEditDiagnostic('tool_approval_blocked', { toolName, toolId, approvalType })
 					}
@@ -1108,6 +1162,14 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const runTokenTotals = emptyAgentRunTokenTotals()
 		const fileEditCounts = new Map<string, number>()
 		const readOnlyCallCounts = createReadOnlyCallCounts()
+		// Seed with file reads accumulated from earlier queries in this thread so
+		// shouldSkipDuplicateFileRead and buildRepeatFileReadHint work cross-turn.
+		const prevFileReads = this._threadFileReadHistory.get(threadId)
+		if (prevFileReads) {
+			for (const [key, record] of prevFileReads) {
+				readOnlyCallCounts.fileReads.set(key, { count: record.count, ranges: [...record.ranges], totalFileLen: record.totalFileLen })
+			}
+		}
 		const sandboxVerificationTracker = createSandboxVerificationTracker()
 		const editCompletionTracker = createEditCompletionTracker()
 		let sandboxVerificationHint = ''
@@ -1128,7 +1190,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		this._setIdleStatus(threadId, 'Starting agent', `${chatMode} mode`)
 
 		// generate structured plan before tool-use loop (agent mode only)
-		if (chatMode === 'agent' && modelSelection && shouldGenerateAgentPlan(this._settingsService.state.globalSettings)) {
+		const suppressAgentPlan = this._suppressAgentPlanByThread.get(threadId) === true
+		this._suppressAgentPlanByThread.delete(threadId)
+		if (chatMode === 'agent' && modelSelection && shouldGenerateAgentPlan(this._settingsService.state.globalSettings) && !suppressAgentPlan) {
 			this._setIdleStatus(threadId, 'Generating plan', 'Asking the model to outline next steps')
 			const chatMessages = this.state.allThreads[threadId]?.messages ?? []
 			const plan = await generateAgentPlan({
@@ -1188,6 +1252,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				explorationBudgetHint: buildExplorationBudgetHint(readOnlyCallCounts, agentLoopLimits.maxReadOnlyCalls, globalSettings),
 				sandboxVerificationHint,
 				editCompletionHint,
+				crossQueryFileReadHint: buildCrossQueryFileReadHint(readOnlyCallCounts.fileReads, nMessagesSent),
 			})
 			sandboxVerificationHint = ''
 			editCompletionHint = ''
@@ -1271,6 +1336,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				let stallTimer: ReturnType<typeof setTimeout> | undefined
 				let messageResolved = false
 				let editStreamStarted = false
+				let toolStreamStarted = false
+				const isReasoningEnabledForStall = modelSelection
+					? getIsReasoningEnabledState('Chat', modelSelection.providerName, modelSelection.modelName, modelSelectionOptions, overridesOfModel)
+					: false
 				const resolveMessageOnce = (res: ResTypes) => {
 					if (messageResolved) {
 						return
@@ -1285,16 +1354,25 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					if (stallTimer) {
 						clearTimeout(stallTimer)
 					}
-					const stallTimeoutMs = getLlmStreamStallTimeoutMs(agentLoopLimits.llmStreamStallTimeoutMs, editStreamStarted)
+					const stallTimeoutMs = getLlmStreamStallTimeoutMs(agentLoopLimits.llmStreamStallTimeoutMs, {
+						editToolStreaming: editStreamStarted,
+						toolStreaming: toolStreamStarted,
+						reasoningEnabled: isReasoningEnabledForStall,
+					})
+					const stallSec = Math.round(stallTimeoutMs / 1000)
 					stallTimer = setTimeout(() => {
-						this._metricsService.capture('LLM Stream Stall', { nMessagesSent, chatMode, editToolStreaming: editStreamStarted })
+						this._metricsService.capture('LLM Stream Stall', { nMessagesSent, chatMode, editToolStreaming: editStreamStarted, toolStreaming: toolStreamStarted, reasoningEnabled: isReasoningEnabledForStall })
 						// Resolve BEFORE abort so onAbort does not win the race and kill the agent loop.
 						resolveMessageOnce({
 							type: 'llmError',
 							error: {
 								message: editStreamStarted
-									? 'Edit generation stalled — no tokens received for an extended period. Retrying…'
-									: 'Model stream stalled — no tokens received for 60 seconds.',
+									? `Edit generation stalled — no tokens received for ${stallSec} seconds. Retrying…`
+									: toolStreamStarted
+										? `Tool generation stalled — no tokens received for ${stallSec} seconds. Retrying…`
+										: isReasoningEnabledForStall
+											? `Model thinking stalled — no tokens received for ${stallSec} seconds. Retrying…`
+											: `Model stream stalled — no tokens received for ${stallSec} seconds.`,
 								fullError: null,
 							},
 						})
@@ -1328,6 +1406,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					threadId,
 					onText: ({ fullText, fullReasoning, toolCall }) => {
 						resetStallTimer()
+						if (toolCall?.name) {
+							toolStreamStarted = true
+						}
 						if (shouldTraceEditToolCall(toolCall)) {
 							const signature = `${toolCall!.name}|${toolCall!.isDone}|${toolCall!.doneParams.join(',')}|${Object.keys(toolCall!.rawParams).join(',')}`
 							if (signature !== lastEditStreamSignature) {
@@ -1665,6 +1746,14 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		} finally {
 			if (runTokenTotals.turns > 0) {
 				console.info(formatAgentRunTokenSummary(runTokenTotals))
+			}
+			// Persist the file reads so the next query in this thread can skip re-reads.
+			if (readOnlyCallCounts.fileReads.size > 0) {
+				const snapshot = new Map<string, FileReadRecord>()
+				for (const [key, record] of readOnlyCallCounts.fileReads) {
+					snapshot.set(key, { count: record.count, ranges: [...record.ranges], totalFileLen: record.totalFileLen })
+				}
+				this._threadFileReadHistory.set(threadId, snapshot)
 			}
 		}
 	}
@@ -2010,9 +2099,11 @@ We only need to do it for files that were edited since `from`, ie files between 
 		}
 
 		p.then(() => {
-			if (threadId !== this.state.currentThreadId) notify({ error: null })
+			const wasBackground = this.streamState[threadId]?.isRunning === 'background';
+			if (wasBackground || threadId !== this.state.currentThreadId) notify({ error: null })
 		}).catch((e) => {
-			if (threadId !== this.state.currentThreadId) notify({ error: getErrorMessage(e) })
+			const wasBackground = this.streamState[threadId]?.isRunning === 'background';
+			if (wasBackground || threadId !== this.state.currentThreadId) notify({ error: getErrorMessage(e) })
 			throw e
 		})
 	}
@@ -2079,9 +2170,15 @@ We only need to do it for files that were edited since `from`, ie files between 
 		})
 	}
 
-	private async _startUserMessageAndStreamResponse({ userMessage, displayMessage, _chatSelections, threadId }: { userMessage: string, displayMessage?: string, _chatSelections?: StagingSelectionItem[], threadId: string }) {
+	private async _startUserMessageAndStreamResponse({ userMessage, displayMessage, _chatSelections, threadId, _internalPrompt }: { userMessage: string, displayMessage?: string, _chatSelections?: StagingSelectionItem[], threadId: string, _internalPrompt?: boolean }) {
 		const thread = this.state.allThreads[threadId]
 		if (!thread) return // should never happen
+
+		const instructions = userMessage.trim()
+		if (!instructions) {
+			this._setStreamState(threadId, { isRunning: undefined, error: { message: 'Cannot send an empty message.', fullError: null } })
+			return
+		}
 
 		this._agentDeliveryService.clearDelivery(threadId)
 
@@ -2092,7 +2189,6 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 
 		// add user's message to chat history
-		const instructions = userMessage
 		const currSelns: StagingSelectionItem[] = _chatSelections ?? thread.state.stagingSelections
 
 		this._setIdleStatus(threadId, 'Preparing request', 'Validating selections and attachments')
@@ -2103,18 +2199,23 @@ We only need to do it for files that were edited since `from`, ie files between 
 			return
 		}
 
-		const mentionError = await findUnresolvedAtMentionsInText(instructions, {
-			fileService: this._fileService,
-			workspaceFolderUris: this._workspaceContextService.getWorkspace().folders.map(f => f.uri),
-		})
-		if (mentionError) {
-			this._setStreamState(threadId, { isRunning: undefined, error: { message: mentionError, fullError: null } })
-			return
+		if (!_internalPrompt) {
+			const mentionError = await findUnresolvedAtMentionsInText(instructions, {
+				fileService: this._fileService,
+				workspaceFolderUris: this._workspaceContextService.getWorkspace().folders.map(f => f.uri),
+			})
+			if (mentionError) {
+				this._setStreamState(threadId, { isRunning: undefined, error: { message: mentionError, fullError: null } })
+				return
+			}
 		}
 
 		this._setIdleStatus(threadId, 'Preparing request', 'Gathering workspace context for your message')
 
-		const userMessageContent = await chat_userMessageContent(instructions, currSelns, { directoryStrService: this._directoryStringService, fileService: this._fileService }) // user message + names of files (NOT content)
+		let userMessageContent = await chat_userMessageContent(instructions, currSelns, { directoryStrService: this._directoryStringService, fileService: this._fileService }) // user message + names of files (NOT content)
+		if (!userMessageContent.trim()) {
+			userMessageContent = instructions
+		}
 		const userHistoryElt: ChatMessage = { role: 'user', content: userMessageContent, displayContent: displayMessage ?? instructions, selections: [...currSelns], state: defaultMessageState }
 		this._addMessageToThread(threadId, userHistoryElt)
 
@@ -2140,6 +2241,10 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 		this._setThreadState(threadId, { currCheckpointIdx: null }) // no longer at a checkpoint because started streaming
 
+		if (_internalPrompt) {
+			this._suppressAgentPlanByThread.set(threadId, true)
+		}
+
 		this._wrapRunAgentToNotify(
 			this._runChatAgent({ threadId, ...this._currentModelSelectionProps(), }),
 			threadId,
@@ -2152,12 +2257,19 @@ We only need to do it for files that were edited since `from`, ie files between 
 	}
 
 
-	async addUserMessageAndStreamResponse({ userMessage, displayMessage, _chatSelections, threadId }: { userMessage: string, displayMessage?: string, _chatSelections?: StagingSelectionItem[], threadId: string }) {
+	async addUserMessageAndStreamResponse({ userMessage, displayMessage, _chatSelections, threadId, _internalPrompt }: { userMessage: string, displayMessage?: string, _chatSelections?: StagingSelectionItem[], threadId: string, _internalPrompt?: boolean }) {
 		const thread = this.state.allThreads[threadId];
-		if (!thread) return
+		if (!thread) {
+			throw new Error(`Chat thread not found: ${threadId}`)
+		}
+
+		const trimmed = userMessage.trim()
+		if (!trimmed) {
+			return
+		}
 
 		if (this.streamState[threadId]?.isRunning) {
-			this._enqueueUserMessage({ userMessage, displayMessage, _chatSelections, threadId })
+			this._enqueueUserMessage({ userMessage: trimmed, displayMessage, _chatSelections, threadId })
 			return
 		}
 
@@ -2179,7 +2291,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 			this._setState({ allThreads: newThreads });
 		}
 
-		await this._startUserMessageAndStreamResponse({ userMessage, displayMessage, _chatSelections, threadId });
+		await this._startUserMessageAndStreamResponse({ userMessage: trimmed, displayMessage, _chatSelections, threadId, _internalPrompt });
 
 	}
 
@@ -2229,7 +2341,9 @@ We only need to do it for files that were edited since `from`, ie files between 
 			// URIs of user selections
 			if (m.role === 'user') {
 				for (const sel of m.selections ?? []) {
-					addURI(sel.uri)
+					if ('uri' in sel && sel.uri) {
+						addURI(sel.uri)
+					}
 				}
 			}
 			// URIs of files that have been read
@@ -2523,16 +2637,19 @@ We only need to do it for files that were edited since `from`, ie files between 
 				return
 			}
 		}
-		// otherwise, start a new thread
-		const newThread = newThreadObject()
+		this.openThreadForAgentRun()
+	}
 
-		// update state
+	openThreadForAgentRun(): string {
+		const { allThreads: currentThreads } = this.state
+		const newThread = newThreadObject()
 		const newThreads: ChatThreads = {
 			...currentThreads,
-			[newThread.id]: newThread
+			[newThread.id]: newThread,
 		}
 		this._storeAllThreads(newThreads)
 		this._setState({ allThreads: newThreads, currentThreadId: newThread.id })
+		return newThread.id
 	}
 
 
@@ -2544,6 +2661,8 @@ We only need to do it for files that were edited since `from`, ie files between 
 		delete newThreads[threadId];
 
 		this._messageQueueByThread.delete(threadId)
+		this._threadFileReadHistory.delete(threadId)
+		this._suppressAgentPlanByThread.delete(threadId)
 
 		// store the updated threads
 		this._storeAllThreads(newThreads);

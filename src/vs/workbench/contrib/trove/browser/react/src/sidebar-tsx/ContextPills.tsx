@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import React from 'react';
-import { File, Folder, Text, X } from 'lucide-react';
+import { BookOpen, File, FileText, Folder, ImageIcon, Text, X } from 'lucide-react';
 import { URI } from '../../../../../../../base/common/uri.js';
 import { StagingSelectionItem } from '../../../../common/chatThreadServiceTypes.js';
 import { useAccessor } from '../util/services.js';
@@ -60,41 +60,74 @@ export const InlineContextPills = ({
 	return (
 		<>
 			{selections.map((selection, i) => {
-				const thisKey = selection.type === 'CodeSelection'
-					? `${selection.type}-${selection.uri.fsPath}-${selection.range[0]}-${selection.range[1]}`
-					: `${selection.type}-${selection.uri.fsPath}`;
+			const isNotepad = selection.type === 'Notepad';
+			const isImage = selection.type === 'Image';
+			const isPdf = selection.type === 'Pdf';
+			const isPackageDocs = selection.type === 'PackageDocs';
+			const isSpecial = isNotepad || isImage || isPdf || isPackageDocs || selection.type === 'CodebaseSearch' || selection.type === 'SymbolSearch' || selection.type === 'TerminalOutput' || selection.type === 'GitContext';
+			const thisKey = selection.type === 'CodeSelection'
+				? `${selection.type}-${selection.uri.fsPath}-${selection.range[0]}-${selection.range[1]}`
+				: isNotepad
+					? `Notepad-${selection.notepadId}`
+					: isImage
+						? `Image-${i}-${selection.fileName ?? ''}`
+					: isPdf
+						? `Pdf-${selection.fileName}`
+						: isPackageDocs
+							? `PackageDocs-${selection.packageName}`
+						: isSpecial
+							? `${selection.type}-${i}`
+							: `${selection.type}-${selection.uri.fsPath}`;
 
-				const SelectionIcon = selection.type === 'File' ? File
-					: selection.type === 'Folder' ? Folder
-						: Text;
+			const SelectionIcon = selection.type === 'File' ? File
+				: selection.type === 'Folder' ? Folder
+					: isNotepad ? BookOpen
+						: isPdf ? FileText
+							: isImage ? ImageIcon
+								: Text;
 
-				const pillKindClass = selection.type === 'Folder' ? 'trove-context-pill--folder'
-					: selection.type === 'CodeSelection' ? 'trove-context-pill--code'
-						: '';
+			const pillKindClass = selection.type === 'Folder' ? 'trove-context-pill--folder'
+				: selection.type === 'CodeSelection' ? 'trove-context-pill--code'
+					: '';
 
-				const displayName = getBasename(selection.uri.fsPath)
-					+ (selection.type === 'CodeSelection' ? `:${selection.range[0]}–${selection.range[1]}` : '');
+			const displayName = isNotepad
+				? (selection.title || 'Notepad')
+				: isImage
+					? (selection.fileName || 'image')
+					: isPdf
+						? (selection.pageCount ? `${selection.fileName} (${selection.pageCount} pg)` : selection.fileName)
+					: isPackageDocs
+						? `@docs: ${selection.packageName}`
+					: selection.type === 'CodebaseSearch'
+						? `@codebase: ${selection.query}`
+						: selection.type === 'SymbolSearch'
+							? `@symbol: ${selection.symbolName}`
+							: selection.type === 'TerminalOutput'
+								? '@terminal'
+								: selection.type === 'GitContext'
+									? '@git'
+									: getBasename(selection.uri!.fsPath) + (selection.type === 'CodeSelection' ? `:${selection.range[0]}–${selection.range[1]}` : '');
 
-				const onChipClick = () => {
-					if (type !== 'staging' || !setSelections) {
-						if (selection.type === 'File' || selection.type === 'CodeSelection') {
-							openFile(selection.uri, accessor, selection.type === 'CodeSelection' ? selection.range : undefined);
-						}
-						return;
+			const onChipClick = () => {
+				if (type !== 'staging' || !setSelections) {
+					if (selection.type === 'File' || selection.type === 'CodeSelection') {
+						openFile(selection.uri, accessor, selection.type === 'CodeSelection' ? selection.range : undefined);
 					}
-					if (selection.type === 'File') {
-						openFile(selection.uri, accessor);
-						if (selection.state.wasAddedAsCurrentFile) {
-							setSelections([
-								...selections.slice(0, i),
-								{ ...selection, state: { ...selection.state, wasAddedAsCurrentFile: false } },
-								...selections.slice(i + 1),
-							]);
-						}
-					} else if (selection.type === 'CodeSelection') {
-						openFile(selection.uri, accessor, selection.range);
+					return;
+				}
+				if (selection.type === 'File') {
+					openFile(selection.uri, accessor);
+					if (selection.state.wasAddedAsCurrentFile) {
+						setSelections([
+							...selections.slice(0, i),
+							{ ...selection, state: { ...selection.state, wasAddedAsCurrentFile: false } },
+							...selections.slice(i + 1),
+						]);
 					}
-				};
+				} else if (selection.type === 'CodeSelection') {
+					openFile(selection.uri, accessor, selection.range);
+				}
+			};
 
 				return (
 					<span
@@ -102,12 +135,20 @@ export const InlineContextPills = ({
 						className={`context-pill context-pill--inline ${pillKindClass}`}
 						onClick={onChipClick}
 						data-tooltip-id='trove-tooltip'
-						data-tooltip-content={getRelative(selection.uri, accessor)}
+						data-tooltip-content={isSpecial ? displayName : getRelative(selection.uri!, accessor)}
 						data-tooltip-place='top'
 						data-tooltip-delay-show={400}
 						contentEditable={false}
 					>
-						<SelectionIcon size={11} className='context-pill__icon' />
+						{isImage ? (
+							<img
+								src={selection.dataUrl}
+								alt={selection.fileName ?? 'attachment'}
+								className='context-pill__thumb w-[14px] h-[14px] rounded object-cover flex-shrink-0'
+							/>
+						) : (
+							<SelectionIcon size={11} className='context-pill__icon' />
+						)}
 						<span className='context-pill__name'>{displayName}</span>
 						{type === 'staging' && setSelections ?
 							<button

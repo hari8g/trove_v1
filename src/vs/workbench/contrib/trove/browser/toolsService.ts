@@ -16,7 +16,8 @@ import { computeDirectoryTree1Deep, IDirectoryStrService, stringifyDirectoryTree
 import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js'
 import { timeout } from '../../../../base/common/async.js'
 import { RawToolParamsObj } from '../common/sendLLMMessageTypes.js'
-import { MAX_CHILDREN_URIs_PAGE, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, isDevServerCommand, isBackgroundShellCommand, isPackageInstallCommand, packageInstallLooksSuccessful, stripBackgroundShellSuffix } from '../common/prompt/prompts.js'
+import { MAX_CHILDREN_URIs_PAGE, MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, isDevServerCommand, isBackgroundShellCommand, isHeredocTerminalCommand, isPackageInstallCommand, packageInstallLooksSuccessful, stripBackgroundShellSuffix } from '../common/prompt/prompts.js'
+import { normalizeSearchReplaceBlocks } from '../common/helpers/extractCodeFromResult.js'
 import { ITroveSettingsService } from '../common/troveSettingsService.js'
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js'
 import { IWebSearchService } from '../common/webSearchTypes.js'
@@ -40,6 +41,14 @@ const validateStr = (argName: string, value: unknown) => {
 	if (value === null) throw new Error(`Invalid LLM output: ${argName} was null.`)
 	if (typeof value !== 'string') throw new Error(`Invalid LLM output format: ${argName} must be a string, but its type is "${typeof value}". Full value: ${JSON.stringify(value)}.`)
 	return value
+}
+
+/** Accept string or JSON object (models often emit structured file bodies as objects). */
+const validateContentStr = (argName: string, value: unknown) => {
+	if (value === null) throw new Error(`Invalid LLM output: ${argName} was null.`)
+	if (typeof value === 'string') return value
+	if (typeof value === 'object') return JSON.stringify(value, null, 2)
+	throw new Error(`Invalid LLM output format: ${argName} must be a string or JSON object, but its type is "${typeof value}". Full value: ${JSON.stringify(value)}.`)
 }
 
 
@@ -288,14 +297,15 @@ export class ToolsService implements IToolsService {
 			rewrite_file: (params: RawToolParamsObj) => {
 				const { uri: uriStr, new_content: newContentUnknown } = params
 				const uri = validateURI(uriStr)
-				const newContent = validateStr('newContent', newContentUnknown)
+				const newContent = validateContentStr('newContent', newContentUnknown)
 				return { uri, newContent }
 			},
 
 			edit_file: (params: RawToolParamsObj) => {
 				const { uri: uriStr, search_replace_blocks: searchReplaceBlocksUnknown } = params
 				const uri = validateURI(uriStr)
-				const searchReplaceBlocks = validateStr('searchReplaceBlocks', searchReplaceBlocksUnknown)
+				const rawBlocks = validateContentStr('searchReplaceBlocks', searchReplaceBlocksUnknown)
+				const searchReplaceBlocks = normalizeSearchReplaceBlocks(rawBlocks)
 				return { uri, searchReplaceBlocks }
 			},
 
@@ -304,6 +314,9 @@ export class ToolsService implements IToolsService {
 			run_command: (params: RawToolParamsObj) => {
 				const { command: commandUnknown, cwd: cwdUnknown } = params
 				const command = validateStr('command', commandUnknown)
+				if (isHeredocTerminalCommand(command)) {
+					throw new Error('run_command does not support shell heredocs (<<). Use create_file_or_folder, then rewrite_file with the full file contents instead of cat/echo heredocs.')
+				}
 				const cwd = validateOptionalStr('cwd', cwdUnknown)
 				const terminalId = generateUuid()
 				return { command, cwd, terminalId }
@@ -311,6 +324,9 @@ export class ToolsService implements IToolsService {
 			run_persistent_command: (params: RawToolParamsObj) => {
 				const { command: commandUnknown, persistent_terminal_id: persistentTerminalIdUnknown } = params;
 				const command = validateStr('command', commandUnknown);
+				if (isHeredocTerminalCommand(command)) {
+					throw new Error('run_persistent_command does not support shell heredocs (<<). Use create_file_or_folder, then rewrite_file with the full file contents instead of cat/echo heredocs.')
+				}
 				const persistentTerminalId = validateProposedTerminalId(persistentTerminalIdUnknown)
 				return { command, persistentTerminalId };
 			},
@@ -342,9 +358,19 @@ export class ToolsService implements IToolsService {
 			get_npm_impact: (params: RawToolParamsObj) => ({
 				packageName: validateStr('packageName', params.package_name ?? params.packageName),
 			}),
-			get_config_drift: (params: RawToolParamsObj) => ({
-				serviceName: validateStr('serviceName', params.service_name ?? params.serviceName),
-			}),
+		get_config_drift: (params: RawToolParamsObj) => ({
+			serviceName: validateStr('serviceName', params.service_name ?? params.serviceName),
+		}),
+		get_import_graph: (params: RawToolParamsObj) => ({
+			uri: URI.file(validateStr('uri', params.uri)),
+			direction: (params.direction as 'imports' | 'importedBy' | 'both' | undefined) ?? 'both',
+		}),
+		get_tests_for_file: (params: RawToolParamsObj) => ({
+			uri: URI.file(validateStr('uri', params.uri)),
+		}),
+		get_recently_changed: (params: RawToolParamsObj) => ({
+			limit: typeof params.limit === 'number' ? params.limit : undefined,
+		}),
 			verify_security_compliance: (params: RawToolParamsObj) => ({
 				code: validateStr('code', params.code),
 				fileExtension: validateStr('fileExtension', params.file_extension ?? params.fileExtension),
@@ -435,7 +461,10 @@ export class ToolsService implements IToolsService {
 					throw new Error('No workspace folder open.')
 				}
 				const workspaceRoot = folders[0].uri.fsPath
-				const searchResults = await this.repoIntelligenceService.searchCodebase(workspaceRoot, query, maxResults)
+				const useVec = this.troveSettingsService.state.globalSettings.enableVectorSearch
+				const searchResults = useVec
+					? await this.repoIntelligenceService.searchCodebaseHybrid(workspaceRoot, query, maxResults)
+					: await this.repoIntelligenceService.searchCodebase(workspaceRoot, query, maxResults)
 				const results = searchResults.map(r => ({
 					filePath: r.filePath,
 					startLine: r.startLine,
@@ -727,6 +756,35 @@ export class ToolsService implements IToolsService {
 				return { result: { drifts, summary: lines.join('\n') } };
 			},
 
+			get_import_graph: async ({ uri, direction }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+				if (!workspaceRoot) return { result: { imports: [], importedBy: [], externalDeps: [] } };
+				const absPath = uri.fsPath;
+				const relPath = absPath.startsWith(workspaceRoot)
+					? absPath.slice(workspaceRoot.length).replace(/^[/\\]/, '').replace(/\\/g, '/')
+					: absPath.replace(/\\/g, '/');
+				const result = await this.repoIntelligenceService.getImportGraph(workspaceRoot, relPath, direction ?? 'both');
+				return { result };
+			},
+
+			get_tests_for_file: async ({ uri }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+				if (!workspaceRoot) return { result: { tests: [] } };
+				const absPath = uri.fsPath;
+				const relPath = absPath.startsWith(workspaceRoot)
+					? absPath.slice(workspaceRoot.length).replace(/^[/\\]/, '').replace(/\\/g, '/')
+					: absPath.replace(/\\/g, '/');
+				const tests = await this.repoIntelligenceService.getTestsForFile(workspaceRoot, relPath);
+				return { result: { tests } };
+			},
+
+		get_recently_changed: async ({ limit }) => {
+				const workspaceRoot = workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+				if (!workspaceRoot) return { result: { files: [] } };
+				const files = await this.repoIntelligenceService.getGitRecentlyChanged(workspaceRoot, limit);
+				return { result: { files } };
+			},
+
 			verify_security_compliance: async ({ code, fileExtension }) => {
 				const { verifySecurityCompliance } = await import('./securityVerifierTool.js');
 				const result = verifySecurityCompliance(code, fileExtension);
@@ -907,8 +965,28 @@ export class ToolsService implements IToolsService {
 				if (result.consumers.length === 0) return `No consumers found for this package.`;
 				return `Impact: ${result.impactLevel.toUpperCase()} — ${result.consumers.length} consumer(s):\n${result.consumers.join('\n')}`;
 			},
-			get_config_drift: (_p, result) => result.summary,
-			verify_security_compliance: (_p, result) => {
+		get_config_drift: (_p, result) => result.summary,
+		get_import_graph: (params, result) => {
+			const lines: string[] = [`Import graph for ${params.uri.fsPath}:`];
+			if (result.imports.length > 0) lines.push(`  Imports (${result.imports.length}):\n    ${result.imports.join('\n    ')}`);
+			if (result.importedBy.length > 0) lines.push(`  Imported by (${result.importedBy.length}):\n    ${result.importedBy.join('\n    ')}`);
+			if (result.externalDeps.length > 0) lines.push(`  External deps: ${result.externalDeps.join(', ')}`);
+			if (result.imports.length === 0 && result.importedBy.length === 0) lines.push('  No import edges found (index may not be built yet — run refresh).');
+			return lines.join('\n');
+		},
+		get_tests_for_file: (params, result) => {
+			if (result.tests.length === 0) return `No test files found covering ${params.uri.fsPath}.`;
+			const lines = [`Tests covering ${params.uri.fsPath} (${result.tests.length} found):`];
+			for (const t of result.tests) lines.push(`  [${t.confidence}] ${t.testFile}`);
+			return lines.join('\n');
+		},
+		get_recently_changed: (_p, result) => {
+			if (result.files.length === 0) return 'No recently changed files found (not a git repo, or no commit history).';
+			const lines = ['Recently changed files (by commit frequency):'];
+			for (const f of result.files) lines.push(`  ${f.file} — ${f.changeCount} changes, last: ${f.lastChanged}`);
+			return lines.join('\n');
+		},
+		verify_security_compliance: (_p, result) => {
 				if (result.violations.length === 0) return result.summary;
 				const lines = [result.summary, ''];
 				for (const v of result.violations) {

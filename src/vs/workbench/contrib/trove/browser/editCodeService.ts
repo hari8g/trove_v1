@@ -31,7 +31,7 @@ import { TROVE_ACCEPT_DIFF_ACTION_ID, TROVE_REJECT_DIFF_ACTION_ID } from './acti
 import { mountCtrlK } from './react/out/quick-edit-tsx/index.js'
 import { QuickEditPropsType } from './quickEditActions.js';
 import { IModelContentChangedEvent } from '../../../../editor/common/textModelEvents.js';
-import { extractCodeFromFIM, extractCodeFromRegular, ExtractedSearchReplaceBlock, extractSearchReplaceBlocks } from '../common/helpers/extractCodeFromResult.js';
+import { extractCodeFromFIM, extractCodeFromRegular, ExtractedSearchReplaceBlock, extractSearchReplaceBlocks, normalizeSearchReplaceBlocks } from '../common/helpers/extractCodeFromResult.js';
 import { INotificationService, } from '../../../../platform/notification/common/notification.js';
 import { EditorOption } from '../../../../editor/common/config/editorOptions.js';
 import { Emitter } from '../../../../base/common/event.js';
@@ -1630,7 +1630,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 
 	private _instantlyApplySRBlocks(uri: URI, blocksStr: string) {
-		const blocks = extractSearchReplaceBlocks(blocksStr)
+		const blocks = extractSearchReplaceBlocks(normalizeSearchReplaceBlocks(blocksStr))
 		logEditDiagnostic('apply_blocks', { uri: uriPathForLog(uri), blockCount: blocks.length })
 		if (blocks.length === 0) throw new Error(`No Search/Replace blocks were received!`)
 

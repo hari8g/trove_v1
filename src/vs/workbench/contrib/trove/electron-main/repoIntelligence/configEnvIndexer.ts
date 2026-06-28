@@ -7,7 +7,14 @@ import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative, sep } from 'path';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'target', 'build']);
-const ENV_PATTERN = /application-(\w+)\.(yml|yaml)$/;
+
+// Spring Boot local config style: application-dev.yml
+const ENV_PATTERN_LOCAL = /application-(\w+)\.(yml|yaml)$/;
+
+// Spring Cloud Config server style: {service-name}-{env}.yml
+// Matches anything ending in a known env name suffix
+const KNOWN_ENV_SUFFIX = '(?:dev|qa|sit|uat|staging|stage|prod|production|local|test|int)';
+const ENV_PATTERN_CLOUD = new RegExp(`[\\w-]+-(${ KNOWN_ENV_SUFFIX })\\.(yml|yaml)$`, 'i');
 
 export type ConfigProperty = {
 	filePath: string;
@@ -33,7 +40,7 @@ function collectConfigFiles(dir: string, results: string[] = [], depth = 0): str
 		let stat;
 		try { stat = statSync(full); } catch { continue; }
 		if (stat.isDirectory()) collectConfigFiles(full, results, depth + 1);
-		else if (ENV_PATTERN.test(entry)) results.push(full);
+		else if (ENV_PATTERN_LOCAL.test(entry) || ENV_PATTERN_CLOUD.test(entry)) results.push(full);
 	}
 	return results;
 }
@@ -83,12 +90,32 @@ export type ConfigIndexResult = {
 
 export function indexConfigEnvironments(workspaceRoot: string): ConfigIndexResult {
 	const configFiles = collectConfigFiles(workspaceRoot);
+
+	// Also scan known Spring Cloud Config server directories explicitly
+	const configServiceCandidates = [
+		join(workspaceRoot, 'staas-cloud-config-service-dev'),
+		join(workspaceRoot, 'cloud-config'),
+		join(workspaceRoot, 'config-service'),
+		join(workspaceRoot, 'config-server'),
+	];
+	for (const candidate of configServiceCandidates) {
+		try {
+			statSync(candidate);
+			collectConfigFiles(candidate, configFiles, 0);
+		} catch { /* directory doesn't exist */ }
+	}
+
+	// Deduplicate in case the config service dir was already scanned by root traversal
+	const uniqueConfigFiles = [...new Set(configFiles)];
+
 	const allProperties: ConfigProperty[] = [];
 
-	for (const filePath of configFiles) {
-		const match = filePath.match(ENV_PATTERN);
-		if (!match) continue;
-		const env = match[1];
+	for (const filePath of uniqueConfigFiles) {
+		const fileName = filePath.split(/[/\\]/).at(-1) ?? '';
+		const localMatch = fileName.match(ENV_PATTERN_LOCAL);
+		const cloudMatch = fileName.match(ENV_PATTERN_CLOUD);
+		const env = localMatch ? localMatch[1] : cloudMatch ? cloudMatch[1].toLowerCase() : undefined;
+		if (!env) continue;
 		const serviceName = deriveServiceName(filePath);
 
 		let content: string;
