@@ -56,6 +56,7 @@ import { IAgentDeliveryService } from '../../../agentDeliveryService.js';
 import { IRiafAgentService } from '../../../../common/riaf/riafTypes.js';
 import { IUsageMeteringService } from '../../../usageMeteringService.js';
 import { IRepoIntelligenceService } from '../../../../common/repoIntelligenceTypes.js';
+import { IAgentFocusLayoutService } from '../../../agentFocusLayoutService.js';
 import { AgentDeliverySummary } from '../../../../common/agentDeliveryTypes.js';
 import type { QueuedUserMessage } from '../../../../common/chatMessageQueueTypes.js';
 import { IStorageService, StorageScope } from '../../../../../../../platform/storage/common/storage.js'
@@ -280,6 +281,7 @@ const getReactAccessor = (accessor: ServicesAccessor) => {
 		IRiafAgentService: accessor.get(IRiafAgentService),
 		IUsageMeteringService: accessor.get(IUsageMeteringService),
 		IRepoIntelligenceService: accessor.get(IRepoIntelligenceService),
+		IAgentFocusLayoutService: accessor.get(IAgentFocusLayoutService),
 		INotepadsService: accessor.get(INotepadsService),
 
 	} as const
@@ -480,6 +482,25 @@ export const useMessageQueue = (threadId: string): readonly QueuedUserMessage[] 
 		return () => { messageQueueListeners.delete(listener) }
 	}, [threadId])
 	return queue
+}
+
+
+export const useAgentFocusLayout = (): { isFocusMode: boolean; toggleFocusMode: () => Promise<void> } => {
+	const accessor = useAccessor()
+	const focusService = accessor.get('IAgentFocusLayoutService')
+	const [isFocusMode, setIsFocusMode] = useState(() => focusService.isFocusMode)
+
+	useEffect(() => {
+		setIsFocusMode(focusService.isFocusMode)
+		const disposable = focusService.onDidChangeFocusMode(setIsFocusMode)
+		return () => disposable.dispose()
+	}, [focusService])
+
+	const toggleFocusMode = useCallback(async () => {
+		await focusService.toggleFocusMode()
+	}, [focusService])
+
+	return { isFocusMode, toggleFocusMode }
 }
 
 

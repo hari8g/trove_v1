@@ -33,6 +33,7 @@ import {
 	WrapperProps,
 	createStandardToolResultWrapper,
 } from './toolResultWrapperFactory.js';
+import { isRedundantEmptyFileRead } from '../../../toolResultDisplayUtils.js';
 
 export type { ResultWrapper, WrapperProps } from './toolResultWrapperFactory.js';
 
@@ -51,9 +52,10 @@ export const buildBuiltinToolNameToComponent = (
 	{ EditTool, CommandTool }: BuiltinToolResultComponents,
 ): { [T in BuiltinToolName]: { resultWrapper: ResultWrapper<T> } } => ({
 	'read_file': {
-		resultWrapper: ({ toolMessage }) => {
+		resultWrapper: ({ toolMessage, messageIdx, threadId }) => {
 			const accessor = useAccessor()
 			const commandService = accessor.get('ICommandService')
+			const chatThreadsService = accessor.get('IChatThreadService')
 
 			const title = getTitle(toolMessage)
 
@@ -62,6 +64,11 @@ export const buildBuiltinToolNameToComponent = (
 
 			if (toolMessage.type === 'tool_request') return null // do not show past requests
 			if (toolMessage.type === 'running_now') return <RunningToolActivityRow toolMessage={toolMessage} />
+
+			const messages = chatThreadsService.state.allThreads[threadId]?.messages ?? []
+			if (toolMessage.type === 'success' && isRedundantEmptyFileRead(toolMessage, messages, messageIdx)) {
+				return null;
+			}
 
 			const isError = false
 			const isRejected = toolMessage.type === 'rejected'

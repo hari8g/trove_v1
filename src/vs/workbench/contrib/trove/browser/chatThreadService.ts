@@ -23,7 +23,7 @@ import { IAgentDeliveryService } from './agentDeliveryService.js';
 import { IWorkspacePreviewService } from './workspacePreviewService.js';
 import { buildReadToolBatch, discoverAdditionalReadTools, isReadOnlyBatchTool, toolCallDedupKey } from './parallelReadToolBatch.js';
 import { IRepoIntelligenceService } from '../common/repoIntelligenceTypes.js';
-import { completeRemainingPlanItems, findLatestPlanMessageIdx, generateAgentPlan, markPlanItemDoneForTool, skipRemainingPlanItems } from './agentPlan.js';
+import { completeRemainingPlanItems, findLatestPlanMessageIdx, markPlanItemDoneForTool, resolveAgentPlanForRun, skipRemainingPlanItems } from './agentPlan.js';
 import { getAgentLoopLimits } from './agentLoopSettings.js';
 import { getLlmStreamStallTimeoutMs } from './agentLoopLimits.js';
 import { shouldGenerateAgentPlan, shouldUseParallelReadBatching } from '../common/lightAgent.js';
@@ -753,7 +753,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 
 		this._addUserCheckpoint({ threadId })
 
-		this._skipRemainingPlanItems(threadId)
+		// Leave plan checklist items pending so a "continue" message can resume them.
 
 		// interrupt any effects
 		const interrupt = await this.streamState[threadId]?.interrupt
@@ -909,9 +909,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const suppressAgentPlan = this._suppressAgentPlanByThread.get(threadId) === true
 		this._suppressAgentPlanByThread.delete(threadId)
 		if (chatMode === 'agent' && modelSelection && shouldGenerateAgentPlan(this._settingsService.state.globalSettings) && !suppressAgentPlan) {
-			this._setIdleStatus(threadId, 'Generating plan', 'Asking the model to outline next steps')
 			const chatMessages = this.state.allThreads[threadId]?.messages ?? []
-			const plan = await generateAgentPlan({
+			const planResolution = await resolveAgentPlanForRun({
 				llmMessageService: this._llmMessageService,
 				convertToLLMMessageService: this._convertToLLMMessagesService,
 				modelSelection,
@@ -921,10 +920,24 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				chatMessages,
 				threadId,
 				usageMeteringService: this._usageMeteringService,
+				fileReadHistory: this._threadFileReadHistory.get(threadId),
 			})
-			if (plan) {
-				this._addMessageToThread(threadId, plan)
+			if (planResolution.action === 'reactivate') {
+				this._setIdleStatus(threadId, 'Resuming plan', 'Continuing from the previous checklist')
+				this._editMessageInThread(threadId, planResolution.planMessageIdx, planResolution.plan)
+			} else if (planResolution.action === 'reuse') {
+				this._setIdleStatus(threadId, 'Resuming plan', 'Continuing the existing checklist')
+			} else if (planResolution.action === 'generate') {
+				this._setIdleStatus(threadId, 'Generating plan', 'Asking the model to outline next steps')
+				if (planResolution.priorPlanMessageIdx !== undefined) {
+					const priorPlan = chatMessages[planResolution.priorPlanMessageIdx]
+					if (priorPlan?.role === 'plan') {
+						this._editMessageInThread(threadId, planResolution.priorPlanMessageIdx, skipRemainingPlanItems(priorPlan))
+					}
+				}
+				this._addMessageToThread(threadId, planResolution.plan)
 			}
+			// action === 'none': plan generation failed or disabled — agent loop continues without blocking
 		}
 
 		let precomputedRunContext: import('./convertToLLMMessageService.js').RunContextBlocks | undefined
@@ -1494,17 +1507,6 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const planMessage = thread.messages[planIdx]
 		if (planMessage.role !== 'plan') return
 		this._editMessageInThread(threadId, planIdx, markPlanItemDoneForTool(planMessage, toolName, toolParams))
-	}
-
-	private _skipRemainingPlanItems(threadId: string) {
-		const thread = this.state.allThreads[threadId]
-		if (!thread) return
-		const planIdx = findLatestPlanMessageIdx(thread.messages)
-		if (planIdx === -1) return
-		const planMessage = thread.messages[planIdx]
-		if (planMessage.role !== 'plan') return
-		if (!planMessage.items.some(item => item.status === 'pending')) return
-		this._editMessageInThread(threadId, planIdx, skipRemainingPlanItems(planMessage))
 	}
 
 	private _completeRemainingPlanItems(threadId: string) {

@@ -41,6 +41,7 @@ import './openWorkspacePreviewAction.js'
 
 // register Thread History
 import './chatThreadService.js'
+import './agentFocusLayoutService.js'
 
 // ping
 import './metricsPollService.js'

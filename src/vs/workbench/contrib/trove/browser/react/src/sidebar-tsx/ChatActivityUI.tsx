@@ -12,6 +12,7 @@ import { Check, ChevronRight, FileCode2, Pencil, Search, Sparkles, Terminal } fr
 import { MAX_FILE_PREVIEW_LINES } from './ChatInlineDiffView.js';
 import { extractStreamingIntentLine, getStreamingTailPreview, getStreamingToolCallStatusLine } from '../../../liveStreamingText.js';
 import { formatEditStreamPhaseLabel, parseStreamingEditProgress } from '../../../liveEditStreaming.js';
+import { isRedundantEmptyFileRead } from '../../../toolResultDisplayUtils.js';
 
 export { extractStreamingIntentLine, getStreamingTailPreview, getStreamingToolCallStatusLine } from '../../../liveStreamingText.js';
 
@@ -392,6 +393,8 @@ const activityKindForTool = (toolName: BuiltinToolName): AgentTurnActivityItem['
 			return 'edit';
 		case 'rewrite_file':
 			return 'write';
+		case 'create_file_or_folder':
+			return 'write';
 		case 'search_codebase':
 		case 'search_for_files':
 		case 'search_pathnames_only':
@@ -466,6 +469,7 @@ const toolActivityLabel = (toolName: BuiltinToolName, count: number): string => 
 		run_persistent_command: ['command run', 'commands run'],
 		edit_file: ['edit', 'edits'],
 		rewrite_file: ['write', 'writes'],
+		create_file_or_folder: ['file created', 'files created'],
 	};
 	const pair = labels[toolName];
 	if (pair) {
@@ -483,14 +487,22 @@ export const summarizeAgentTurnActivity = (messages: ChatMessage[]): AgentTurnAc
 		}
 	}
 
+	const turnStartIdx = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
 	const turnMessages = lastUserIdx >= 0 ? messages.slice(lastUserIdx + 1) : messages;
 	const toolCounts = new Map<string, number>();
 	const readFiles: string[] = [];
 	const touchedFiles: string[] = [];
 
-	for (const message of turnMessages) {
+	for (let i = 0; i < turnMessages.length; i++) {
+		const message = turnMessages[i];
 		if (message.role !== 'tool') continue;
 		if (message.type !== 'success' && message.type !== 'running_now') continue;
+
+		if (message.name === 'read_file' && message.type === 'success') {
+			if (isRedundantEmptyFileRead(message, messages, turnStartIdx + i)) {
+				continue;
+			}
+		}
 
 		toolCounts.set(message.name, (toolCounts.get(message.name) ?? 0) + 1);
 
@@ -499,7 +511,7 @@ export const summarizeAgentTurnActivity = (messages: ChatMessage[]): AgentTurnAc
 			if (message.name === 'read_file') {
 				readFiles.push(basename);
 			}
-			if (message.name === 'read_file' || message.name === 'edit_file' || message.name === 'rewrite_file') {
+			if (message.name === 'read_file' || message.name === 'edit_file' || message.name === 'rewrite_file' || message.name === 'create_file_or_folder') {
 				touchedFiles.push(basename);
 			}
 		}

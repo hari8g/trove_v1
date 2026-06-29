@@ -11,18 +11,33 @@ import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 import { ILLMMessageService } from '../common/sendLLMMessageService.js';
 import type { IUsageMeteringService } from './usageMeteringService.js';
 import { ToolCallParams, ToolName } from '../common/toolsServiceTypes.js';
+import type { FileReadRecord } from './fileReadDedup.js';
 
 export const PLAN_OUTPUT_TOKEN_CAP = 300;
+export const PLAN_MIN_BULLETS = 3;
+export const PLAN_MAX_BULLETS = 8;
 export const PLAN_GENERATION_TIMEOUT_MS = 45_000;
 
 const PLAN_SYSTEM_MESSAGE = [
 	'You help a coding agent plan its work before using tools.',
-	'In 3-7 bullet points, list the concrete steps you will take to complete the user task.',
-	'Use infinitive verb form (e.g. "Read Sidebar.tsx", "Create Spinner component").',
+	`In ${PLAN_MIN_BULLETS}-${PLAN_MAX_BULLETS} bullet points, list the concrete steps you will take to complete the user task.`,
+	'Use infinitive verb form (e.g. "Read Sidebar.tsx", "Create Spinner.tsx", "Run tests").',
+	'For NEW files: plan create_file_or_folder (or write) directly — do NOT plan a read_file step for paths that do not exist yet.',
+	'For EXISTING files: plan ONE read (or outline lookup) before editing — never multiple reads of the same file.',
 	'For styling/theming or multi-section updates to one file, plan ONE read and ONE combined edit — never multiple separate edits to the same file.',
+	'Prefer fewer, larger steps over many tiny tool calls.',
+	'If session context lists completed or skipped steps, do NOT repeat them — plan only remaining work.',
 	'Output only the bullet list — no intro, no prose, no markdown headings.',
 	'One step per line, prefixed with "- ".',
 ].join('\n');
+
+const CONTINUATION_USER_MESSAGE = /^(?:continue|go on|keep going|carry on|proceed|resume|please continue|pick up where|finish(?:\s+the\s+task)?|complete(?:\s+the\s+task)?)\b[\s.!?,]*$/i;
+
+export type AgentPlanRunResolution =
+	| { action: 'reuse' }
+	| { action: 'reactivate'; plan: PlanMessage; planMessageIdx: number }
+	| { action: 'generate'; plan: PlanMessage; priorPlanMessageIdx?: number }
+	| { action: 'none' };
 
 const READ_VERBS = ['read', 'open', 'inspect', 'view', 'look', 'examine', 'review', 'load'];
 const SEARCH_VERBS = ['locate', 'find', 'search', 'identify', 'discover', 'resolve'];
@@ -43,7 +58,7 @@ export const parsePlanBulletItems = (text: string): { text: string; status: 'pen
 		const text = (match?.[1] ?? line).trim();
 		if (!text || /^done\.?$/i.test(text)) continue;
 		items.push({ text, status: 'pending' });
-		if (items.length >= 7) break;
+		if (items.length >= PLAN_MAX_BULLETS) break;
 	}
 	return items;
 };
@@ -65,7 +80,7 @@ const withPlanTokenCap = (
 	} as OverridesOfModel;
 };
 
-const summarizeUserTask = (chatMessages: ChatMessage[]): string => {
+export const summarizeUserTask = (chatMessages: ChatMessage[]): string => {
 	for (let i = chatMessages.length - 1; i >= 0; i--) {
 		const m = chatMessages[i];
 		if (m.role === 'user') {
@@ -74,6 +89,99 @@ const summarizeUserTask = (chatMessages: ChatMessage[]): string => {
 		}
 	}
 	return '(No user message found)';
+};
+
+export const isContinuationUserMessage = (text: string): boolean => {
+	const trimmed = text.trim();
+	if (!trimmed) return false;
+	if (CONTINUATION_USER_MESSAGE.test(trimmed)) return true;
+	if (trimmed.length <= 24 && /\b(continue|resume|go on|keep going|proceed)\b/i.test(trimmed)) return true;
+	return false;
+};
+
+/** True when the user is clearly starting a different task (not resuming). */
+export const isLikelyNewTaskUserMessage = (text: string): boolean => {
+	const trimmed = text.trim();
+	if (!trimmed || isContinuationUserMessage(trimmed)) return false;
+	if (trimmed.length >= 120) return true;
+	if (/\b(instead|rather than|forget (?:that|the|about)|ignore (?:the )?previous|new task|different task|start over|from scratch)\b/i.test(trimmed)) {
+		return true;
+	}
+	return false;
+};
+
+export const getLatestPlanMessage = (messages: ChatMessage[]): PlanMessage | null => {
+	const idx = findLatestPlanMessageIdx(messages);
+	if (idx === -1) return null;
+	const message = messages[idx];
+	return message.role === 'plan' ? message : null;
+};
+
+export const planHasPendingItems = (plan: PlanMessage): boolean =>
+	plan.items.some(item => item.status === 'pending');
+
+export const planHasSkippedItems = (plan: PlanMessage): boolean =>
+	plan.items.some(item => item.status === 'skipped');
+
+export const reactivateAbortedPlan = (plan: PlanMessage): PlanMessage | null => {
+	if (planHasPendingItems(plan) || !planHasSkippedItems(plan)) {
+		return null;
+	}
+	return {
+		role: 'plan',
+		items: plan.items.map(item => item.status === 'skipped' ? { ...item, status: 'pending' } : item),
+	};
+};
+
+export const buildPlanSessionContext = (opts: {
+	chatMessages: ChatMessage[];
+	planMessageIdx: number;
+	fileReadHistory?: Map<string, FileReadRecord>;
+}): string => {
+	const parts: string[] = [];
+
+	if (opts.planMessageIdx !== -1) {
+		const plan = opts.chatMessages[opts.planMessageIdx];
+		if (plan.role === 'plan') {
+			const lines = plan.items.map(item => `- [${item.status}] ${item.text}`);
+			parts.push(`Previous plan in this thread:\n${lines.join('\n')}`);
+		}
+	}
+
+	if (opts.fileReadHistory && opts.fileReadHistory.size > 0) {
+		const files = [...opts.fileReadHistory.keys()]
+			.map(key => key.split(/[/\\]/).pop() ?? key)
+			.slice(0, 20)
+			.join(', ');
+		parts.push(`Files already read in this thread (content likely in conversation history): ${files}`);
+	}
+
+	const recentTools = summarizeRecentToolActivity(opts.chatMessages, opts.planMessageIdx);
+	if (recentTools) {
+		parts.push(recentTools);
+	}
+
+	return parts.join('\n\n');
+};
+
+const summarizeRecentToolActivity = (chatMessages: ChatMessage[], planMessageIdx: number): string | undefined => {
+	const startIdx = planMessageIdx !== -1 ? planMessageIdx + 1 : 0;
+	const labels: string[] = [];
+	for (let i = chatMessages.length - 1; i >= startIdx && labels.length < 8; i--) {
+		const message = chatMessages[i];
+		if (message.role !== 'tool') continue;
+		if (message.type !== 'success' && message.type !== 'running_now') continue;
+		const params = 'params' in message ? message.params as Record<string, unknown> | undefined : undefined;
+		const uri = params?.uri;
+		const pathSuffix = uri instanceof URI
+			? ` · ${uri.fsPath.split(/[/\\]/).pop()}`
+			: typeof uri === 'object' && uri !== null && 'fsPath' in uri
+				? ` · ${String((uri as { fsPath: string }).fsPath).split(/[/\\]/).pop()}`
+				: '';
+		labels.unshift(`${message.name}${pathSuffix}`);
+	}
+	if (labels.length === 0) return undefined;
+	return `Recent tool activity since the plan:\n${labels.map(l => `- ${l}`).join('\n')}`;
 };
 
 export const generateAgentPlan = async (opts: {
@@ -86,10 +194,14 @@ export const generateAgentPlan = async (opts: {
 	chatMessages: ChatMessage[];
 	threadId: string;
 	usageMeteringService?: IUsageMeteringService;
+	sessionContext?: string;
 }): Promise<PlanMessage | null> => {
 	const userTask = summarizeUserTask(opts.chatMessages);
+	const sessionBlock = opts.sessionContext?.trim()
+		? `\n\nSession context (do not repeat completed work; continue from here):\n${opts.sessionContext.trim()}`
+		: '';
 	const { messages, separateSystemMessage } = opts.convertToLLMMessageService.prepareLLMSimpleMessages({
-		simpleMessages: [{ role: 'user', content: `User task:\n${userTask}\n\nList the steps you will take.` }],
+		simpleMessages: [{ role: 'user', content: `User task:\n${userTask}${sessionBlock}\n\nList the steps you will take.` }],
 		systemMessage: PLAN_SYSTEM_MESSAGE,
 		modelSelection: opts.modelSelection,
 		featureName: 'Chat',
@@ -151,10 +263,76 @@ export const generateAgentPlan = async (opts: {
 	}
 
 	const items = parsePlanBulletItems(fullText);
-	if (items.length === 0) {
+	if (items.length < PLAN_MIN_BULLETS) {
 		return null;
 	}
 	return { role: 'plan', items };
+};
+
+/** Resume an in-progress plan or generate a context-aware plan. Never throws — returns `none` on failure. */
+export const resolveAgentPlanForRun = async (opts: {
+	llmMessageService: ILLMMessageService;
+	convertToLLMMessageService: IConvertToLLMMessageService;
+	modelSelection: ModelSelection;
+	modelSelectionOptions: ModelSelectionOptions | undefined;
+	overridesOfModel: OverridesOfModel | undefined;
+	chatMode: ChatMode;
+	chatMessages: ChatMessage[];
+	threadId: string;
+	usageMeteringService?: IUsageMeteringService;
+	fileReadHistory?: Map<string, FileReadRecord>;
+}): Promise<AgentPlanRunResolution> => {
+	try {
+		const userTask = summarizeUserTask(opts.chatMessages);
+		const planMessageIdx = findLatestPlanMessageIdx(opts.chatMessages);
+		const latestPlan = planMessageIdx !== -1 ? getLatestPlanMessage(opts.chatMessages) : null;
+
+		if (latestPlan) {
+			if (planHasPendingItems(latestPlan)) {
+				if (isLikelyNewTaskUserMessage(userTask)) {
+					// Fall through — generate a fresh plan and retire the old one.
+				} else {
+					return { action: 'reuse' };
+				}
+			} else if (isContinuationUserMessage(userTask)) {
+				const reactivated = reactivateAbortedPlan(latestPlan);
+				if (reactivated) {
+					return { action: 'reactivate', plan: reactivated, planMessageIdx };
+				}
+			}
+		}
+
+		const sessionContext = buildPlanSessionContext({
+			chatMessages: opts.chatMessages,
+			planMessageIdx,
+			fileReadHistory: opts.fileReadHistory,
+		});
+
+		const plan = await generateAgentPlan({
+			llmMessageService: opts.llmMessageService,
+			convertToLLMMessageService: opts.convertToLLMMessageService,
+			modelSelection: opts.modelSelection,
+			modelSelectionOptions: opts.modelSelectionOptions,
+			overridesOfModel: opts.overridesOfModel,
+			chatMode: opts.chatMode,
+			chatMessages: opts.chatMessages,
+			threadId: opts.threadId,
+			usageMeteringService: opts.usageMeteringService,
+			sessionContext,
+		});
+
+		if (!plan) {
+			return { action: 'none' };
+		}
+
+		const priorPlanMessageIdx = latestPlan && planHasPendingItems(latestPlan) && isLikelyNewTaskUserMessage(userTask)
+			? planMessageIdx
+			: undefined;
+
+		return { action: 'generate', plan, priorPlanMessageIdx };
+	} catch {
+		return { action: 'none' };
+	}
 };
 
 export const getToolSummaryForPlanMatch = (toolName: ToolName, toolParams: ToolCallParams<ToolName>): string => {
@@ -274,6 +452,16 @@ const scorePlanItemForTool = (
 const firstPendingIndex = (items: PlanMessage['items']): number =>
 	items.findIndex(item => item.status === 'pending');
 
+const skipRedundantReadPlanSteps = (items: PlanMessage['items'], basename: string): void => {
+	for (let i = 0; i < items.length; i++) {
+		if (items[i].status !== 'pending') continue;
+		const text = items[i].text;
+		if (planMentionsFile(text, basename) && planHasVerb(text, READ_VERBS)) {
+			items[i] = { ...items[i], status: 'skipped' };
+		}
+	}
+};
+
 export const markPlanItemDoneForTool = (plan: PlanMessage, toolName: ToolName, toolParams: ToolCallParams<ToolName>): PlanMessage => {
 	const toolSummary = getToolSummaryForPlanMatch(toolName, toolParams);
 	const basename = basenameFromToolParams(toolParams);
@@ -288,6 +476,18 @@ export const markPlanItemDoneForTool = (plan: PlanMessage, toolName: ToolName, t
 			const fileMatch = !basename || planMentionsFile(text, basename);
 			const editMatch = planHasVerb(text, EDIT_VERBS) || planHasVerb(text, SAVE_VERBS);
 			if (fileMatch && editMatch) {
+				markIndices.add(i);
+			}
+		}
+	}
+
+	if (category === 'create') {
+		for (let i = 0; i < items.length; i++) {
+			if (items[i].status !== 'pending') continue;
+			const text = items[i].text;
+			const fileMatch = !basename || planMentionsFile(text, basename);
+			const createMatch = planHasVerb(text, CREATE_VERBS) || planHasVerb(text, EDIT_VERBS);
+			if (fileMatch && createMatch) {
 				markIndices.add(i);
 			}
 		}
@@ -327,6 +527,11 @@ export const markPlanItemDoneForTool = (plan: PlanMessage, toolName: ToolName, t
 	for (const idx of markIndices) {
 		items[idx] = { ...items[idx], status: 'done' };
 	}
+
+	if (category === 'create' && basename) {
+		skipRedundantReadPlanSteps(items, basename);
+	}
+
 	return { role: 'plan', items };
 };
 

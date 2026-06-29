@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { completeRemainingPlanItems, generateAgentPlan, markPlanItemDoneForTool, parsePlanBulletItems } from '../agentPlan.js';
+import { completeRemainingPlanItems, generateAgentPlan, isContinuationUserMessage, isLikelyNewTaskUserMessage, markPlanItemDoneForTool, parsePlanBulletItems, planHasPendingItems, reactivateAbortedPlan, resolveAgentPlanForRun } from '../agentPlan.js';
 import type { ChatMessage } from '../../common/chatThreadServiceTypes.js';
 import type { IUsageMeteringService } from '../usageMeteringService.js';
 
@@ -76,14 +76,30 @@ suite('Trove - agentPlan', () => {
 		assert.strictEqual(completed.items[1].status, 'done');
 	});
 
-	test('generateAgentPlan records usage via metering service', async () => {
-		const recorded: Array<{ threadId: string; inputTokens: number }> = [];
-		const usageMeteringService: Pick<IUsageMeteringService, 'recordTurn'> = {
-			recordTurn: (opts) => {
-				recorded.push({ threadId: opts.threadId, inputTokens: opts.usage.inputTokens });
-			},
-		};
+	test('parsePlanBulletItems caps at eight items', () => {
+		const lines = Array.from({ length: 10 }, (_, i) => `- Step ${i + 1}`);
+		const items = parsePlanBulletItems(lines.join('\n'));
+		assert.strictEqual(items.length, 8);
+	});
 
+	test('markPlanItemDoneForTool marks create and skips redundant read step', () => {
+		const plan = {
+			role: 'plan' as const,
+			items: [
+				{ text: 'Read NewComponent.tsx', status: 'pending' as const },
+				{ text: 'Create NewComponent.tsx', status: 'pending' as const },
+				{ text: 'Run tests', status: 'pending' as const },
+			],
+		};
+		const uri = URI.file('/workspace/NewComponent.tsx');
+
+		const afterCreate = markPlanItemDoneForTool(plan, 'create_file_or_folder', { uri, isFolder: false });
+		assert.strictEqual(afterCreate.items[0].status, 'skipped');
+		assert.strictEqual(afterCreate.items[1].status, 'done');
+		assert.strictEqual(afterCreate.items[2].status, 'pending');
+	});
+
+	test('generateAgentPlan rejects plans with fewer than three bullets', async () => {
 		const chatMessages: ChatMessage[] = [{
 			role: 'user',
 			displayContent: 'fix the tests',
@@ -116,13 +132,174 @@ suite('Trove - agentPlan', () => {
 			chatMode: 'agent',
 			chatMessages,
 			threadId: 'thread-plan-1',
+		});
+
+		assert.strictEqual(plan, null);
+	});
+
+	test('generateAgentPlan records usage via metering service', async () => {
+		const recorded: Array<{ threadId: string; inputTokens: number }> = [];
+		const usageMeteringService: Pick<IUsageMeteringService, 'recordTurn'> = {
+			recordTurn: (opts) => {
+				recorded.push({ threadId: opts.threadId, inputTokens: opts.usage.inputTokens });
+			},
+		};
+
+		const chatMessages: ChatMessage[] = [{
+			role: 'user',
+			displayContent: 'fix the tests',
+			content: 'fix the tests',
+			selections: null,
+			state: { stagingSelections: [], isBeingEdited: false },
+		}];
+
+		const plan = await generateAgentPlan({
+			llmMessageService: {
+				sendLLMMessage: (params: any) => {
+					params.onFinalMessage({
+						fullText: '- Read package.json\n- Update tests\n- Run tests',
+						fullReasoning: '',
+						anthropicReasoning: null,
+						usage: { inputTokens: 250, outputTokens: 40, cacheReadTokens: 0 },
+					});
+					return 'plan-req-1';
+				},
+			} as any,
+			convertToLLMMessageService: {
+				prepareLLMSimpleMessages: () => ({
+					messages: [{ role: 'user', content: 'task' }],
+					separateSystemMessage: 'plan system',
+				}),
+			} as any,
+			modelSelection: { providerName: 'anthropic', modelName: 'claude-sonnet-4-6' },
+			modelSelectionOptions: undefined,
+			overridesOfModel: undefined,
+			chatMode: 'agent',
+			chatMessages,
+			threadId: 'thread-plan-1',
 			usageMeteringService: usageMeteringService as IUsageMeteringService,
 		});
 
 		assert.ok(plan);
-		assert.strictEqual(plan!.items.length, 2);
+		assert.strictEqual(plan!.items.length, 3);
 		assert.strictEqual(recorded.length, 1);
 		assert.strictEqual(recorded[0].threadId, 'thread-plan-1');
 		assert.strictEqual(recorded[0].inputTokens, 250);
+	});
+
+	test('isContinuationUserMessage detects short continue prompts', () => {
+		assert.strictEqual(isContinuationUserMessage('continue'), true);
+		assert.strictEqual(isContinuationUserMessage('Please continue.'), true);
+		assert.strictEqual(isContinuationUserMessage('Implement a new auth module with JWT'), false);
+	});
+
+	test('reactivateAbortedPlan restores skipped steps to pending', () => {
+		const plan = {
+			role: 'plan' as const,
+			items: [
+				{ text: 'Read file', status: 'done' as const },
+				{ text: 'Edit file', status: 'skipped' as const },
+				{ text: 'Run tests', status: 'skipped' as const },
+			],
+		};
+		const reactivated = reactivateAbortedPlan(plan);
+		assert.ok(reactivated);
+		assert.strictEqual(reactivated!.items[0].status, 'done');
+		assert.strictEqual(reactivated!.items[1].status, 'pending');
+		assert.strictEqual(reactivated!.items[2].status, 'pending');
+	});
+
+	test('resolveAgentPlanForRun reuses plan with pending items', async () => {
+		const chatMessages: ChatMessage[] = [
+			{ role: 'user', displayContent: 'build feature', content: 'build feature', selections: null, state: { stagingSelections: [], isBeingEdited: false } },
+			{ role: 'plan', items: [
+				{ text: 'Read A', status: 'done' },
+				{ text: 'Edit A', status: 'pending' },
+				{ text: 'Run tests', status: 'pending' },
+			] },
+			{ role: 'user', displayContent: 'continue', content: 'continue', selections: null, state: { stagingSelections: [], isBeingEdited: false } },
+		];
+
+		const resolution = await resolveAgentPlanForRun({
+			llmMessageService: { sendLLMMessage: () => { throw new Error('should not call LLM'); } } as any,
+			convertToLLMMessageService: {} as any,
+			modelSelection: { providerName: 'anthropic', modelName: 'claude-sonnet-4-6' },
+			modelSelectionOptions: undefined,
+			overridesOfModel: undefined,
+			chatMode: 'agent',
+			chatMessages,
+			threadId: 'thread-resume-1',
+		});
+
+		assert.strictEqual(resolution.action, 'reuse');
+	});
+
+	test('resolveAgentPlanForRun reactivates skipped plan on continue', async () => {
+		const chatMessages: ChatMessage[] = [
+			{ role: 'user', displayContent: 'build feature', content: 'build feature', selections: null, state: { stagingSelections: [], isBeingEdited: false } },
+			{ role: 'plan', items: [
+				{ text: 'Read A', status: 'done' },
+				{ text: 'Edit A', status: 'skipped' },
+				{ text: 'Run tests', status: 'skipped' },
+			] },
+			{ role: 'user', displayContent: 'continue', content: 'continue', selections: null, state: { stagingSelections: [], isBeingEdited: false } },
+		];
+
+		const resolution = await resolveAgentPlanForRun({
+			llmMessageService: { sendLLMMessage: () => { throw new Error('should not call LLM'); } } as any,
+			convertToLLMMessageService: {} as any,
+			modelSelection: { providerName: 'anthropic', modelName: 'claude-sonnet-4-6' },
+			modelSelectionOptions: undefined,
+			overridesOfModel: undefined,
+			chatMode: 'agent',
+			chatMessages,
+			threadId: 'thread-resume-2',
+		});
+
+		assert.strictEqual(resolution.action, 'reactivate');
+		if (resolution.action === 'reactivate') {
+			assert.strictEqual(resolution.plan.items[1].status, 'pending');
+		}
+	});
+
+	test('resolveAgentPlanForRun returns none when generation fails without blocking', async () => {
+		const chatMessages: ChatMessage[] = [{
+			role: 'user',
+			displayContent: 'brand new task with enough detail to avoid continuation heuristics triggering incorrectly here',
+			content: 'brand new task with enough detail to avoid continuation heuristics triggering incorrectly here',
+			selections: null,
+			state: { stagingSelections: [], isBeingEdited: false },
+		}];
+
+		const resolution = await resolveAgentPlanForRun({
+			llmMessageService: {
+				sendLLMMessage: (params: any) => {
+					params.onError({ message: 'plan failed' });
+					return 'plan-req-fail';
+				},
+			} as any,
+			convertToLLMMessageService: {
+				prepareLLMSimpleMessages: () => ({
+					messages: [{ role: 'user', content: 'task' }],
+					separateSystemMessage: 'plan system',
+				}),
+			} as any,
+			modelSelection: { providerName: 'anthropic', modelName: 'claude-sonnet-4-6' },
+			modelSelectionOptions: undefined,
+			overridesOfModel: undefined,
+			chatMode: 'agent',
+			chatMessages,
+			threadId: 'thread-resume-3',
+		});
+
+		assert.strictEqual(resolution.action, 'none');
+	});
+
+	test('planHasPendingItems detects pending checklist rows', () => {
+		assert.strictEqual(planHasPendingItems({
+			role: 'plan',
+			items: [{ text: 'A', status: 'done' }, { text: 'B', status: 'pending' }],
+		}), true);
+		assert.strictEqual(isLikelyNewTaskUserMessage('Instead, implement OAuth login from scratch with a new provider module'), true);
 	});
 });

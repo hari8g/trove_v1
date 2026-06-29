@@ -6,7 +6,7 @@
 import React, { ButtonHTMLAttributes, FormEvent, FormHTMLAttributes, Fragment, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 
-import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useSettingsState, useActiveURI, useFullChatThreadsStreamState, useAgentDelivery, useMessageQueue } from '../util/services.js';
+import { useAccessor, useChatThreadsState, useChatThreadsStreamState, useSettingsState, useActiveURI, useFullChatThreadsStreamState, useAgentDelivery, useMessageQueue, useAgentFocusLayout } from '../util/services.js';
 import { ScrollType } from '../../../../../../../editor/common/editorCommon.js';
 
 import { ChatMarkdownRender, ChatMessageLocation, getApplyBoxId } from '../markdown/ChatMarkdownRender.js';
@@ -45,6 +45,7 @@ import { AgentDeliverySummaryCard } from './AgentDeliverySummary.js';
 import { ContextDocPanel } from './ContextDocPanel.js';
 import { ComposerPanel } from './ComposerPanel.js';
 import { NotepadsPanel } from './NotepadsPanel.js';
+import { AgentRunHeader } from './AgentRunHeader.js';
 import { INotepadsService } from '../../../notepadsService.js';
 
 import { buildBuiltinToolNameToComponent } from './builtinToolResultWrappers.js';
@@ -579,7 +580,7 @@ const scrollToBottom = (divRef: { current: HTMLElement | null }) => {
 
 
 const ScrollToBottomContainer = ({ children, className, style, scrollContainerRef, scrollTriggers }: { children: React.ReactNode, className?: string, style?: React.CSSProperties, scrollContainerRef: React.MutableRefObject<HTMLDivElement | null>, scrollTriggers?: unknown[] }) => {
-	const [isAtBottom, setIsAtBottom] = useState(true); // Start at bottom
+	const [isAtBottom, setIsAtBottom] = useState(true);
 
 	const divRef = scrollContainerRef
 
@@ -594,26 +595,37 @@ const ScrollToBottomContainer = ({ children, className, style, scrollContainerRe
 		setIsAtBottom(isBottom);
 	};
 
-	// When children change (new messages added) or streaming content grows
 	useEffect(() => {
 		if (isAtBottom) {
 			scrollToBottom(divRef);
 		}
 	}, [children, isAtBottom, scrollTriggers]);
 
-	// Initial scroll to bottom
 	useEffect(() => {
 		scrollToBottom(divRef);
 	}, []);
 
 	return (
-		<div
-			ref={divRef}
-			onScroll={onScroll}
-			className={className}
-			style={style}
-		>
-			{children}
+		<div className="relative flex-1 min-h-0 w-full">
+			<div
+				ref={divRef}
+				onScroll={onScroll}
+				className={className}
+				style={style}
+			>
+				{children}
+			</div>
+			{!isAtBottom ? (
+				<button
+					type="button"
+					className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 inline-flex items-center gap-1 rounded-full border border-trove-border-3/60 bg-trove-bg-2/95 px-2.5 py-1 text-[10px] font-medium text-trove-fg-2 shadow-md backdrop-blur-md hover:bg-trove-bg-3/90 transition-colors"
+					onClick={() => scrollToBottom(divRef)}
+					aria-label="Scroll to bottom"
+				>
+					<ChevronRight className="h-3 w-3 rotate-90" />
+					Latest
+				</button>
+			) : null}
 		</div>
 	);
 };
@@ -1665,6 +1677,7 @@ export const SidebarChat = () => {
 
 	const commandService = accessor.get('ICommandService')
 	const chatThreadsService = accessor.get('IChatThreadService')
+	const { isFocusMode, toggleFocusMode } = useAgentFocusLayout()
 
 	const settingsState = useSettingsState()
 	// ----- HIGHER STATE -----
@@ -1703,6 +1716,7 @@ export const SidebarChat = () => {
 
 	const chatMode = settingsState.globalSettings.chatMode
 	const chatModeLabel = chatMode === 'agent' ? 'Agent' : chatMode === 'gather' ? 'Gather' : 'Chat'
+	const modelLabel = settingsState.modelSelectionOfFeature.Chat?.modelName ?? 'Default model'
 
 	const backgroundActivity = useMemo((): { phase: BackgroundActivityPhase; title: string; detail?: string; contextLine?: string } | null => {
 		if (!isRunning) return null
@@ -2188,12 +2202,14 @@ export const SidebarChat = () => {
 	// 	</div>
 	// </div>
 	const tabBar = (
-		<div className="flex items-center border-b border-trove-border-2 shrink-0 px-2 gap-0">
+		<div className={`flex items-center border-b border-trove-border-2 shrink-0 gap-0 ${isFocusMode ? 'px-0' : 'px-2'}`}>
 			{(['chat', 'composer', 'notepads'] as SidebarTab[]).map(tab => (
 				<button
 					key={tab}
 					onClick={() => setSidebarTab(tab)}
-					className={`text-[11px] px-2 py-1.5 capitalize cursor-pointer transition-colors border-b-2 -mb-px ${
+					className={`text-[11px] capitalize cursor-pointer transition-colors border-b-2 -mb-px ${
+						isFocusMode ? 'flex-1 py-2 text-center' : 'px-2 py-1.5'
+					} ${
 						sidebarTab === tab
 							? 'border-blue-500 text-blue-400'
 							: 'border-transparent text-trove-fg-4 hover:text-trove-fg-2'
@@ -2204,6 +2220,22 @@ export const SidebarChat = () => {
 			))}
 		</div>
 	);
+
+	const agentRunHeader = !isLandingPage && sidebarTab === 'chat' ? (
+		<AgentRunHeader
+			chatMode={chatMode}
+			modelLabel={modelLabel}
+			phase={backgroundActivity?.phase}
+			statusTitle={backgroundActivity?.title}
+			statusDetail={backgroundActivity?.detail}
+			isRunning={!!isRunning}
+			isFocusMode={isFocusMode}
+			onToggleFocus={() => { void toggleFocusMode() }}
+			onStop={() => { void onAbort() }}
+			onRunInBackground={() => { chatThreadsService.runCurrentThreadInBackground() }}
+			onNewThread={() => { void commandService.executeCommand('trove.cmdShiftL') }}
+		/>
+	) : null
 
 	const threadPageContent = <div
 		ref={sidebarRef}
@@ -2216,7 +2248,12 @@ export const SidebarChat = () => {
 					<ContextDocPanel />
 				</ErrorBoundary>
 				<ErrorBoundary>
-					{messagesHTML}
+					{agentRunHeader}
+				</ErrorBoundary>
+				<ErrorBoundary>
+					<div className="flex flex-1 min-h-0 flex-col">
+						{messagesHTML}
+					</div>
 				</ErrorBoundary>
 				<ErrorBoundary>
 					{threadPageInput}

@@ -22,6 +22,7 @@ import { TROVE_CTRL_L_ACTION_ID } from './actionIDs.js';
 import { localize2 } from '../../../../nls.js';
 import { IChatThreadService } from './chatThreadService.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
+import { IAgentFocusLayoutService, TROVE_TOGGLE_AGENT_FOCUS_ACTION_ID } from './agentFocusLayoutService.js';
 
 // ---------- Register commands and keybindings ----------
 
@@ -234,6 +235,21 @@ registerAction2(class extends Action2 {
 		metricsService.capture('Chat Navigation', { type: 'History' })
 		commandService.executeCommand(TROVE_CMD_SHIFT_L_ACTION_ID)
 
+	}
+})
+
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: TROVE_TOGGLE_AGENT_FOCUS_ACTION_ID,
+			title: localize2('troveToggleAgentFocus', 'Trove: Toggle Agent Focus Layout'),
+			f1: true,
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const focusService = accessor.get(IAgentFocusLayoutService);
+		await focusService.toggleFocusMode();
 	}
 })
 
