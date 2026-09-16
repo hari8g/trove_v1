@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { isWindows } from '../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { createBuiltinToolValidators } from './toolParamValidators.js';
 
@@ -173,5 +174,74 @@ suite('Trove - toolParamValidators', () => {
 	test('kill_persistent_terminal validates terminal id', () => {
 		const params = validateParams.kill_persistent_terminal({ persistent_terminal_id: 'term-1' });
 		assert.strictEqual(params.persistentTerminalId, 'term-1');
+	});
+
+	test('edit_file rejects .. traversal outside workspace', () => {
+		assert.throws(
+			() => validateParams.edit_file({
+				uri: '../../../etc/passwd',
+				search_replace_blocks: '<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED',
+			}),
+			/outside the workspace/,
+		);
+	});
+
+	test('edit_file resolves src/../src/foo.ts inside workspace', () => {
+		const params = validateParams.edit_file({
+			uri: 'src/../src/foo.ts',
+			search_replace_blocks: '<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED',
+		});
+		assert.strictEqual(params.uri.fsPath, '/workspace/src/foo.ts');
+	});
+
+	test('edit_file resolves ./src/foo.ts inside workspace', () => {
+		const params = validateParams.edit_file({
+			uri: './src/foo.ts',
+			search_replace_blocks: '<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED',
+		});
+		assert.strictEqual(params.uri.fsPath, '/workspace/src/foo.ts');
+	});
+
+	test('edit_file allows differently-cased workspace path on Windows', () => {
+		if (!isWindows) {
+			return;
+		}
+		const windowsValidators = createBuiltinToolValidators({
+			getWorkspaceRoot: () => 'C:\\Work\\Repo',
+			getWorkspaceFolders: () => ['C:\\Work\\Repo'],
+		});
+		const params = windowsValidators.edit_file({
+			uri: 'c:\\work\\repo\\src\\a.ts',
+			search_replace_blocks: '<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED',
+		});
+		assert.ok(params.uri.fsPath.toLowerCase().endsWith('\\src\\a.ts') || params.uri.fsPath.toLowerCase().endsWith('/src/a.ts'));
+	});
+
+	test('edit_file rejects trove-memory.md outside workspace and real memory path', () => {
+		const memoryValidators = createBuiltinToolValidators({
+			getWorkspaceRoot: () => '/workspace',
+			getWorkspaceFolders: () => ['/workspace'],
+			getMemoryFilePath: () => '/userdata/trove-memory.md',
+		});
+		assert.throws(
+			() => memoryValidators.edit_file({
+				uri: '/outside/trove-memory.md',
+				search_replace_blocks: '<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED',
+			}),
+			/outside the workspace/,
+		);
+	});
+
+	test('edit_file allows the real trove memory file path', () => {
+		const memoryValidators = createBuiltinToolValidators({
+			getWorkspaceRoot: () => '/workspace',
+			getWorkspaceFolders: () => ['/workspace'],
+			getMemoryFilePath: () => '/userdata/trove-memory.md',
+		});
+		const params = memoryValidators.edit_file({
+			uri: '/userdata/trove-memory.md',
+			search_replace_blocks: '<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED',
+		});
+		assert.strictEqual(params.uri.fsPath, '/userdata/trove-memory.md');
 	});
 });

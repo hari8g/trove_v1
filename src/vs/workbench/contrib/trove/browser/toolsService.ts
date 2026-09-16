@@ -16,6 +16,8 @@ import { IMarkerService, MarkerSeverity } from '../../../../platform/markers/com
 import { MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_COMMAND_TIME, getTerminalInactiveTimeoutSeconds, isPackageInstallCommand, packageInstallLooksSuccessful } from '../common/prompt/prompts.js'
 import { ITroveSettingsService } from '../common/troveSettingsService.js'
 import { createBuiltinToolValidators, ValidateBuiltinParams } from '../common/toolParamValidators.js'
+import { getTroveMemoryFilePath } from '../common/troveMemoryPaths.js'
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js'
 import { createBuiltinToolResultStringifiers, stringifyLintErrors } from '../common/toolResultStringifiers.js'
 import { isStaasBuiltinToolName } from '../extensions/staas/staasToolNames.js'
 import { createStaasBuiltinToolCallHandlers } from '../extensions/staas/staasToolHandlers.js'
@@ -61,6 +63,7 @@ export class ToolsService implements IToolsService {
 		@ITroveSettingsService private readonly troveSettingsService: ITroveSettingsService,
 		@IRepoIntelligenceService private readonly repoIntelligenceService: IRepoIntelligenceService,
 		@IWebSearchService private readonly webSearchService: IWebSearchService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	) {
 		const queryBuilder = instantiationService.createInstance(QueryBuilder);
 
@@ -68,6 +71,7 @@ export class ToolsService implements IToolsService {
 			getWorkspaceRoot: () => workspaceContextService.getWorkspace().folders[0]?.uri.fsPath,
 			getWorkspaceFolders: () => workspaceContextService.getWorkspace().folders.map(f => f.uri.fsPath),
 			allowEditsOutsideWorkspace: () => this.troveSettingsService.state.globalSettings.allowEditsOutsideWorkspace,
+			getMemoryFilePath: () => getTroveMemoryFilePath(this.environmentService.userDataPath),
 		});
 
 		const assertOrgExtensionToolAvailable = (toolName: string) => {

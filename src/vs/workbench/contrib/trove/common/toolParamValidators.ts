@@ -3,12 +3,12 @@
  *  Licensed under the Apache License, Version 2.0. See LICENSE.txt for more information.
  *--------------------------------------------------------------------------------------*/
 
+import { isWindows } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { normalizeSearchReplaceBlocks } from './helpers/extractCodeFromResult.js';
 import { RawToolParamsObj } from './sendLLMMessageTypes.js';
 import { BuiltinToolCallParams, BuiltinToolName } from './toolsServiceTypes.js';
-import { TROVE_MEMORY_FILE_NAME } from './troveMemoryPaths.js';
 
 export type ValidateBuiltinParams = { [T in BuiltinToolName]: (p: RawToolParamsObj) => BuiltinToolCallParams[T] };
 
@@ -39,6 +39,7 @@ throw new Error(`Invalid LLM output format: ${argName} must be a string or JSON 
 let _getWorkspaceRoot: (() => string | undefined) = () => undefined;
 let _getWorkspaceFolders: (() => string[]) = () => [];
 let _allowEditsOutsideWorkspace: (() => boolean) = () => false;
+let _getMemoryFilePath: (() => string | undefined) = () => undefined;
 
 const validateURI = (uriStr: unknown) => {
 if (uriStr === null) throw new Error(`Invalid LLM output: uri was null.`)
@@ -63,13 +64,18 @@ const root = _getWorkspaceRoot()
 if (!root) {
 	throw new Error(`Relative path "${uriStr}" cannot be resolved because no workspace folder is open. Provide an absolute path.`)
 }
-const cleaned = uriStr.replace(/^\.\//, '')
-return URI.file(root.replace(/[\\/]+$/, '') + '/' + cleaned)
+// URI.joinPath normalises '..' and '.' segments; a manual string join does not,
+// which would let a relative path escape the workspace while still string-prefixing it.
+return URI.joinPath(URI.file(root), uriStr)
 }
 
 const pathIsUnderFolder = (filePath: string, folderPath: string): boolean => {
-	const normFile = filePath.replace(/\\/g, '/').replace(/\/+$/, '')
-	const normFolder = folderPath.replace(/\\/g, '/').replace(/\/+$/, '')
+	const norm = (p: string) => {
+		const s = p.replace(/\\/g, '/').replace(/\/+$/, '')
+		return isWindows ? s.toLowerCase() : s
+	}
+	const normFile = norm(filePath)
+	const normFolder = norm(folderPath)
 	return normFile === normFolder || normFile.startsWith(normFolder + '/')
 }
 
@@ -80,8 +86,8 @@ const validateWorkspaceURI = (uriStr: unknown) => {
 		return uri
 	}
 	// Exempt Trove memory file (typically lives in userDataPath outside the workspace).
-	const base = uri.fsPath.replace(/\\/g, '/').split('/').pop() ?? ''
-	if (base === TROVE_MEMORY_FILE_NAME) {
+	const memPath = _getMemoryFilePath()
+	if (memPath && pathIsUnderFolder(uri.fsPath, memPath)) {
 		return uri
 	}
 	const folders = _getWorkspaceFolders()
@@ -370,6 +376,7 @@ export const createBuiltinToolValidators = (
 		getWorkspaceRoot: () => string | undefined;
 		getWorkspaceFolders?: () => string[];
 		allowEditsOutsideWorkspace?: () => boolean;
+		getMemoryFilePath?: () => string | undefined;
 	},
 ): ValidateBuiltinParams => {
 	if (deps) {
@@ -379,6 +386,9 @@ export const createBuiltinToolValidators = (
 		}
 		if (deps.allowEditsOutsideWorkspace) {
 			_allowEditsOutsideWorkspace = deps.allowEditsOutsideWorkspace;
+		}
+		if (deps.getMemoryFilePath) {
+			_getMemoryFilePath = deps.getMemoryFilePath;
 		}
 	}
 	return validateParams;
