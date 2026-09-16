@@ -662,20 +662,40 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		const indexable = fileMeta.filter(f => f.language && !SKIP_LANGUAGES.has(f.language));
 		let updatedFiles = 0;
 		let totalChunks = 0;
+		let processed = 0;
 
 		for (const file of indexable) {
 			const absPath = join(workspaceRoot, file.filePath);
+
 			let content: string;
-			try { content = readFileSync(absPath, 'utf8'); } catch { continue; }
+			try {
+				content = await fs.readFile(absPath, 'utf8');
+			} catch {
+				// Record the attempt so completeness converges; sentinel marks it unreadable.
+				await this._db.upsertChunkFileHash(hash, file.filePath, 'UNREADABLE');
+				if (++processed % 50 === 0) {
+					await new Promise<void>(r => setImmediate(r));
+				}
+				continue;
+			}
 
 			const currentHash = createHash('sha256').update(content).digest('hex').slice(0, 32);
-			if (storedChunkHashes.get(file.filePath) === currentHash) continue;
+			if (storedChunkHashes.get(file.filePath) === currentHash) {
+				if (++processed % 50 === 0) {
+					await new Promise<void>(r => setImmediate(r));
+				}
+				continue;
+			}
 
 			const chunks = chunkFile(hash, file.filePath, content, file.language);
 			await this._db.replaceChunksForFile(hash, file.filePath, chunks);
 			await this._db.upsertChunkFileHash(hash, file.filePath, currentHash);
 			updatedFiles++;
 			totalChunks += chunks.length;
+
+			if (++processed % 50 === 0) {
+				await new Promise<void>(r => setImmediate(r));
+			}
 		}
 
 		// Remove hashes for files no longer in the index
@@ -709,6 +729,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 	): Promise<void> {
 		const storedHashes = await this._db.getFileHashes(workspaceHash);
 		let indexed = 0;
+		let processed = 0;
 
 		for (const file of fileMeta) {
 			if (!supportsSymbolExtraction(file.language)) {
@@ -718,13 +739,19 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			const absPath = join(workspaceRoot, file.filePath);
 			let content: string;
 			try {
-				content = readFileSync(absPath, 'utf8');
+				content = await fs.readFile(absPath, 'utf8');
 			} catch {
+				if (++processed % 50 === 0) {
+					await new Promise<void>(r => setImmediate(r));
+				}
 				continue;
 			}
 
 			const currentHash = createHash('sha256').update(content).digest('hex').slice(0, 32);
 			if (storedHashes.get(file.filePath) === currentHash) {
+				if (++processed % 50 === 0) {
+					await new Promise<void>(r => setImmediate(r));
+				}
 				continue;
 			}
 
@@ -732,6 +759,10 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			await this._db.replaceSymbolsForFile(workspaceHash, file.filePath, symbols);
 			await this._db.upsertFileHash(workspaceHash, file.filePath, currentHash);
 			indexed += 1;
+
+			if (++processed % 50 === 0) {
+				await new Promise<void>(r => setImmediate(r));
+			}
 		}
 
 		if (indexed > 0) {
