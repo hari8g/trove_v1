@@ -109,8 +109,12 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		if (existing) {
 			const isExpired = Date.now() - existing.lastScannedAt > REPO_INTEL_PROFILE_STALE_MS;
 			if (!existing.isStale && !isExpired) {
-				await this._ensureChunksIndexed(workspaceRoot, hash);
-				await this._ensureUCGIndexed(workspaceRoot, hash);
+				// Fire-and-forget: indexing must never block a profile read. Callers get the
+				// cached profile immediately; the index catches up in the background.
+				void this._ensureChunksIndexed(workspaceRoot, hash)
+					.catch(err => console.error('[RepoIntelligence] Chunk indexing failed:', err));
+				void this._ensureUCGIndexed(workspaceRoot, hash)
+					.catch(err => console.error('[RepoIntelligence] UCG indexing failed:', err));
 				return this._hydrateStaasSummaries(hash, existing);
 			}
 		}
