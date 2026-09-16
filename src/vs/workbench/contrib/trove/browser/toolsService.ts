@@ -17,7 +17,7 @@ import { MAX_FILE_CHARS_PAGE, MAX_TERMINAL_BG_COMMAND_TIME, MAX_TERMINAL_COMMAND
 import { ITroveSettingsService } from '../common/troveSettingsService.js'
 import { createBuiltinToolValidators, ValidateBuiltinParams } from '../common/toolParamValidators.js'
 import { getTroveMemoryFilePath } from '../common/troveMemoryPaths.js'
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js'
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js'
 import { createBuiltinToolResultStringifiers, stringifyLintErrors } from '../common/toolResultStringifiers.js'
 import { isStaasBuiltinToolName } from '../extensions/staas/staasToolNames.js'
 import { createStaasBuiltinToolCallHandlers } from '../extensions/staas/staasToolHandlers.js'
@@ -63,7 +63,7 @@ export class ToolsService implements IToolsService {
 		@ITroveSettingsService private readonly troveSettingsService: ITroveSettingsService,
 		@IRepoIntelligenceService private readonly repoIntelligenceService: IRepoIntelligenceService,
 		@IWebSearchService private readonly webSearchService: IWebSearchService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 	) {
 		const queryBuilder = instantiationService.createInstance(QueryBuilder);
 

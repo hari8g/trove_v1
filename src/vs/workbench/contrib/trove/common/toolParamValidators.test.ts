@@ -41,11 +41,16 @@ suite('Trove - toolParamValidators', () => {
 	});
 
 	test('read_file rejects relative path with no workspace', () => {
-		const noWorkspace = createBuiltinToolValidators({ getWorkspaceRoot: () => undefined });
+		const noWorkspace = createBuiltinToolValidators({ getWorkspaceRoot: () => undefined, getWorkspaceFolders: () => [] });
 		assert.throws(
 			() => noWorkspace.read_file({ uri: 'src/foo.ts' }),
 			/no workspace folder/,
 		);
+		// Restore module providers — createBuiltinToolValidators mutates module-level state.
+		createBuiltinToolValidators({
+			getWorkspaceRoot: () => '/workspace',
+			getWorkspaceFolders: () => ['/workspace', '/proj'],
+		});
 	});
 
 	test('read_file rejects null uri', () => {
