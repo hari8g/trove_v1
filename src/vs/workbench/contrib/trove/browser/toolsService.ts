@@ -92,6 +92,7 @@ export class ToolsService implements IToolsService {
 			repoIntelligenceService: this.repoIntelligenceService,
 			webSearchService: this.webSearchService,
 			getLintErrors: (uri) => this._getLintErrors(uri),
+			getLintErrorsWhenSettled: (uri) => this._getLintErrorsWhenSettled(uri),
 		});
 
 		this.callTool = {
@@ -111,7 +112,7 @@ export class ToolsService implements IToolsService {
 				if (!model) return null
 				return model.getValueInRange({ startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: Number.MAX_SAFE_INTEGER }, EndOfLinePreference.LF)
 			},
-			formatEditResult: (uri, lintErrors, edit) => {
+			formatEditResult: (uri, lintErrors, edit, lintSettled) => {
 				if (!edit.applied) {
 					const partial = edit.blocksTotal > 1
 						? ` ${edit.blocksMatched} of ${edit.blocksTotal} search blocks matched.`
@@ -124,7 +125,10 @@ export class ToolsService implements IToolsService {
 							: ` No lint errors found.`)
 						: '')
 				const savedNote = edit.savedToDisk ? '' : ' WARNING: the change is in the editor but was not confirmed saved to disk.'
-				return `Change successfully made to ${uri.fsPath}.${savedNote}${lintErrsString}${buildVerificationReminder(this.repoIntelligenceService.getProfileSync())}`
+				const lintNote = lintSettled === false
+					? ' (linting may not have finished — treat the absence of errors as unconfirmed)'
+					: ''
+				return `Change successfully made to ${uri.fsPath}.${savedNote}${lintErrsString}${lintNote}${buildVerificationReminder(this.repoIntelligenceService.getProfileSync())}`
 			},
 			formatCreateSuccess: (uri, isFolder) => {
 				if (isFolder) {
@@ -201,6 +205,46 @@ export class ToolsService implements IToolsService {
 
 		if (!lintErrors.length) return { lintErrors: null }
 		return { lintErrors, }
+	}
+
+	/** Wait for marker changes to settle (or hit maxWait), then return current lint errors. */
+	private async _getLintErrorsWhenSettled(
+		uri: URI,
+		opts: { quietMs?: number; maxWaitMs?: number } = {},
+	): Promise<{ lintErrors: LintErrorItem[] | null; settled: boolean }> {
+		const quietMs = opts.quietMs ?? 600
+		const maxWaitMs = opts.maxWaitMs ?? 5000
+
+		return new Promise((resolve) => {
+			let settled = false
+			let quietTimer: ReturnType<typeof setTimeout> | undefined
+			let done = false
+
+			const finish = (didSettle: boolean) => {
+				if (done) return
+				done = true
+				settled = didSettle
+				disposable.dispose()
+				clearTimeout(maxTimer)
+				if (quietTimer) clearTimeout(quietTimer)
+				resolve({ ...this._getLintErrors(uri), settled })
+			}
+
+			const scheduleQuiet = () => {
+				if (quietTimer) clearTimeout(quietTimer)
+				quietTimer = setTimeout(() => finish(true), quietMs)
+			}
+
+			const disposable = this.markerService.onMarkerChanged((changed) => {
+				if (changed.some(u => u.toString() === uri.toString())) {
+					scheduleQuiet()
+				}
+			})
+
+			// Start quiet timer immediately in case markers are already final
+			scheduleQuiet()
+			const maxTimer = setTimeout(() => finish(false), maxWaitMs)
+		})
 	}
 
 

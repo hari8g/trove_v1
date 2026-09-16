@@ -26,7 +26,7 @@ export const stringifyLintErrors = (lintErrors: LintErrorItem[]) => {
 export type ToolResultStringifierDeps = {
 	getModelLineContent: (uri: URI, line: number) => string | null;
 	stringifyDirectoryTree: typeof stringifyDirectoryTree1Deep;
-	formatEditResult: (uri: URI, lintErrors: LintErrorItem[] | null | undefined, edit: EditApplyResult) => string;
+	formatEditResult: (uri: URI, lintErrors: LintErrorItem[] | null | undefined, edit: EditApplyResult, lintSettled?: boolean) => string;
 	formatCreateSuccess: (uri: URI, isFolder: boolean) => string;
 	formatRunCommandResult: (
 		params: BuiltinToolCallParams['run_command'],
@@ -83,8 +83,8 @@ export const createBuiltinToolResultStringifiers = (deps: ToolResultStringifierD
 		return result.lintErrors ? stringifyLintErrors(result.lintErrors) : 'No lint errors found.';
 	},
 	delete_file_or_folder: (params, _result) => `URI ${params.uri.fsPath} successfully deleted.`,
-	edit_file: (params, result) => deps.formatEditResult(params.uri, result.lintErrors, result.edit),
-	rewrite_file: (params, result) => deps.formatEditResult(params.uri, result.lintErrors, result.edit),
+	edit_file: (params, result) => deps.formatEditResult(params.uri, result.lintErrors, result.edit, result.lintSettled),
+	rewrite_file: (params, result) => deps.formatEditResult(params.uri, result.lintErrors, result.edit, result.lintSettled),
 	create_file_or_folder: (params, _result) => deps.formatCreateSuccess(params.uri, params.isFolder),
 	run_command: deps.formatRunCommandResult,
 	run_persistent_command: deps.formatRunPersistentCommandResult,

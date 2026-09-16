@@ -28,6 +28,7 @@ export type EditDiagnosticStage =
 	| 'apply_blocks'
 	| 'apply_done'
 	| 'apply_error'
+	| 'save_failed'
 	| 'auto_accept';
 
 type EditDiagnosticDetail = Record<string, string | number | boolean | null | undefined>;

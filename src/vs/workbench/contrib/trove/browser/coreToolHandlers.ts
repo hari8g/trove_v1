@@ -5,7 +5,6 @@
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { URI } from '../../../../base/common/uri.js';
-import { timeout } from '../../../../base/common/async.js';
 import { EndOfLinePreference } from '../../../../editor/common/model.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -49,6 +48,7 @@ export type CoreToolHandlerDeps = {
 	repoIntelligenceService: IRepoIntelligenceService;
 	webSearchService: IWebSearchService;
 	getLintErrors: (uri: URI) => { lintErrors: LintErrorItem[] | null };
+	getLintErrorsWhenSettled: (uri: URI) => Promise<{ lintErrors: LintErrorItem[] | null; settled: boolean }>;
 };
 
 export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): CoreBuiltinToolCallHandlers => ({
@@ -252,8 +252,7 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 	},
 
 	read_lint_errors: async ({ uri }) => {
-		await timeout(1000);
-		const { lintErrors } = deps.getLintErrors(uri);
+		const { lintErrors } = await deps.getLintErrorsWhenSettled(uri);
 		return { result: { lintErrors } };
 	},
 
@@ -281,10 +280,9 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 		await deps.editCodeService.callBeforeApplyOrEdit(uri);
 		const edit = await deps.editCodeService.instantlyRewriteFile({ uri, newContent });
 		const resultPromise = Promise.resolve().then(async () => {
-			if (!edit.applied) return { lintErrors: null, edit };
-			await timeout(2000);
-			const { lintErrors } = deps.getLintErrors(uri);
-			return { lintErrors, edit };
+			if (!edit.applied) return { lintErrors: null, edit, lintSettled: true };
+			const { lintErrors, settled } = await deps.getLintErrorsWhenSettled(uri);
+			return { lintErrors, edit, lintSettled: settled };
 		});
 		return { result: resultPromise };
 	},
@@ -300,10 +298,9 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 		const edit = await deps.editCodeService.instantlyApplySearchReplaceBlocks({ uri, searchReplaceBlocks });
 
 		const resultPromise = Promise.resolve().then(async () => {
-			if (!edit.applied) return { lintErrors: null, edit };
-			await timeout(2000);
-			const { lintErrors } = deps.getLintErrors(uri);
-			return { lintErrors, edit };
+			if (!edit.applied) return { lintErrors: null, edit, lintSettled: true };
+			const { lintErrors, settled } = await deps.getLintErrorsWhenSettled(uri);
+			return { lintErrors, edit, lintSettled: settled };
 		});
 
 		return { result: resultPromise };

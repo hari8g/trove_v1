@@ -98,8 +98,8 @@ export type CoreBuiltinToolResultType = {
 	'search_in_file': { lines: number[]; },
 	'read_lint_errors': { lintErrors: LintErrorItem[] | null },
 	// ---
-	'rewrite_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult }>,
-	'edit_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult }>,
+	'rewrite_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult; lintSettled?: boolean }>,
+	'edit_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult; lintSettled?: boolean }>,
 	'create_file_or_folder': {},
 	'delete_file_or_folder': {},
 	// ---

@@ -41,7 +41,7 @@ import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { FeatureName } from '../common/troveSettingsTypes.js';
 import { ITroveModelService } from '../common/troveModelService.js';
 import { deepClone } from '../../../../base/common/objects.js';
-import { logEditDiagnostic, uriPathForLog, warnEditDiagnostic } from './agentEditDiagnostics.js';
+import { errorEditDiagnostic, logEditDiagnostic, uriPathForLog, warnEditDiagnostic } from './agentEditDiagnostics.js';
 import { DiffArea, Diff, CtrlKZone, VoidFileSnapshot, DiffAreaSnapshotEntry, diffAreaSnapshotKeys, DiffZone, TrackingZone, ComputedDiff, EditApplyResult } from '../common/editCodeServiceTypes.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 // import { isMacintosh } from '../../../../base/common/platform.js';
@@ -1217,8 +1217,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 	/**
 	 * Tear down / finalize an instant-edit session.
-	 * Ordering is corrected in T2.1 (accept before save, await once).
-	 * For now this mirrors the previous onDone body.
+	 * Accept first (so the model reaches its final state), then snapshot+save once.
 	 */
 	private async _finishEditSession(
 		uri: URI,
@@ -1232,19 +1231,27 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 		if (!accept) {
 			// Discard the unused diff zone without writing history/save.
-			this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'reject', _addToHistory: false })
+			await this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'reject', _addToHistory: false })
 			return false
 		}
 
-		// Fire-and-forget save for now (T2.1 awaits). Keep auto-accept path.
-		void onFinishEdit()
-
+		// 1. Resolve diff zones FIRST so the model reaches its final state
+		//    before any snapshot or save is taken.
 		if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
 			|| this._settingsService.state.globalSettings.chatMode === 'agent') {
 			logEditDiagnostic('auto_accept', { uri: uriPathForLog(uri) })
-			void this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
+			// _addToHistory: false — the caller's history element already covers this
+			await this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept', _addToHistory: false })
 		}
-		return true
+
+		// 2. THEN snapshot + save, exactly once, and await it.
+		try {
+			await onFinishEdit()
+			return true
+		} catch (e) {
+			errorEditDiagnostic('save_failed', { uri: uriPathForLog(uri), error: e instanceof Error ? e.message : String(e) })
+			return false
+		}
 	}
 
 
@@ -2152,7 +2159,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		const diffareaids = this.diffAreasOfURI[uri.fsPath]
 		if ((diffareaids?.size ?? 0) === 0) return // do nothing
 
-		const { onFinishEdit } = _addToHistory === false ? { onFinishEdit: () => { } } : this._addToHistory(uri)
+		const { onFinishEdit } = _addToHistory === false ? { onFinishEdit: async () => { } } : this._addToHistory(uri)
 
 		for (const diffareaid of diffareaids ?? []) {
 			const diffArea = this.diffAreaOfId[diffareaid]
@@ -2171,7 +2178,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		}
 
 		this._refreshStylesAndDiffsInURI(uri)
-		onFinishEdit()
+		await onFinishEdit()
 	}
 
 
