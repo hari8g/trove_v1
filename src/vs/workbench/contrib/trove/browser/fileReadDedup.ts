@@ -72,6 +72,7 @@ export const trackFileRead = (
 	startLine: number | null | undefined,
 	endLine: number | null | undefined,
 	totalFileLen?: number,
+	turn?: number,
 ): void => {
 	const key = readFileUriKey(uri);
 	const range = formatReadFileRange(startLine, endLine);
@@ -82,6 +83,9 @@ export const trackFileRead = (
 	}
 	if (totalFileLen != null && totalFileLen > 0) {
 		prev.totalFileLen = Math.max(prev.totalFileLen ?? 0, totalFileLen);
+	}
+	if (turn != null) {
+		prev.lastReadTurn = turn;
 	}
 	fileReads.set(key, prev);
 };

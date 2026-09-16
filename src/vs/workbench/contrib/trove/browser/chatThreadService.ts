@@ -392,6 +392,8 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 	private readonly _messageQueueByThread = new Map<string, QueuedUserMessage[]>();
 	/** Persists file-read records across queries within the same thread so the dedup/skip logic works cross-turn. */
 	private readonly _threadFileReadHistory = new Map<string, Map<string, FileReadRecord>>();
+	/** Monotonic user-turn counter per thread — increments once per user query. */
+	private readonly _threadTurnCounter = new Map<string, number>();
 	/** Skip the pre-run agent plan step for internal/system prompts (e.g. RIAF). */
 	private readonly _suppressAgentPlanByThread = new Map<string, boolean>();
 	private _runToolCall!: ReturnType<typeof createRunToolCall>;
@@ -788,6 +790,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		overridesOfModel,
 		chatMessages,
 		readOnlyCallCounts,
+		userTurn,
 	}: {
 		threadId: string;
 		primaryToolCall: RawToolCallObj;
@@ -797,9 +800,10 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		overridesOfModel: OverridesOfModel | undefined;
 		chatMessages: ChatMessage[];
 		readOnlyCallCounts?: ReturnType<typeof createReadOnlyCallCounts>;
+		userTurn?: number;
 	}): Promise<ToolCallLoopResult> {
 		if (!modelSelection) {
-			return this._runToolCall(threadId, primaryToolCall.name, primaryToolCall.id, undefined, { preapproved: false, unvalidatedToolParams: primaryToolCall.rawParams, readOnlyCallCounts })
+			return this._runToolCall(threadId, primaryToolCall.name, primaryToolCall.id, undefined, { preapproved: false, unvalidatedToolParams: primaryToolCall.rawParams, readOnlyCallCounts, userTurn })
 		}
 
 		let additional: RawToolCallObj[] = []
@@ -830,7 +834,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 				toolCall.name,
 				toolCall.id,
 				undefined,
-				{ preapproved: false, unvalidatedToolParams: toolCall.rawParams, batchInsert: useBatchInsert, readOnlyCallCounts },
+				{ preapproved: false, unvalidatedToolParams: toolCall.rawParams, batchInsert: useBatchInsert, readOnlyCallCounts, userTurn },
 			)
 		}))
 
@@ -872,6 +876,9 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const { overridesOfModel } = this._settingsService.state
 		const agentLoopLimits = getAgentLoopLimits(this._settingsService.state.globalSettings)
 
+		const userTurn = (this._threadTurnCounter.get(threadId) ?? 0) + 1
+		this._threadTurnCounter.set(threadId, userTurn)
+
 		let nMessagesSent = 0
 		let shouldSendAnotherMessage = true
 		let isRunningWhenEnd: IsRunningType = undefined
@@ -883,7 +890,12 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		const prevFileReads = this._threadFileReadHistory.get(threadId)
 		if (prevFileReads) {
 			for (const [key, record] of prevFileReads) {
-				readOnlyCallCounts.fileReads.set(key, { count: record.count, ranges: [...record.ranges], totalFileLen: record.totalFileLen })
+				readOnlyCallCounts.fileReads.set(key, {
+					count: record.count,
+					ranges: [...record.ranges],
+					totalFileLen: record.totalFileLen,
+					lastReadTurn: record.lastReadTurn,
+				})
 			}
 		}
 		const sandboxVerificationTracker = createSandboxVerificationTracker()
@@ -896,7 +908,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 		try {
 		// before enter loop, call tool
 		if (callThisToolFirst) {
-			const { interrupted } = await this._runToolCall(threadId, callThisToolFirst.name, callThisToolFirst.id, callThisToolFirst.mcpServerName, { preapproved: true, unvalidatedToolParams: callThisToolFirst.rawParams, validatedParams: callThisToolFirst.params, fileEditCounts, readOnlyCallCounts, sandboxVerificationTracker })
+			const { interrupted } = await this._runToolCall(threadId, callThisToolFirst.name, callThisToolFirst.id, callThisToolFirst.mcpServerName, { preapproved: true, unvalidatedToolParams: callThisToolFirst.rawParams, validatedParams: callThisToolFirst.params, fileEditCounts, readOnlyCallCounts, sandboxVerificationTracker, userTurn })
 			if (interrupted) {
 				this._setStreamState(threadId, undefined)
 				this._addUserCheckpoint({ threadId })
@@ -1336,10 +1348,11 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 							overridesOfModel,
 							chatMessages,
 							readOnlyCallCounts,
+							userTurn,
 						})
 					} else {
 						const mcpTool = mcpTools?.find(t => t.name === toolCall.name)
-						toolResult = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams, fileEditCounts, readOnlyCallCounts, sandboxVerificationTracker })
+						toolResult = await this._runToolCall(threadId, toolCall.name, toolCall.id, mcpTool?.mcpServerName, { preapproved: false, unvalidatedToolParams: toolCall.rawParams, fileEditCounts, readOnlyCallCounts, sandboxVerificationTracker, userTurn })
 					}
 
 					if (toolResult.interrupted) {
@@ -1485,7 +1498,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			// Persist recent file reads so the next query in this thread can skip re-reads.
 			// Only keep records from the last 2 user turns, capped at 50 entries.
 			if (readOnlyCallCounts.fileReads.size > 0) {
-				const currentTurn = nMessagesSent
+				const currentTurn = userTurn
 				const snapshot = new Map<string, FileReadRecord>()
 				for (const [key, record] of readOnlyCallCounts.fileReads) {
 					const lastTurn = record.lastReadTurn ?? currentTurn
@@ -2404,6 +2417,7 @@ We only need to do it for files that were edited since `from`, ie files between 
 
 		this._messageQueueByThread.delete(threadId)
 		this._threadFileReadHistory.delete(threadId)
+		this._threadTurnCounter.delete(threadId)
 		this._suppressAgentPlanByThread.delete(threadId)
 
 		// store the updated threads

@@ -8,7 +8,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ChatMessage } from '../../common/chatThreadServiceTypes.js';
 import { createBuiltinToolResultStringifiers } from '../../common/toolResultStringifiers.js';
-import { invalidateFileRead, shouldSkipDuplicateFileRead, trackFileRead } from '../fileReadDedup.js';
+import { FileReadRecord, invalidateFileRead, shouldSkipDuplicateFileRead, trackFileRead } from '../fileReadDedup.js';
 import { compactStaleToolResults } from '../toolResultCompaction.js';
 
 suite('Trove - read path integration', () => {
@@ -110,6 +110,29 @@ suite('Trove - read path integration', () => {
 		invalidateFileRead(fileReads, uri);
 		const afterWrite = shouldSkipDuplicateFileRead(fileReads, uri, null, null);
 		assert.strictEqual(afterWrite.skip, false, 'after a write, re-read must not be skipped');
+	});
+
+	test('file reads older than two user turns are evicted from snapshot', () => {
+		const fileReads = new Map<string, FileReadRecord>([
+			['file:///proj/old.ts', { count: 1, ranges: ['full file'], lastReadTurn: 1 }],
+			['file:///proj/recent.ts', { count: 1, ranges: ['full file'], lastReadTurn: 3 }],
+		]);
+		const currentTurn = 4;
+		const snapshot = new Map<string, FileReadRecord>();
+		for (const [key, record] of fileReads) {
+			const lastTurn = record.lastReadTurn ?? currentTurn;
+			if (currentTurn - lastTurn > 2) {
+				continue;
+			}
+			snapshot.set(key, {
+				count: record.count,
+				ranges: [...record.ranges],
+				totalFileLen: record.totalFileLen,
+				lastReadTurn: lastTurn,
+			});
+		}
+		assert.strictEqual(snapshot.has('file:///proj/old.ts'), false, 'turn-1 read should be evicted by turn 4');
+		assert.strictEqual(snapshot.has('file:///proj/recent.ts'), true, 'turn-3 read should remain at turn 4');
 	});
 
 	test('read_file never returns an empty stringified result', () => {

@@ -33,6 +33,7 @@ export const trackReadOnlyCall = (
 	counts: ReadOnlyCallCounts,
 	toolName: ToolName,
 	rawParams: RawToolParamsObj,
+	userTurn?: number,
 ): void => {
 	if (!isReadOnlyBatchTool(toolName)) {
 		return;
@@ -46,7 +47,7 @@ export const trackReadOnlyCall = (
 		if (uriKey) {
 			const startLine = rawParams.startLine != null ? Number(rawParams.startLine) : null;
 			const endLine = rawParams.endLine != null ? Number(rawParams.endLine) : null;
-			trackFileRead(counts.fileReads, uriKey, Number.isFinite(startLine) ? startLine : null, Number.isFinite(endLine) ? endLine : null);
+			trackFileRead(counts.fileReads, uriKey, Number.isFinite(startLine) ? startLine : null, Number.isFinite(endLine) ? endLine : null, undefined, userTurn);
 		}
 	}
 };

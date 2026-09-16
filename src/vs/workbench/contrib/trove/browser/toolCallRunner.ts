@@ -37,6 +37,7 @@ export type RunToolCallOpts = ({ preapproved: true; unvalidatedToolParams: RawTo
 	fileEditCounts?: Map<string, number>;
 	readOnlyCallCounts?: ReturnType<typeof createReadOnlyCallCounts>;
 	sandboxVerificationTracker?: SandboxVerificationTracker;
+	userTurn?: number;
 };
 
 const DIRECTORY_TREE_INVALIDATING_TOOLS = new Set<ToolName>([
@@ -143,7 +144,7 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 	}
 
 	if (opts.readOnlyCallCounts) {
-		trackReadOnlyCall(opts.readOnlyCallCounts, toolName, opts.unvalidatedToolParams);
+		trackReadOnlyCall(opts.readOnlyCallCounts, toolName, opts.unvalidatedToolParams, opts.userTurn);
 	}
 
 	const runningTool = { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content: toolName === 'run_command' || toolName === 'run_persistent_command' || toolName === 'run_tests' ? '(starting terminal sandbox…)' : '(value not received yet...)', result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName } as const;
