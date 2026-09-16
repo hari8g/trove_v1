@@ -42,14 +42,15 @@ class VoidModelService extends Disposable implements ITroveModelService {
 	}
 
 	initializeModel = async (uri: URI) => {
+		if (uri.fsPath in this._modelRefOfURI) return;
 		try {
-			if (uri.fsPath in this._modelRefOfURI) return;
 			const editorModelRef = await this._textModelService.createModelReference(uri);
 			// Keep a strong reference to prevent disposal
 			this._modelRefOfURI[uri.fsPath] = editorModelRef;
 		}
 		catch (e) {
-			console.log('InitializeModel error:', e)
+			const reason = e instanceof Error ? e.message : String(e);
+			throw new Error(`Could not open ${uri.fsPath}: ${reason}. The file may not exist, may be binary, or may be too large to open.`);
 		}
 	};
 
@@ -74,9 +75,11 @@ class VoidModelService extends Disposable implements ITroveModelService {
 
 
 	getModelSafe = async (uri: URI): Promise<VoidModelType> => {
-		if (!(uri.fsPath in this._modelRefOfURI)) await this.initializeModel(uri);
+		if (!(uri.fsPath in this._modelRefOfURI)) {
+			try { await this.initializeModel(uri); }
+			catch { /* getModelSafe contract: return null model, never throw */ }
+		}
 		return this.getModel(uri);
-
 	};
 
 	override dispose() {
