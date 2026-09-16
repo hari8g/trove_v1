@@ -667,6 +667,29 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 		for (const file of indexable) {
 			const absPath = join(workspaceRoot, file.filePath);
 
+			// Cheap mtime+size pre-check: skip read/hash/chunk when unchanged since scan
+			// and already recorded in the chunk ledger (FileMetadataEntry carries lastModified/sizeBytes).
+			const storedHash = storedChunkHashes.get(file.filePath);
+			const stat = await fs.stat(absPath).catch(() => null);
+			if (!stat) {
+				await this._db.upsertChunkFileHash(hash, file.filePath, 'UNREADABLE');
+				if (++processed % 50 === 0) {
+					await new Promise<void>(r => setImmediate(r));
+				}
+				continue;
+			}
+			if (
+				storedHash
+				&& storedHash !== 'UNREADABLE'
+				&& stat.mtimeMs === file.lastModified
+				&& stat.size === file.sizeBytes
+			) {
+				if (++processed % 50 === 0) {
+					await new Promise<void>(r => setImmediate(r));
+				}
+				continue;
+			}
+
 			let content: string;
 			try {
 				content = await fs.readFile(absPath, 'utf8');
@@ -680,7 +703,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			}
 
 			const currentHash = createHash('sha256').update(content).digest('hex').slice(0, 32);
-			if (storedChunkHashes.get(file.filePath) === currentHash) {
+			if (storedHash === currentHash) {
 				if (++processed % 50 === 0) {
 					await new Promise<void>(r => setImmediate(r));
 				}
