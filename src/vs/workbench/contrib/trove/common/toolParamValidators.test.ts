@@ -10,7 +10,9 @@ import { createBuiltinToolValidators } from './toolParamValidators.js';
 suite('Trove - toolParamValidators', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const validateParams = createBuiltinToolValidators();
+	const validateParams = createBuiltinToolValidators({
+		getWorkspaceRoot: () => '/workspace',
+	});
 
 	test('read_file validates uri and defaults page number', () => {
 		const params = validateParams.read_file({ uri: '/proj/foo.ts' });
@@ -18,6 +20,30 @@ suite('Trove - toolParamValidators', () => {
 		assert.strictEqual(params.pageNumber, 1);
 		assert.strictEqual(params.startLine, null);
 		assert.strictEqual(params.endLine, null);
+	});
+
+	test('read_file resolves relative paths against workspace root', () => {
+		const params = validateParams.read_file({ uri: 'src/foo.ts' });
+		assert.strictEqual(params.uri.fsPath, '/workspace/src/foo.ts');
+	});
+
+	test('read_file resolves ./prefixed relative paths', () => {
+		const params = validateParams.read_file({ uri: './src/foo.ts' });
+		assert.strictEqual(params.uri.fsPath, '/workspace/src/foo.ts');
+	});
+
+	test('read_file preserves scheme URIs', () => {
+		const params = validateParams.read_file({ uri: 'file:///tmp/a.ts' });
+		assert.strictEqual(params.uri.scheme, 'file');
+		assert.ok(params.uri.fsPath.includes('tmp'));
+	});
+
+	test('read_file rejects relative path with no workspace', () => {
+		const noWorkspace = createBuiltinToolValidators({ getWorkspaceRoot: () => undefined });
+		assert.throws(
+			() => noWorkspace.read_file({ uri: 'src/foo.ts' }),
+			/no workspace folder/,
+		);
 	});
 
 	test('read_file rejects null uri', () => {

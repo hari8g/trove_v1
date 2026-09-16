@@ -17,7 +17,7 @@ import { IAgentDeliveryService } from './agentDeliveryService.js';
 import { trackFileEdit } from './agentEditHints.js';
 import { isEditToolName } from './agentEditCompletionHints.js';
 import { errorEditDiagnostic, logEditDiagnostic, uriPathForLog, warnEditDiagnostic } from './agentEditDiagnostics.js';
-import { shouldSkipDuplicateFileRead, recordFileReadSize } from './fileReadDedup.js';
+import { shouldSkipDuplicateFileRead, recordFileReadSize, invalidateFileRead } from './fileReadDedup.js';
 import { createReadOnlyCallCounts, trackReadOnlyCall } from './agentReadHints.js';
 import { markSandboxCodeChange, markSandboxVerified, SandboxVerificationTracker } from './agentVerificationHints.js';
 import { IToolsService } from './toolsService.js';
@@ -246,12 +246,16 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 		return { status: 'error' };
 	}
 
+	if (!toolResultStr || !toolResultStr.trim()) {
+		toolResultStr = `(${toolName} returned no output)`;
+	}
+
 	deps.updateLatestTool(threadId, {
 		role: 'tool',
 		type: 'success',
 		params: toolParams,
 		result: skippedFileReadMessage !== undefined
-			? { fileContents: '', totalFileLen: 0, totalNumLines: 0, hasNextPage: false }
+			? { fileContents: '', totalFileLen: 0, totalNumLines: 0, hasNextPage: false, totalPages: 1 }
 			: toolResult,
 		name: toolName,
 		content: toolResultStr!,
@@ -264,6 +268,24 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 	if (toolName === 'read_file' && opts.readOnlyCallCounts && toolResult && typeof toolResult === 'object' && 'totalFileLen' in toolResult) {
 		const readParams = toolParams as BuiltinToolCallParams['read_file'];
 		recordFileReadSize(opts.readOnlyCallCounts.fileReads, readParams.uri, (toolResult as { totalFileLen: number }).totalFileLen);
+	}
+
+	const WRITE_TOOLS_INVALIDATING_READS = new Set<ToolName>([
+		'edit_file', 'rewrite_file', 'create_file_or_folder', 'delete_file_or_folder',
+	]);
+
+	if (opts.readOnlyCallCounts && WRITE_TOOLS_INVALIDATING_READS.has(toolName)) {
+		const writeUri = (toolParams as { uri?: URI }).uri;
+		if (writeUri) {
+			invalidateFileRead(opts.readOnlyCallCounts.fileReads, writeUri);
+		}
+	}
+
+	if (opts.readOnlyCallCounts && toolName === 'run_command') {
+		const command = (toolParams as BuiltinToolCallParams['run_command']).command ?? '';
+		if (/\b(git\s+(checkout|stash|reset)|npm\s+install|yarn|pnpm|make\b|sed\s+-i|\bmv\s|\bcp\s)/i.test(command)) {
+			opts.readOnlyCallCounts.fileReads.clear();
+		}
 	}
 
 	if (isEditToolName(toolName)) {

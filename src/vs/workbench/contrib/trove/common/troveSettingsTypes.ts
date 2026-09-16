@@ -491,7 +491,7 @@ export const defaultGlobalSettings: GlobalSettings = {
 	enableAgentPlan: true,
 	enableLightAgent: false,
 	enablePromptCache: true,
-	enableParallelReadBatching: true,
+	enableParallelReadBatching: false,
 	enableWebSearch: true,
 	webSearchApiKey: '',
 	maxAgentIterations: 25,

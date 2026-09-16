@@ -67,12 +67,21 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 		}
 
 		const totalNumLines = model.getLineCount();
+		const totalFileLen = contents.length;
+		const totalPages = Math.max(1, Math.ceil(totalFileLen / MAX_FILE_CHARS_PAGE) || 1);
 		const fromIdx = MAX_FILE_CHARS_PAGE * (pageNumber - 1);
+
+		let emptyReason: BuiltinToolResultType['read_file']['emptyReason'];
+		if (totalFileLen === 0) {
+			emptyReason = (startLine === null && endLine === null) ? 'empty-file' : 'empty-range';
+		} else if (fromIdx >= totalFileLen) {
+			emptyReason = 'page-out-of-range';
+		}
+
 		const toIdx = MAX_FILE_CHARS_PAGE * pageNumber - 1;
 		const fileContents = contents.slice(fromIdx, toIdx + 1);
-		const hasNextPage = (contents.length - 1) - toIdx >= 1;
-		const totalFileLen = contents.length;
-		return { result: { fileContents, totalFileLen, hasNextPage, totalNumLines } };
+		const hasNextPage = (totalFileLen - 1) - toIdx >= 1;
+		return { result: { fileContents, totalFileLen, hasNextPage, totalNumLines, emptyReason, totalPages } };
 	},
 
 	ls_dir: async ({ uri, pageNumber }) => {

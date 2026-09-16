@@ -64,7 +64,9 @@ export class ToolsService implements IToolsService {
 	) {
 		const queryBuilder = instantiationService.createInstance(QueryBuilder);
 
-		this.validateParams = createBuiltinToolValidators();
+		this.validateParams = createBuiltinToolValidators({
+			getWorkspaceRoot: () => workspaceContextService.getWorkspace().folders[0]?.uri.fsPath,
+		});
 
 		const assertOrgExtensionToolAvailable = (toolName: string) => {
 			if (isStaasBuiltinToolName(toolName) && !this.troveSettingsService.state.globalSettings.orgExtensions) {

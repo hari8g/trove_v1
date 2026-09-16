@@ -10,6 +10,8 @@ export type FileReadRecord = {
 	count: number;
 	ranges: string[];
 	totalFileLen?: number;
+	/** User-turn index when this file was last read (for cross-turn eviction). */
+	lastReadTurn?: number;
 };
 
 export const readFileUriKey = (uri: URI | string): string => {
@@ -17,6 +19,14 @@ export const readFileUriKey = (uri: URI | string): string => {
 		return uri.fsPath.toLowerCase();
 	}
 	return String(uri).toLowerCase();
+};
+
+/** Drop a file's read record — call whenever its content may have changed. */
+export const invalidateFileRead = (
+	fileReads: Map<string, FileReadRecord>,
+	uri: URI | string,
+): void => {
+	fileReads.delete(readFileUriKey(uri));
 };
 
 export const formatReadFileRange = (startLine: number | null | undefined, endLine: number | null | undefined): string => {
@@ -136,9 +146,11 @@ export const shouldSkipDuplicateFileRead = (
 		message: [
 			`${path}`,
 			'```',
-			`[read_file skipped — range already read]`,
+			`[read_file skipped — this exact range was already read in this thread]`,
 			`Requested: ${requested}. Already have: ${prior}.`,
-			`Use content already in the conversation instead of re-reading.`,
+			`If that content is no longer visible in the conversation above, it was compacted.`,
+			`In that case call read_file again with a DIFFERENT line range (e.g. a narrower`,
+			`window around the part you need), or use get_file_outline / get_symbol instead.`,
 			'```',
 		].join('\n'),
 	};

@@ -100,7 +100,8 @@ const buildDiscoverySystemMessage = (primary: RawToolCallObj): string => {
 		'Allowed tools: read_file, ls_dir, get_dir_tree, search_pathnames_only, search_for_files, search_in_file, search_codebase, search_web.',
 		'',
 		'Output ONE JSON object per line (no markdown, no prose):',
-		'{"name":"read_file","rawParams":{"uri":"path/to/file.ts"}}',
+		'{"name":"read_file","rawParams":{"uri":"src/foo.ts"}}',
+		'Prefer workspace-relative paths (e.g. "src/foo.ts") or absolute paths. Do not invent paths outside the workspace.',
 		'',
 		'If no additional reads are needed, output exactly: DONE',
 	].join('\n');

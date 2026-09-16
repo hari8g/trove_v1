@@ -23,7 +23,7 @@ suite('Trove - toolResultStringifiers', () => {
 	test('read_file includes path and fenced contents', () => {
 		const out = stringOfResult.read_file(
 			{ uri: URI.file('/proj/a.ts'), startLine: null, endLine: null, pageNumber: 1 },
-			{ fileContents: 'hello', hasNextPage: false, totalNumLines: 1, totalFileLen: 5 },
+			{ fileContents: 'hello', hasNextPage: false, totalNumLines: 1, totalFileLen: 5, totalPages: 1 },
 		);
 		assert.ok(out.includes('/proj/a.ts'));
 		assert.ok(out.includes('```\nhello\n```'));
@@ -102,27 +102,27 @@ suite('Trove - toolResultStringifiers', () => {
 		assert.ok(out.includes('edited /proj/a.ts'));
 	});
 
-	// Unskip in T3.5 — these document current empty-result gaps.
+	// Empty-result branches (T3.5)
 	suite('empty results', () => {
-		test.skip('[pending T3.5] read_file empty file', () => {
+		test('read_file empty file', () => {
 			const out = stringOfResult.read_file(
 				{ uri: URI.file('/proj/empty.ts'), startLine: null, endLine: null, pageNumber: 1 },
-				{ fileContents: '', totalFileLen: 0, totalNumLines: 0, hasNextPage: false },
+				{ fileContents: '', totalFileLen: 0, totalNumLines: 0, hasNextPage: false, emptyReason: 'empty-file', totalPages: 1 },
 			);
 			assert.ok(out.trim().length > 0);
 			assert.ok(out.includes('(file is empty'));
 		});
 
-		test.skip('[pending T3.5] read_file page out of range', () => {
+		test('read_file page out of range', () => {
 			const out = stringOfResult.read_file(
 				{ uri: URI.file('/proj/a.ts'), startLine: null, endLine: null, pageNumber: 9 },
-				{ fileContents: '', totalFileLen: 5000, totalNumLines: 200, hasNextPage: false },
+				{ fileContents: '', totalFileLen: 5000, totalNumLines: 200, hasNextPage: false, emptyReason: 'page-out-of-range', totalPages: 2 },
 			);
 			assert.ok(out.trim().length > 0);
 			assert.ok(out.includes('no content at page'));
 		});
 
-		test.skip('[pending T3.5] search_in_file no matches', () => {
+		test('search_in_file no matches', () => {
 			const out = stringOfResult.search_in_file(
 				{ uri: URI.file('/a.ts'), query: 'zzz', isRegex: false },
 				{ lines: [] },
@@ -131,7 +131,7 @@ suite('Trove - toolResultStringifiers', () => {
 			assert.ok(out.includes('No matches'));
 		});
 
-		test.skip('[pending T3.5] get_symbol missing source', () => {
+		test('get_symbol missing source', () => {
 			const out = stringOfResult.get_symbol(
 				{ uri: URI.file('/a.ts'), symbolName: 'Foo' },
 				{},
@@ -139,7 +139,7 @@ suite('Trove - toolResultStringifiers', () => {
 			assert.ok(out.trim().length > 0);
 		});
 
-		test.skip('[pending T3.5] get_file_outline empty', () => {
+		test('get_file_outline empty', () => {
 			const out = stringOfResult.get_file_outline(
 				{ uri: URI.file('/a.ts') },
 				{ outline: '' },
@@ -147,7 +147,7 @@ suite('Trove - toolResultStringifiers', () => {
 			assert.ok(out.trim().length > 0);
 		});
 
-		test.skip('[pending T3.5] search_symbols empty', () => {
+		test('search_symbols empty', () => {
 			const out = stringOfResult.search_symbols(
 				{ query: 'Foo', maxResults: 10 },
 				{ results: '' },

@@ -38,7 +38,7 @@ suite('Trove - toolResultCompaction', () => {
 				mcpServerName: undefined,
 				compactable: true,
 				params: { uri: fileUri, startLine: 1, endLine: 3, pageNumber: 1 },
-				result: { fileContents: 'line1\nline2\nline3', totalFileLen: 18, totalNumLines: 3, hasNextPage: false },
+				result: { fileContents: 'line1\nline2\nline3', totalFileLen: 18, totalNumLines: 3, hasNextPage: false, totalPages: 1 },
 			},
 			{
 				role: 'user',
@@ -87,7 +87,7 @@ suite('Trove - toolResultCompaction', () => {
 				mcpServerName: undefined,
 				compactable: true,
 				params: { uri: fileUri, startLine: 1, endLine: 200, pageNumber: 1 },
-				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false },
+				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false, totalPages: 1 },
 			},
 			{
 				role: 'tool',
@@ -99,7 +99,7 @@ suite('Trove - toolResultCompaction', () => {
 				mcpServerName: undefined,
 				compactable: true,
 				params: { uri: fileUri, startLine: 1, endLine: 200, pageNumber: 1 },
-				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false },
+				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false, totalPages: 1 },
 			},
 			{
 				role: 'tool',
@@ -111,7 +111,7 @@ suite('Trove - toolResultCompaction', () => {
 				mcpServerName: undefined,
 				compactable: true,
 				params: { uri: fileUri, startLine: 1, endLine: 200, pageNumber: 1 },
-				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false },
+				result: { fileContents: bigContent, totalFileLen: bigContent.length, totalNumLines: 200, hasNextPage: false, totalPages: 1 },
 			},
 		];
 
@@ -149,7 +149,7 @@ suite('Trove - toolResultCompaction', () => {
 				mcpServerName: undefined,
 				compactable: true,
 				params: { uri: clockUri, startLine: 1, endLine: 120, pageNumber: 1 },
-				result: { fileContents: contentA, totalFileLen: contentA.length, totalNumLines: 50, hasNextPage: false },
+				result: { fileContents: contentA, totalFileLen: contentA.length, totalNumLines: 50, hasNextPage: false, totalPages: 1 },
 			},
 			{
 				role: 'tool',
@@ -161,7 +161,7 @@ suite('Trove - toolResultCompaction', () => {
 				mcpServerName: undefined,
 				compactable: true,
 				params: { uri: clockUri, startLine: 270, endLine: 380, pageNumber: 1 },
-				result: { fileContents: contentB, totalFileLen: contentB.length, totalNumLines: 50, hasNextPage: false },
+				result: { fileContents: contentB, totalFileLen: contentB.length, totalNumLines: 50, hasNextPage: false, totalPages: 1 },
 			},
 			{
 				role: 'tool',
@@ -173,7 +173,7 @@ suite('Trove - toolResultCompaction', () => {
 				mcpServerName: undefined,
 				compactable: true,
 				params: { uri: otherUri, startLine: 1, endLine: 1, pageNumber: 1 },
-				result: { fileContents: 'export const x = 1;\n', totalFileLen: 18, totalNumLines: 1, hasNextPage: false },
+				result: { fileContents: 'export const x = 1;\n', totalFileLen: 18, totalNumLines: 1, hasNextPage: false, totalPages: 1 },
 			},
 		];
 

@@ -27,7 +27,7 @@ import { completeRemainingPlanItems, findLatestPlanMessageIdx, markPlanItemDoneF
 import { getAgentLoopLimits } from './agentLoopSettings.js';
 import { getLlmStreamStallTimeoutMs } from './agentLoopLimits.js';
 import { shouldGenerateAgentPlan, shouldUseParallelReadBatching } from '../common/lightAgent.js';
-import { buildRepeatFileReadHint, FileReadRecord } from './fileReadDedup.js';
+import { buildRepeatFileReadHint, FileReadRecord, invalidateFileRead } from './fileReadDedup.js';
 import { buildRepeatEditHint, buildLargeFileEditHint } from './agentEditHints.js';
 import { buildAgentTailHints, buildExplorationBudgetHint, buildRepeatReadHint, buildCrossQueryFileReadHint, createReadOnlyCallCounts } from './agentReadHints.js';
 import {
@@ -999,6 +999,7 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					agentTailHints,
 					forceAggressiveTrim: forceAggressiveTrim || (chatMode === 'agent' && nMessagesSent > 2),
 					threadId,
+					onCompactedFileRead: (uri) => invalidateFileRead(readOnlyCallCounts.fileReads, uri),
 				})
 				messages = prepared.messages
 				separateSystemMessage = prepared.separateSystemMessage
@@ -1476,11 +1477,29 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 			if (runTokenTotals.turns > 0) {
 				console.info(formatAgentRunTokenSummary(runTokenTotals))
 			}
-			// Persist the file reads so the next query in this thread can skip re-reads.
+			// Persist recent file reads so the next query in this thread can skip re-reads.
+			// Only keep records from the last 2 user turns, capped at 50 entries.
 			if (readOnlyCallCounts.fileReads.size > 0) {
+				const currentTurn = nMessagesSent
 				const snapshot = new Map<string, FileReadRecord>()
 				for (const [key, record] of readOnlyCallCounts.fileReads) {
-					snapshot.set(key, { count: record.count, ranges: [...record.ranges], totalFileLen: record.totalFileLen })
+					const lastTurn = record.lastReadTurn ?? currentTurn
+					if (currentTurn - lastTurn > 2) {
+						continue
+					}
+					snapshot.set(key, {
+						count: record.count,
+						ranges: [...record.ranges],
+						totalFileLen: record.totalFileLen,
+						lastReadTurn: lastTurn,
+					})
+				}
+				// Cap at 50 — evict oldest by lastReadTurn
+				if (snapshot.size > 50) {
+					const sorted = [...snapshot.entries()].sort((a, b) => (a[1].lastReadTurn ?? 0) - (b[1].lastReadTurn ?? 0))
+					for (let i = 0; i < sorted.length - 50; i++) {
+						snapshot.delete(sorted[i][0])
+					}
 				}
 				this._threadFileReadHistory.set(threadId, snapshot)
 			}

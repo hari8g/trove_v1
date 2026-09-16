@@ -40,6 +40,18 @@ export type ToolResultStringifierDeps = {
 
 export const createBuiltinToolResultStringifiers = (deps: ToolResultStringifierDeps): BuiltinToolResultToString => ({
 	read_file: (params, result) => {
+		if (result.emptyReason === 'empty-file') {
+			return `${params.uri.fsPath}\n(file is empty — 0 bytes)`;
+		}
+		if (result.emptyReason === 'page-out-of-range') {
+			return `${params.uri.fsPath}\n(no content at page ${params.pageNumber} — this file has ${result.totalPages} page(s), ${result.totalNumLines} lines, ${result.totalFileLen} characters. Request a page between 1 and ${result.totalPages}.)`;
+		}
+		if (result.emptyReason === 'empty-range') {
+			return `${params.uri.fsPath}\n(the requested line range is empty — the file has ${result.totalNumLines} lines)`;
+		}
+		if (!result.fileContents) {
+			return `${params.uri.fsPath}\n(no content returned)`;
+		}
 		return `${params.uri.fsPath}\n\`\`\`\n${result.fileContents}\n\`\`\`${nextPageStr(result.hasNextPage)}${result.hasNextPage ? `\nMore info because truncated: this file has ${result.totalNumLines} lines, or ${result.totalFileLen} characters.` : ''}`;
 	},
 	ls_dir: (params, result) => deps.stringifyDirectoryTree(params, result),
@@ -59,9 +71,15 @@ export const createBuiltinToolResultStringifiers = (deps: ToolResultStringifierD
 		});
 		return `Codebase search results for "${result.query}" (${result.results.length} matches):\n\n${lines.join('\n\n')}`;
 	},
-	get_file_outline: (_params, result) => result.outline,
-	get_symbol: (_params, result) => result.error ? result.error : (result.source ?? ''),
-	search_symbols: (_params, result) => result.results,
+	get_file_outline: (params, result) =>
+		result.outline?.trim() ? result.outline : `No outline available for ${params.uri.fsPath}. Use read_file instead.`,
+	get_symbol: (params, result) => {
+		if (result.error) return result.error;
+		if (!result.source) return `Symbol '${params.symbolName}' was found in ${params.uri.fsPath} but its source could not be read. Use read_file with a line range instead.`;
+		return result.source;
+	},
+	search_symbols: (_params, result) =>
+		result.results?.trim() ? result.results : `No symbols matched.`,
 	search_web: (_params, result) => {
 		if (result.results.length === 0) {
 			return `No web results found for query: "${result.query}".`;
@@ -70,6 +88,9 @@ export const createBuiltinToolResultStringifiers = (deps: ToolResultStringifierD
 		return `Web search results for "${result.query}" (${result.results.length} matches):\n\n${lines.join('\n\n')}`;
 	},
 	search_in_file: (params, result) => {
+		if (result.lines.length === 0) {
+			return `No matches for "${params.query}" in ${params.uri.fsPath}.`;
+		}
 		const lines = result.lines.map(n => {
 			const lineContent = deps.getModelLineContent(params.uri, n);
 			if (lineContent === null) {

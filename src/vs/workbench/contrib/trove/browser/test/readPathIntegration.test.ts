@@ -8,7 +8,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ChatMessage } from '../../common/chatThreadServiceTypes.js';
 import { createBuiltinToolResultStringifiers } from '../../common/toolResultStringifiers.js';
-import { shouldSkipDuplicateFileRead, trackFileRead } from '../fileReadDedup.js';
+import { invalidateFileRead, shouldSkipDuplicateFileRead, trackFileRead } from '../fileReadDedup.js';
 import { compactStaleToolResults } from '../toolResultCompaction.js';
 
 suite('Trove - read path integration', () => {
@@ -29,6 +29,7 @@ suite('Trove - read path integration', () => {
 			totalFileLen: content.length,
 			totalNumLines: content.split('\n').length,
 			hasNextPage: false,
+			totalPages: 1,
 		},
 	});
 
@@ -40,8 +41,7 @@ suite('Trove - read path integration', () => {
 		state: { stagingSelections: [], isBeingEdited: false },
 	});
 
-	// Unskip in T3.2 — compaction currently leaves the dedup record intact.
-	test.skip('[pending T3.2] compacting a read_file body clears its dedup range record', () => {
+	test('compacting a read_file body clears its dedup range record', () => {
 		const uri = URI.file('/proj/foo.ts');
 		const fileReads = new Map<string, { count: number; ranges: string[] }>();
 		trackFileRead(fileReads, uri, null, null);
@@ -90,7 +90,7 @@ suite('Trove - read path integration', () => {
 			},
 		];
 
-		const compacted = compactStaleToolResults(messages);
+		const compacted = compactStaleToolResults(messages, (compactedUri) => invalidateFileRead(fileReads, compactedUri));
 		const tool = compacted[1];
 		assert.strictEqual(tool.role, 'tool');
 		if (tool.role === 'tool') {
@@ -102,20 +102,17 @@ suite('Trove - read path integration', () => {
 		assert.strictEqual(skip.skip, false, 'after compaction clears the dedup record, re-read must not be skipped');
 	});
 
-	// Unskip in T3.1 — writes currently leave the dedup record intact.
-	test.skip('[pending T3.1] a write to a path clears its dedup range record', () => {
+	test('a write to a path clears its dedup range record', () => {
 		const uri = URI.file('/proj/foo.ts');
 		const fileReads = new Map<string, { count: number; ranges: string[] }>();
 		trackFileRead(fileReads, uri, null, null);
 
-		// Desired behaviour (T3.1): invalidateFileRead(fileReads, uri) after edit_file success.
-		// Until that API exists, asserting skip===false documents the bug (record still present).
+		invalidateFileRead(fileReads, uri);
 		const afterWrite = shouldSkipDuplicateFileRead(fileReads, uri, null, null);
 		assert.strictEqual(afterWrite.skip, false, 'after a write, re-read must not be skipped');
 	});
 
-	// Unskip in T3.5 — empty reads currently render as path + empty fenced block.
-	test.skip('[pending T3.5] read_file never returns an empty stringified result', () => {
+	test('read_file never returns an empty stringified result', () => {
 		const stringOfResult = createBuiltinToolResultStringifiers({
 			stringifyDirectoryTree: () => 'dir-tree',
 			getModelLineContent: (_uri, line) => `line-${line}`,
@@ -127,7 +124,7 @@ suite('Trove - read path integration', () => {
 
 		const out = stringOfResult.read_file(
 			{ uri: URI.file('/proj/empty.ts'), startLine: null, endLine: null, pageNumber: 1 },
-			{ fileContents: '', totalFileLen: 0, totalNumLines: 0, hasNextPage: false },
+			{ fileContents: '', totalFileLen: 0, totalNumLines: 0, hasNextPage: false, emptyReason: 'empty-file', totalPages: 1 },
 		);
 		assert.ok(out.trim().length > 0);
 		assert.ok(out.includes('(file is empty'), `expected empty-file marker, got: ${out}`);

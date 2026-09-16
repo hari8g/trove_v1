@@ -82,7 +82,7 @@ export type BuiltinToolCallParams = CoreBuiltinToolCallParams & StaasBuiltinTool
 
 // RESULT OF TOOL CALL
 export type CoreBuiltinToolResultType = {
-	'read_file': { fileContents: string, totalFileLen: number, totalNumLines: number, hasNextPage: boolean },
+	'read_file': { fileContents: string, totalFileLen: number, totalNumLines: number, hasNextPage: boolean, emptyReason?: 'empty-file' | 'page-out-of-range' | 'empty-range', totalPages: number },
 	'ls_dir': { children: ShallowDirectoryItem[] | null, hasNextPage: boolean, hasPrevPage: boolean, itemsRemaining: number },
 	'get_dir_tree': { str: string, },
 	'search_pathnames_only': { uris: URI[], hasNextPage: boolean },

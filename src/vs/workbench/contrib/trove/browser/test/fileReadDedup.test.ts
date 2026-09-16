@@ -34,7 +34,7 @@ suite('Trove - fileReadDedup', () => {
 
 		const covered = shouldSkipDuplicateFileRead(fileReads, uri, 50, 100);
 		assert.strictEqual(covered.skip, true);
-		assert.ok(covered.message?.includes('range already read'));
+		assert.ok(covered.message?.includes('already read'));
 		assert.ok(covered.message?.includes('lines 1-120'));
 	});
 

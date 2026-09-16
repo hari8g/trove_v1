@@ -65,7 +65,10 @@ const getReadFileUriKey = (message: ChatMessage): string | undefined => {
 };
 
 /** Replace stale compactable tool bodies with short references before wire conversion. */
-export const compactStaleToolResults = (chatMessages: ChatMessage[]): ChatMessage[] => {
+export const compactStaleToolResults = (
+	chatMessages: ChatMessage[],
+	onCompactedFileRead?: (uri: URI) => void,
+): ChatMessage[] => {
 	const tailStart = getProtectedTailStartIndex(chatMessages);
 
 	const compactableIndices = chatMessages
@@ -114,6 +117,8 @@ export const compactStaleToolResults = (chatMessages: ChatMessage[]): ChatMessag
 				message.params as BuiltinToolCallParams['read_file'],
 				message.content,
 			);
+			const uri = (message.params as BuiltinToolCallParams['read_file']).uri;
+			onCompactedFileRead?.(uri);
 		} else if (message.name === 'run_command' || message.name === 'run_persistent_command') {
 			compactContent = formatTerminalCommandCompact(
 				message.params as BuiltinToolCallParams['run_command'] | BuiltinToolCallParams['run_persistent_command'],

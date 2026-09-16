@@ -1463,7 +1463,7 @@ export const Settings = () => {
 															value={settingsState.globalSettings.enableParallelReadBatching}
 															onChange={(newVal) => troveSettingsService.setGlobalSetting('enableParallelReadBatching', newVal)}
 														/>
-														<span className='text-trove-fg-3 text-xs pointer-events-none'>Parallel read-only tool batching</span>
+														<span className='text-trove-fg-3 text-xs pointer-events-none'>Parallel read-only tool batching (experimental — off by default)</span>
 													</div>
 													<div className='mt-3 mb-1 text-xs text-trove-fg-3 font-medium'>Agent loop limits</div>
 													<div className='grid grid-cols-2 gap-2 my-2'>

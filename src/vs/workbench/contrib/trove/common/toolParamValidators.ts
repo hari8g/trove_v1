@@ -33,33 +33,35 @@ throw new Error(`Invalid LLM output format: ${argName} must be a string or JSON 
 }
 
 
-// We are NOT checking to make sure in workspace
+// Module-scoped workspace root provider — set by createBuiltinToolValidators.
+// ToolsService is an eagerly-registered singleton, so a module-level mutable is acceptable.
+let _getWorkspaceRoot: (() => string | undefined) = () => undefined;
+
 const validateURI = (uriStr: unknown) => {
 if (uriStr === null) throw new Error(`Invalid LLM output: uri was null.`)
 if (typeof uriStr !== 'string') throw new Error(`Invalid LLM output format: Provided uri must be a string, but it's a(n) ${typeof uriStr}. Full value: ${JSON.stringify(uriStr)}.`)
 
 // Check if it's already a full URI with scheme (e.g., vscode-remote://, file://, etc.)
-// Look for :// pattern which indicates a scheme is present
-// Examples of supported URIs:
-// - vscode-remote://wsl+Ubuntu/home/user/file.txt (WSL)
-// - vscode-remote://ssh-remote+myserver/home/user/file.txt (SSH)
-// - file:///home/user/file.txt (local file with scheme)
-// - /home/user/file.txt (local file path, will be converted to file://)
-// - C:\Users\file.txt (Windows local path, will be converted to file://)
 if (uriStr.includes('://')) {
 	try {
 		const uri = URI.parse(uriStr)
 		return uri
 	} catch (e) {
-		// If parsing fails, it's a malformed URI
 		throw new Error(`Invalid URI format: ${uriStr}. Error: ${e}`)
 	}
-} else {
-	// No scheme present, treat as file path
-	// This handles regular file paths like /home/user/file.txt or C:\Users\file.txt
-	const uri = URI.file(uriStr)
-	return uri
 }
+
+const isAbsolute = uriStr.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(uriStr)
+if (isAbsolute) {
+	return URI.file(uriStr)
+}
+
+const root = _getWorkspaceRoot()
+if (!root) {
+	throw new Error(`Relative path "${uriStr}" cannot be resolved because no workspace folder is open. Provide an absolute path.`)
+}
+const cleaned = uriStr.replace(/^\.\//, '')
+return URI.file(root.replace(/[\\/]+$/, '') + '/' + cleaned)
 }
 
 const validateOptionalURI = (uriStr: unknown) => {
@@ -310,11 +312,11 @@ const validateParams: ValidateBuiltinParams = {
 	serviceName: validateStr('serviceName', params.service_name ?? params.serviceName),
 	}),
 	get_import_graph: (params: RawToolParamsObj) => ({
-	uri: URI.file(validateStr('uri', params.uri)),
+	uri: validateURI(params.uri),
 	direction: (params.direction as 'imports' | 'importedBy' | 'both' | undefined) ?? 'both',
 	}),
 	get_tests_for_file: (params: RawToolParamsObj) => ({
-	uri: URI.file(validateStr('uri', params.uri)),
+	uri: validateURI(params.uri),
 	}),
 	get_recently_changed: (params: RawToolParamsObj) => ({
 	limit: typeof params.limit === 'number' ? params.limit : undefined,
@@ -326,4 +328,11 @@ const validateParams: ValidateBuiltinParams = {
 
 };
 
-export const createBuiltinToolValidators = (): ValidateBuiltinParams => validateParams;
+export const createBuiltinToolValidators = (
+	deps?: { getWorkspaceRoot: () => string | undefined },
+): ValidateBuiltinParams => {
+	if (deps) {
+		_getWorkspaceRoot = deps.getWorkspaceRoot;
+	}
+	return validateParams;
+};

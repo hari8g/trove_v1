@@ -1,5 +1,6 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { deepClone } from '../../../../base/common/objects.js';
+import { URI } from '../../../../base/common/uri.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -583,7 +584,7 @@ export interface IConvertToLLMMessageService {
 	readonly _serviceBrand: undefined;
 	buildRunContext: (opts: { chatMode: ChatMode, modelSelection: ModelSelection | null }) => Promise<RunContextBlocks>
 	prepareLLMSimpleMessages: (opts: { simpleMessages: SimpleLLMMessage[], systemMessage: string, modelSelection: ModelSelection | null, featureName: FeatureName }) => { messages: LLMChatMessage[], separateSystemMessage: string | undefined }
-	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedRunContext?: RunContextBlocks, agentTailHints?: string, forceAggressiveTrim?: boolean, threadId?: string }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, volatileSystemMessage: string | undefined, contextWasTrimmed: boolean }>
+	prepareLLMChatMessages: (opts: { chatMessages: ChatMessage[], chatMode: ChatMode, modelSelection: ModelSelection | null, precomputedRunContext?: RunContextBlocks, agentTailHints?: string, forceAggressiveTrim?: boolean, threadId?: string, onCompactedFileRead?: (uri: URI) => void }) => Promise<{ messages: LLMChatMessage[], separateSystemMessage: string | undefined, volatileSystemMessage: string | undefined, contextWasTrimmed: boolean }>
 	prepareFIMMessage(opts: { messages: LLMFIMMessage, }): { prefix: string, suffix: string, stopTokens: string[] }
 }
 
@@ -783,7 +784,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 		})
 		return { messages, separateSystemMessage };
 	}
-	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedRunContext, agentTailHints, forceAggressiveTrim, threadId }) => {
+	prepareLLMChatMessages: IConvertToLLMMessageService['prepareLLMChatMessages'] = async ({ chatMessages, chatMode, modelSelection, precomputedRunContext, agentTailHints, forceAggressiveTrim, threadId, onCompactedFileRead }) => {
 		if (modelSelection === null) return { messages: [], separateSystemMessage: undefined, volatileSystemMessage: undefined, contextWasTrimmed: false }
 
 		const { overridesOfModel } = this.troveSettingsService.state
@@ -821,7 +822,7 @@ class ConvertToLLMMessageService extends Disposable implements IConvertToLLMMess
 
 		const isReasoningEnabled = getIsReasoningEnabledState('Chat', providerName, modelName, modelSelectionOptions, overridesOfModel)
 		const reservedOutputTokenSpace = getReservedOutputTokenSpace(providerName, modelName, { isReasoningEnabled, overridesOfModel })
-		const compactedChatMessages = compactStaleToolResults(trimmedChatMessages)
+		const compactedChatMessages = compactStaleToolResults(trimmedChatMessages, onCompactedFileRead)
 		const llmMessages = this._chatMessagesToSimpleMessages(compactedChatMessages)
 		if (!modelSupportsVision(providerName, modelName, overridesOfModel)) {
 			for (const msg of llmMessages) {
