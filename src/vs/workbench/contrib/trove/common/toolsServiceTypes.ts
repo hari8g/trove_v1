@@ -2,9 +2,11 @@ import { URI } from '../../../../base/common/uri.js'
 import { RawMCPToolCall } from './mcpServiceTypes.js';
 import { builtinTools } from './prompt/prompts.js';
 import { RawToolParamsObj } from './sendLLMMessageTypes.js';
+import type { EditApplyResult } from './editCodeServiceTypes.js';
 import type { StaasBuiltinToolCallParams, StaasBuiltinToolResultType } from '../extensions/staas/staasToolTypes.js';
 
 export type { StaasBuiltinToolCallParams, StaasBuiltinToolResultType, StaasImpactLevel, StaasConfigDriftEntry } from '../extensions/staas/staasToolTypes.js';
+export type { EditApplyResult } from './editCodeServiceTypes.js';
 
 
 
@@ -96,8 +98,8 @@ export type CoreBuiltinToolResultType = {
 	'search_in_file': { lines: number[]; },
 	'read_lint_errors': { lintErrors: LintErrorItem[] | null },
 	// ---
-	'rewrite_file': Promise<{ lintErrors: LintErrorItem[] | null }>,
-	'edit_file': Promise<{ lintErrors: LintErrorItem[] | null }>,
+	'rewrite_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult }>,
+	'edit_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult }>,
 	'create_file_or_folder': {},
 	'delete_file_or_folder': {},
 	// ---

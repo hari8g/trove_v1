@@ -757,7 +757,19 @@ const EditTool = ({ toolMessage, threadId, messageIdx, content }: Parameters<Res
 		? toolMessage.result?.lintErrors
 		: undefined
 
+	const editNotApplied = toolMessage.type === 'success'
+		&& toolMessage.result?.edit
+		&& toolMessage.result.edit.applied === false
+
 	const footer = <>
+		{editNotApplied ? (
+			<div className="px-2.5 py-1.5 text-[11px] text-red-600 dark:text-red-400 border-t border-trove-border-3/25">
+				Edit not applied{toolMessage.result.edit.failureReason ? ` — ${toolMessage.result.edit.failureReason}` : ''}
+				{toolMessage.result.edit.blocksTotal > 1
+					? ` (${toolMessage.result.edit.blocksMatched} of ${toolMessage.result.edit.blocksTotal} blocks matched)`
+					: ''}
+			</div>
+		) : null}
 		{showAcceptReject ? (
 			<div className="flex items-center justify-end gap-2">
 				<button
@@ -787,12 +799,12 @@ const EditTool = ({ toolMessage, threadId, messageIdx, content }: Parameters<Res
 		<EditToolChatBlock
 			fileName={getBasename(params.uri.fsPath)}
 			filePath={params.uri.fsPath}
-			addedLines={diffStats.added}
-			removedLines={diffStats.removed}
+			addedLines={editNotApplied ? 0 : diffStats.added}
+			removedLines={editNotApplied ? 0 : diffStats.removed}
 			onFileClick={() => voidOpenFileFn(params.uri, accessor)}
-			isRejected={isRejected}
+			isRejected={isRejected || !!editNotApplied}
 			isRunning={isRunning}
-			footer={showAcceptReject || lintErrors?.length || toolMessage.type === 'tool_error' ? footer : undefined}
+			footer={editNotApplied || showAcceptReject || lintErrors?.length || toolMessage.type === 'tool_error' ? footer : undefined}
 		>
 			<ChatInlineDiffView
 				code={content}

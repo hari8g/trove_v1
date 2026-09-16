@@ -279,13 +279,14 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 			throw new Error(`Another LLM is currently making changes to this file. Please stop streaming for now and ask the user to resume later.`);
 		}
 		await deps.editCodeService.callBeforeApplyOrEdit(uri);
-		deps.editCodeService.instantlyRewriteFile({ uri, newContent });
-		const lintErrorsPromise = Promise.resolve().then(async () => {
+		const edit = await deps.editCodeService.instantlyRewriteFile({ uri, newContent });
+		const resultPromise = Promise.resolve().then(async () => {
+			if (!edit.applied) return { lintErrors: null, edit };
 			await timeout(2000);
 			const { lintErrors } = deps.getLintErrors(uri);
-			return { lintErrors };
+			return { lintErrors, edit };
 		});
-		return { result: lintErrorsPromise };
+		return { result: resultPromise };
 	},
 
 	edit_file: async ({ uri, searchReplaceBlocks }) => {
@@ -296,15 +297,16 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 			throw new Error(`Another LLM is currently making changes to this file. Please stop streaming for now and ask the user to resume later.`);
 		}
 		await deps.editCodeService.callBeforeApplyOrEdit(uri);
-		deps.editCodeService.instantlyApplySearchReplaceBlocks({ uri, searchReplaceBlocks });
+		const edit = await deps.editCodeService.instantlyApplySearchReplaceBlocks({ uri, searchReplaceBlocks });
 
-		const lintErrorsPromise = Promise.resolve().then(async () => {
+		const resultPromise = Promise.resolve().then(async () => {
+			if (!edit.applied) return { lintErrors: null, edit };
 			await timeout(2000);
 			const { lintErrors } = deps.getLintErrors(uri);
-			return { lintErrors };
+			return { lintErrors, edit };
 		});
 
-		return { result: lintErrorsPromise };
+		return { result: resultPromise };
 	},
 
 	run_command: async ({ command, cwd, terminalId }) => {

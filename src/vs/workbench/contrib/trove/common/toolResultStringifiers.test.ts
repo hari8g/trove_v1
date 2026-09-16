@@ -14,7 +14,7 @@ suite('Trove - toolResultStringifiers', () => {
 	const stringOfResult = createBuiltinToolResultStringifiers({
 		stringifyDirectoryTree: () => 'dir-tree',
 		getModelLineContent: (_uri, line) => `line-${line}`,
-		formatEditSuccess: uri => `edited ${uri.fsPath}`,
+		formatEditResult: (uri, _lint, edit) => edit.applied ? `edited ${uri.fsPath}` : `EDIT NOT APPLIED to ${uri.fsPath}. Reason: ${edit.failureReason}.`,
 		formatCreateSuccess: uri => `created ${uri.fsPath}`,
 		formatRunCommandResult: (_params, result) => result.result,
 		formatRunPersistentCommandResult: (_params, result) => result.result,
@@ -70,6 +70,36 @@ suite('Trove - toolResultStringifiers', () => {
 		assert.ok(out.includes('Line 3'));
 		assert.ok(out.includes('line-3'));
 		assert.ok(out.includes('line-7'));
+	});
+
+	test('edit_file reports EDIT NOT APPLIED when apply failed', () => {
+		const out = stringOfResult.edit_file(
+			{ uri: URI.file('/proj/a.ts'), searchReplaceBlocks: 'x' },
+			{
+				lintErrors: null,
+				edit: {
+					applied: false,
+					blocksMatched: 2,
+					blocksTotal: 3,
+					savedToDisk: false,
+					failureReason: 'block-not-found',
+					failureDetail: 'missing block',
+				},
+			},
+		);
+		assert.ok(out.includes('EDIT NOT APPLIED'));
+		assert.ok(out.includes('block-not-found'));
+	});
+
+	test('edit_file reports success when applied', () => {
+		const out = stringOfResult.edit_file(
+			{ uri: URI.file('/proj/a.ts'), searchReplaceBlocks: 'x' },
+			{
+				lintErrors: null,
+				edit: { applied: true, blocksMatched: 1, blocksTotal: 1, savedToDisk: true },
+			},
+		);
+		assert.ok(out.includes('edited /proj/a.ts'));
 	});
 
 	// Unskip in T3.5 — these document current empty-result gaps.

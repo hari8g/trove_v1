@@ -111,13 +111,20 @@ export class ToolsService implements IToolsService {
 				if (!model) return null
 				return model.getValueInRange({ startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: Number.MAX_SAFE_INTEGER }, EndOfLinePreference.LF)
 			},
-			formatEditSuccess: (uri, lintErrors) => {
+			formatEditResult: (uri, lintErrors, edit) => {
+				if (!edit.applied) {
+					const partial = edit.blocksTotal > 1
+						? ` ${edit.blocksMatched} of ${edit.blocksTotal} search blocks matched.`
+						: ''
+					return `EDIT NOT APPLIED to ${uri.fsPath}. Reason: ${edit.failureReason}.${partial} ${edit.failureDetail ?? ''}\n\nThe file is UNCHANGED. Do not assume this edit succeeded. Re-read the file to get its current content, then retry with search blocks that match exactly.`
+				}
 				const lintErrsString = (
 					this.troveSettingsService.state.globalSettings.includeToolLintErrors ?
 						(lintErrors ? ` Lint errors found after change:\n${stringifyLintErrorsTruncated(lintErrors)}.\nIf this is related to a change made while calling this tool, you might want to fix the error.`
 							: ` No lint errors found.`)
 						: '')
-				return `Change successfully made to ${uri.fsPath}.${lintErrsString}${buildVerificationReminder(this.repoIntelligenceService.getProfileSync())}`
+				const savedNote = edit.savedToDisk ? '' : ' WARNING: the change is in the editor but was not confirmed saved to disk.'
+				return `Change successfully made to ${uri.fsPath}.${savedNote}${lintErrsString}${buildVerificationReminder(this.repoIntelligenceService.getProfileSync())}`
 			},
 			formatCreateSuccess: (uri, isFolder) => {
 				if (isFolder) {
