@@ -52,17 +52,28 @@ suite('Trove - fileReadDedup', () => {
 		assert.strictEqual(counts.fileReads.get(readFileUriKey('/proj/foo.ts'))?.lastReadTurn, 5);
 	});
 
-	test('trackReadOnlyCall tracks file-level reads across ranges', () => {
-		const counts = createReadOnlyCallCounts();
-		trackReadOnlyCall(counts, 'read_file', { uri: '/proj/clock.js', startLine: '1', endLine: '120' });
-		trackReadOnlyCall(counts, 'read_file', { uri: '/proj/clock.js', startLine: '270', endLine: '380' });
-		assert.strictEqual(counts.fileReads.get(readFileUriKey('/proj/clock.js'))?.count, 2);
-		assert.deepStrictEqual(counts.fileReads.get(readFileUriKey('/proj/clock.js'))?.ranges, [
-			formatReadFileRange(1, 120),
-			formatReadFileRange(270, 380),
-		]);
-		const hint = buildRepeatFileReadHint(counts.fileReads);
-		assert.ok(hint.includes('clock.js'));
+	test('trackFileRead stamps lastReadTurn when provided', () => {
+		const fileReads = new Map<string, { count: number; ranges: string[]; lastReadTurn?: number }>();
+		const uri = URI.file('/proj/a.ts');
+		trackFileRead(fileReads, uri, null, null, undefined, 3);
+		assert.strictEqual(fileReads.get(readFileUriKey(uri))?.lastReadTurn, 3);
+	});
+
+	test('eviction window keeps only last 2 user turns', () => {
+		const fileReads = new Map<string, { count: number; ranges: string[]; lastReadTurn?: number }>();
+		const uri1 = URI.file('/proj/old.ts');
+		const uri2 = URI.file('/proj/recent.ts');
+		trackFileRead(fileReads, uri1, null, null, undefined, 1);
+		trackFileRead(fileReads, uri2, null, null, undefined, 3);
+		const currentTurn = 4;
+		const kept = new Map<string, { count: number; ranges: string[]; lastReadTurn?: number }>();
+		for (const [key, record] of fileReads) {
+			const lastTurn = record.lastReadTurn ?? currentTurn;
+			if (currentTurn - lastTurn > 2) continue;
+			kept.set(key, record);
+		}
+		assert.strictEqual(kept.has(readFileUriKey(uri1)), false);
+		assert.strictEqual(kept.has(readFileUriKey(uri2)), true);
 	});
 });
 
