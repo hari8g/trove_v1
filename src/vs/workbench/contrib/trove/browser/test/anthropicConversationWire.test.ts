@@ -42,4 +42,15 @@ suite('Trove - anthropicConversationWire', () => {
 		ensureAnthropicConversationEndsWithUser(messages);
 		assert.strictEqual(messages[messages.length - 1].role, 'user');
 	});
+
+	test('tool-only turn keeps empty assistant content for wire pairing', () => {
+		const messages = [
+			{ role: 'user' as const, content: 'read foo' },
+			{ role: 'assistant' as const, content: '', anthropicReasoning: null },
+			{ role: 'tool' as const, content: 'file body', id: 't1', name: 'read_file' as const, rawParams: {} },
+		];
+		appendAgentTailHintsToMessages(messages, '\nhint');
+		assert.strictEqual(messages[1].role, 'assistant');
+		assert.ok(messages[2].content.endsWith('\nhint'));
+	});
 });

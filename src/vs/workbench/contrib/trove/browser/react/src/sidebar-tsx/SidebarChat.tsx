@@ -1109,7 +1109,7 @@ const AssistantMessageComponent = ({ chatMessage, isCheckpointGhost, isCommitted
 		messageIdx: messageIdx,
 	}
 
-	const isEmpty = !chatMessage.displayContent && !hasReasoning
+	const isEmpty = !hasDisplayContent && !hasReasoning
 	if (isEmpty) return null
 
 	return <>
@@ -1139,7 +1139,7 @@ const AssistantMessageComponent = ({ chatMessage, isCheckpointGhost, isCommitted
 		}
 
 		{/* assistant message */}
-		{chatMessage.displayContent &&
+		{hasDisplayContent &&
 			<div className={`${isCheckpointGhost ? 'opacity-50' : ''}`}>
 				{!isCommitted ? (
 					<div className="text-trove-fg-2 text-[13px] leading-[1.5] break-words !select-text">

@@ -1299,7 +1299,12 @@ class ChatThreadService extends Disposable implements IChatThreadService {
 					clearProviderRateLimitCooldown(modelSelection.providerName, modelSelection.modelName)
 				}
 
-				this._addMessageToThread(threadId, { role: 'assistant', displayContent: info.fullText, reasoning: info.fullReasoning, anthropicReasoning: info.anthropicReasoning })
+				const hasAssistantContent = !!info.fullText?.trim() || !!info.fullReasoning?.trim() || !!info.anthropicReasoning
+				// Keep an assistant turn whenever a tool call follows (Anthropic wire pairing),
+				// but skip pure whitespace-only messages with no tool call.
+				if (hasAssistantContent || toolCall) {
+					this._addMessageToThread(threadId, { role: 'assistant', displayContent: info.fullText, reasoning: info.fullReasoning, anthropicReasoning: info.anthropicReasoning })
+				}
 
 				this._setIdleStatus(threadId, 'Processing model response', toolCall ? 'Preparing tool call' : 'Finishing turn')
 

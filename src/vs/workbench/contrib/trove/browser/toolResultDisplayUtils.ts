@@ -9,10 +9,10 @@ import { BuiltinToolName } from '../common/toolsServiceTypes.js';
 
 const uriKey = (uri: URI): string => uri.fsPath.toLowerCase();
 
-const isWriteToolOnPath = (toolName: BuiltinToolName, uri: URI): boolean =>
+const isWriteTool = (toolName: BuiltinToolName): boolean =>
 	toolName === 'create_file_or_folder' || toolName === 'rewrite_file' || toolName === 'edit_file';
 
-/** Hide empty read_file rows when the same path is written/created later in the turn. */
+/** Hide empty read_file rows that are dedup skips or followed by a write to the same path. */
 export const isRedundantEmptyFileRead = (
 	toolMessage: ToolMessage<'read_file'>,
 	messages: ChatMessage[],
@@ -21,6 +21,22 @@ export const isRedundantEmptyFileRead = (
 	if (toolMessage.type !== 'success') {
 		return false;
 	}
+
+	// Dedup-skipped reads: empty result body + skip marker in content
+	if (
+		toolMessage.result.totalFileLen === 0
+		&& !toolMessage.result.emptyReason
+		&& typeof toolMessage.content === 'string'
+		&& toolMessage.content.includes('[read_file skipped')
+	) {
+		return true;
+	}
+
+	// Genuine empty files / out-of-range pages should render their explanatory stringifier text
+	if (toolMessage.result.emptyReason) {
+		return false;
+	}
+
 	if (toolMessage.result.totalFileLen !== 0) {
 		return false;
 	}
@@ -44,7 +60,7 @@ export const isRedundantEmptyFileRead = (
 		if (uriKey(params.uri) !== readKey) {
 			continue;
 		}
-		if (isWriteToolOnPath(message.name as BuiltinToolName, params.uri)) {
+		if (isWriteTool(message.name as BuiltinToolName)) {
 			return true;
 		}
 	}
