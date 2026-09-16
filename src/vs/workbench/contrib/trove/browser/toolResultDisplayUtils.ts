@@ -4,10 +4,14 @@
  *--------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../base/common/uri.js';
+import { isWindows } from '../../../../base/common/platform.js';
 import type { ChatMessage, ToolMessage } from '../common/chatThreadServiceTypes.js';
 import { BuiltinToolName } from '../common/toolsServiceTypes.js';
 
-const uriKey = (uri: URI): string => uri.fsPath.toLowerCase();
+const uriKey = (uri: URI): string => {
+	const key = uri.toString();
+	return isWindows ? key.toLowerCase() : key;
+};
 
 const isWriteTool = (toolName: BuiltinToolName): boolean =>
 	toolName === 'create_file_or_folder' || toolName === 'rewrite_file' || toolName === 'edit_file';

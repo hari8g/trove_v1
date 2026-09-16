@@ -49,6 +49,12 @@ const DIRECTORY_TREE_INVALIDATING_TOOLS = new Set<ToolName>([
 	'run_persistent_command',
 ]);
 
+const WRITE_TOOLS_INVALIDATING_READS = new Set<ToolName>([
+	'edit_file', 'rewrite_file', 'create_file_or_folder', 'delete_file_or_folder',
+]);
+
+const WRITEISH_COMMAND = /\b(git\s+(checkout|stash|reset|pull|merge|rebase|apply|clean)|npm\s+(install|ci)|yarn|pnpm|make\b|sed\s+-i|patch\b|\bmv\s|\bcp\s|\brm\s|prettier|eslint\s+--fix|black\b|gofmt)/i;
+
 export type ToolCallRunnerDeps = {
 	toolsService: IToolsService;
 	mcpService: IMCPService;
@@ -273,10 +279,6 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 		recordFileReadSize(opts.readOnlyCallCounts.fileReads, readParams.uri, (toolResult as { totalFileLen: number }).totalFileLen);
 	}
 
-	const WRITE_TOOLS_INVALIDATING_READS = new Set<ToolName>([
-		'edit_file', 'rewrite_file', 'create_file_or_folder', 'delete_file_or_folder',
-	]);
-
 	if (opts.readOnlyCallCounts && WRITE_TOOLS_INVALIDATING_READS.has(toolName)) {
 		const writeUri = (toolParams as { uri?: URI }).uri;
 		if (writeUri) {
@@ -284,9 +286,12 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 		}
 	}
 
-	if (opts.readOnlyCallCounts && toolName === 'run_command') {
-		const command = (toolParams as BuiltinToolCallParams['run_command']).command ?? '';
-		if (/\b(git\s+(checkout|stash|reset)|npm\s+install|yarn|pnpm|make\b|sed\s+-i|\bmv\s|\bcp\s)/i.test(command)) {
+	if (opts.readOnlyCallCounts
+		&& (toolName === 'run_command' || toolName === 'run_persistent_command' || toolName === 'run_tests')) {
+		const command = toolName === 'run_tests'
+			? ((toolParams as BuiltinToolCallParams['run_tests']).testCommand ?? '')
+			: ((toolParams as { command?: string }).command ?? '');
+		if (toolName === 'run_tests' || WRITEISH_COMMAND.test(command)) {
 			opts.readOnlyCallCounts.fileReads.clear();
 		}
 	}
