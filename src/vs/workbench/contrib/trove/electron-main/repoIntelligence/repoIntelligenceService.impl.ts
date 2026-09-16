@@ -67,6 +67,7 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 
 	private readonly _db: RepoIntelligenceDb;
 	private readonly _scanInProgress = new Map<string, Promise<WorkspaceProfile>>();
+	private readonly _chunkIndexInProgress = new Map<string, Promise<void>>();
 	private readonly _memoryFilePath: string;
 	private _cachedUserMemory: string | null = null;
 	private _fileWatcher: WorkspaceFileWatcher | null = null;
@@ -590,6 +591,19 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 	}
 
 	private async _ensureChunksIndexed(workspaceRoot: string, hash: string): Promise<void> {
+		const inProgress = this._chunkIndexInProgress.get(hash);
+		if (inProgress) return inProgress;
+
+		const promise = this._ensureChunksIndexedInner(workspaceRoot, hash);
+		this._chunkIndexInProgress.set(hash, promise);
+		try {
+			return await promise;
+		} finally {
+			this._chunkIndexInProgress.delete(hash);
+		}
+	}
+
+	private async _ensureChunksIndexedInner(workspaceRoot: string, hash: string): Promise<void> {
 		const fileMeta = await this._db.getFileMetadata(hash);
 
 		if (fileMeta.length === 0) {
