@@ -1489,11 +1489,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 
 		// helpers
-		const onDone = () => {
-			console.log('called onDone')
-			diffZone._streamState = { isStreaming: false, }
-			this._onDidChangeStreamingInDiffZone.fire({ uri, diffareaid: diffZone.diffareaid })
-
+		const onDone = async () => {
 			if (ctrlKZoneIfQuickEdit) {
 				const ctrlKZone = ctrlKZoneIfQuickEdit
 
@@ -1501,21 +1497,15 @@ class EditCodeService extends Disposable implements IEditCodeService {
 				this._onDidChangeStreamingInCtrlKZone.fire({ uri, diffareaid: ctrlKZone.diffareaid })
 				this._deleteCtrlKZone(ctrlKZone)
 			}
-			this._refreshStylesAndDiffsInURI(uri)
-			onFinishEdit()
-
-			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
-				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
-				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
-			}
+			await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: true })
 		}
 
 		// throws
-		const onError = (e: { message: string; fullError: Error | null; }) => {
-			// this._notifyError(e)
-			onDone()
-			this._undoHistory(uri)
+		const onError = async (e: { message: string; fullError: Error | null; }) => {
+			// Discard the in-flight diff zone. Do NOT call _undoHistory — with the
+			// deferred commit in _addToHistory nothing was pushed, so undoing here
+			// would revert an unrelated, earlier edit.
+			await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: false })
 			throw e.fullError || new Error(e.message)
 		}
 
@@ -1574,7 +1564,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 						prevIgnoredSuffix = croppedSuffix
 					},
-					onFinalMessage: (params) => {
+					onFinalMessage: async (params) => {
 						const { fullText } = params
 						// console.log('DONE! FULL TEXT\n', extractText(fullText), diffZone.startLine, diffZone.endLine)
 						// at the end, re-write whole thing to make sure no sync errors
@@ -1584,11 +1574,11 @@ class EditCodeService extends Disposable implements IEditCodeService {
 							{ shouldRealignDiffAreas: true }
 						)
 
-						onDone()
+						await onDone()
 						resMessageDonePromise()
 					},
 					onError: (e) => {
-						onError(e)
+						void onError(e).catch(() => { /* rethrown to stream; reject handled by caller */ })
 					},
 					onAbort: () => {
 						if (weAreAborting) return
@@ -1830,28 +1820,19 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		}
 
 
-		const onDone = () => {
-			diffZone._streamState = { isStreaming: false, }
-			this._onDidChangeStreamingInDiffZone.fire({ uri, diffareaid: diffZone.diffareaid })
-			this._refreshStylesAndDiffsInURI(uri)
-
+		const onDone = async () => {
 			// delete the tracking zones
 			for (const trackingZone of addedTrackingZoneOfBlockNum)
 				this._deleteTrackingZone(trackingZone)
 
-			onFinishEdit()
-
-			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
-				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
-				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
-			}
+			await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: true })
 		}
 
-		const onError = (e: { message: string; fullError: Error | null; }) => {
-			// this._notifyError(e)
-			onDone()
-			this._undoHistory(uri)
+		const onError = async (e: { message: string; fullError: Error | null; }) => {
+			// Discard the in-flight diff zone. Do NOT call _undoHistory — with the
+			// deferred commit in _addToHistory nothing was pushed, so undoing here
+			// would revert an unrelated, earlier edit.
+			await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: false })
 			throw e.fullError || new Error(e.message)
 		}
 
@@ -1883,7 +1864,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 						message: `Tried to Fast Apply ${N_RETRIES} times but failed. This may be related to model intelligence, or it may an edit that's too complex. Please retry or disable Fast Apply.`,
 						fullError: null
 					}
-					onError(e)
+					await onError(e)
 					break
 				}
 
@@ -2069,15 +2050,15 @@ class EditCodeService extends Disposable implements IEditCodeService {
 
 						try {
 							this._instantlyApplySRBlocks(uri, fullText)
-							onDone()
+							await onDone()
 							resMessageDonePromise()
 						}
 						catch (e) {
-							onError(e)
+							await onError(e)
 						}
 					},
 					onError: (e) => {
-						onError(e)
+						void onError(e).catch(() => { /* rethrown; stream rejects via applyDonePromise */ })
 					},
 					onAbort: () => {
 						if (weAreAborting) return
