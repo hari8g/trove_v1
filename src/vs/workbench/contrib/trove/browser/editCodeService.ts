@@ -710,6 +710,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 	private _addToHistory(uri: URI, opts?: { onWillUndo?: () => void }) {
 		const beforeSnapshot: VoidFileSnapshot = this._getCurrentVoidFileSnapshot(uri)
 		let afterSnapshot: VoidFileSnapshot | null = null
+		let committed = false
 
 		const elt: IUndoRedoElement = {
 			type: UndoRedoElementType.Resource,
@@ -719,13 +720,21 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			undo: async () => { opts?.onWillUndo?.(); await this._restoreVoidFileSnapshot(uri, beforeSnapshot) },
 			redo: async () => { if (afterSnapshot) await this._restoreVoidFileSnapshot(uri, afterSnapshot) }
 		}
-		this._undoRedoService.pushElement(elt)
+
+		/** Push the undo element. Call ONLY when the edit actually changed the file. */
+		const commit = () => {
+			if (committed) return
+			committed = true
+			this._undoRedoService.pushElement(elt)
+		}
 
 		const onFinishEdit = async () => {
+			commit()
 			afterSnapshot = this._getCurrentVoidFileSnapshot(uri)
 			await this._troveModelService.saveModel(uri)
 		}
-		return { onFinishEdit }
+
+		return { commit, onFinishEdit }
 	}
 
 
