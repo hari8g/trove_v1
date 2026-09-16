@@ -623,9 +623,13 @@ export class RepoIntelligenceMainService extends Disposable implements IRepoInte
 			return false;
 		}
 
-		const indexedFileCount = await this._db.getDistinctChunkFileCount(hash);
-		if (indexedFileCount < indexableCount) {
-			console.log(`[RepoIntelligence] Chunk index incomplete (${indexedFileCount}/${indexableCount} indexable files) — rebuilding`);
+		// Completeness is measured by files PROCESSED (chunk_file_hashes), not files that
+		// produced chunks (code_chunks). Large files, tiny barrel files and unreadable files
+		// are legitimately indexable but yield zero chunks — comparing against code_chunks
+		// never converges and re-indexes the whole repo on every launch.
+		const processedCount = (await this._db.getChunkFileHashes(hash)).size;
+		if (processedCount < indexableCount) {
+			console.log(`[RepoIntelligence] Chunk index incomplete (${processedCount}/${indexableCount} files processed) — rebuilding`);
 			return true;
 		}
 
