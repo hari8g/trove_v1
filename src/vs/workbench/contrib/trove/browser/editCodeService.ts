@@ -41,8 +41,8 @@ import { ITroveSettingsService } from '../common/troveSettingsService.js';
 import { FeatureName } from '../common/troveSettingsTypes.js';
 import { ITroveModelService } from '../common/troveModelService.js';
 import { deepClone } from '../../../../base/common/objects.js';
-import { errorEditDiagnostic, logEditDiagnostic, uriPathForLog, warnEditDiagnostic } from './agentEditDiagnostics.js';
-import { DiffArea, Diff, CtrlKZone, VoidFileSnapshot, DiffAreaSnapshotEntry, diffAreaSnapshotKeys, DiffZone, TrackingZone, ComputedDiff } from '../common/editCodeServiceTypes.js';
+import { logEditDiagnostic, uriPathForLog, warnEditDiagnostic } from './agentEditDiagnostics.js';
+import { DiffArea, Diff, CtrlKZone, VoidFileSnapshot, DiffAreaSnapshotEntry, diffAreaSnapshotKeys, DiffZone, TrackingZone, ComputedDiff, EditApplyResult } from '../common/editCodeServiceTypes.js';
 import { IConvertToLLMMessageService } from './convertToLLMMessageService.js';
 // import { isMacintosh } from '../../../../base/common/platform.js';
 // import { TROVE_OPEN_SETTINGS_ACTION_ID } from './troveSettingsPane.js';
@@ -1132,7 +1132,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 	}
 
 
-	public instantlyApplySearchReplaceBlocks({ uri, searchReplaceBlocks }: { uri: URI, searchReplaceBlocks: string }) {
+	public async instantlyApplySearchReplaceBlocks({ uri, searchReplaceBlocks }: { uri: URI, searchReplaceBlocks: string }): Promise<EditApplyResult> {
 		logEditDiagnostic('apply_start', { toolName: 'edit_file', uri: uriPathForLog(uri), blocksLen: searchReplaceBlocks.length })
 		// start diffzone
 		const res = this._startStreamingDiffZone({
@@ -1144,48 +1144,36 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		})
 		if (!res) {
 			warnEditDiagnostic('apply_diffzone_skip', { toolName: 'edit_file', uri: uriPathForLog(uri), reason: '_startStreamingDiffZone returned null' })
-			return
+			return {
+				applied: false, blocksMatched: 0, blocksTotal: 0, savedToDisk: false,
+				failureReason: 'diffzone-unavailable',
+				failureDetail: `Could not open an edit session for ${uri.fsPath}. The file may not be open or resolvable.`,
+			}
 		}
 		const { diffZone, onFinishEdit } = res
 
+		const applyRes = this._instantlyApplySRBlocks(uri, searchReplaceBlocks)
 
-		const onDone = () => {
-			diffZone._streamState = { isStreaming: false, }
-			this._onDidChangeStreamingInDiffZone.fire({ uri, diffareaid: diffZone.diffareaid })
-			this._refreshStylesAndDiffsInURI(uri)
-			onFinishEdit()
-
-			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
-				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
-				logEditDiagnostic('auto_accept', { toolName: 'edit_file', uri: uriPathForLog(uri) })
-				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
+		if (!applyRes.changed) {
+			await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: false })
+			return {
+				applied: false,
+				blocksMatched: applyRes.blocksMatched,
+				blocksTotal: applyRes.blocksTotal,
+				savedToDisk: false,
+				failureReason: applyRes.failureReason,
+				failureDetail: applyRes.failureDetail,
 			}
-			logEditDiagnostic('apply_done', { toolName: 'edit_file', uri: uriPathForLog(uri) })
 		}
 
-
-		const onError = (e: { message: string; fullError: Error | null; }) => {
-			errorEditDiagnostic('apply_error', { toolName: 'edit_file', uri: uriPathForLog(uri), error: e.message })
-			onDone()
-			this._undoHistory(uri)
-			throw e.fullError || new Error(e.message)
-		}
-
-		try {
-			this._instantlyApplySRBlocks(uri, searchReplaceBlocks)
-		}
-		catch (e) {
-			onError({ message: e + '', fullError: null })
-		}
-
-		onDone()
+		const savedToDisk = await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: true })
+		logEditDiagnostic('apply_done', { toolName: 'edit_file', uri: uriPathForLog(uri) })
+		return { applied: true, blocksMatched: applyRes.blocksMatched, blocksTotal: applyRes.blocksTotal, savedToDisk }
 	}
 
 
-	public instantlyRewriteFile({ uri, newContent }: { uri: URI, newContent: string }) {
+	public async instantlyRewriteFile({ uri, newContent }: { uri: URI, newContent: string }): Promise<EditApplyResult> {
 		logEditDiagnostic('apply_start', { toolName: 'rewrite_file', uri: uriPathForLog(uri), contentLen: newContent.length })
-		// start diffzone
 		const res = this._startStreamingDiffZone({
 			uri,
 			streamRequestIdRef: { current: null },
@@ -1195,28 +1183,68 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		})
 		if (!res) {
 			warnEditDiagnostic('apply_diffzone_skip', { toolName: 'rewrite_file', uri: uriPathForLog(uri), reason: '_startStreamingDiffZone returned null' })
-			return
+			return {
+				applied: false, blocksMatched: 0, blocksTotal: 1, savedToDisk: false,
+				failureReason: 'diffzone-unavailable',
+				failureDetail: `Could not open an edit session for ${uri.fsPath}.`,
+			}
 		}
 		const { diffZone, onFinishEdit } = res
 
-
-		const onDone = () => {
-			diffZone._streamState = { isStreaming: false, }
-			this._onDidChangeStreamingInDiffZone.fire({ uri, diffareaid: diffZone.diffareaid })
-			this._refreshStylesAndDiffsInURI(uri)
-			onFinishEdit()
-
-			// auto accept — agent mode always writes edits to disk; gather/chat can opt in via setting
-			if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
-				|| this._settingsService.state.globalSettings.chatMode === 'agent') {
-				logEditDiagnostic('auto_accept', { toolName: 'rewrite_file', uri: uriPathForLog(uri) })
-				this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
+		const { model } = this._troveModelService.getModel(uri)
+		if (!model) {
+			await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: false })
+			return {
+				applied: false, blocksMatched: 0, blocksTotal: 1, savedToDisk: false,
+				failureReason: 'model-unavailable',
+				failureDetail: `No model for ${uri.fsPath}.`,
 			}
-			logEditDiagnostic('apply_done', { toolName: 'rewrite_file', uri: uriPathForLog(uri) })
+		}
+		if (model.getValue(EndOfLinePreference.LF) === newContent) {
+			await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: false })
+			return {
+				applied: false, blocksMatched: 1, blocksTotal: 1, savedToDisk: false,
+				failureReason: 'content-identical',
+				failureDetail: `The new content is identical to the current content of ${uri.fsPath}. No change was made.`,
+			}
 		}
 
 		this._writeURIText(uri, newContent, 'wholeFileRange', { shouldRealignDiffAreas: true })
-		onDone()
+		const savedToDisk = await this._finishEditSession(uri, diffZone, onFinishEdit, { accept: true })
+		logEditDiagnostic('apply_done', { toolName: 'rewrite_file', uri: uriPathForLog(uri) })
+		return { applied: true, blocksMatched: 1, blocksTotal: 1, savedToDisk }
+	}
+
+	/**
+	 * Tear down / finalize an instant-edit session.
+	 * Ordering is corrected in T2.1 (accept before save, await once).
+	 * For now this mirrors the previous onDone body.
+	 */
+	private async _finishEditSession(
+		uri: URI,
+		diffZone: DiffZone,
+		onFinishEdit: () => Promise<void>,
+		{ accept }: { accept: boolean },
+	): Promise<boolean> {
+		diffZone._streamState = { isStreaming: false }
+		this._onDidChangeStreamingInDiffZone.fire({ uri, diffareaid: diffZone.diffareaid })
+		this._refreshStylesAndDiffsInURI(uri)
+
+		if (!accept) {
+			// Discard the unused diff zone without writing history/save.
+			this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'reject', _addToHistory: false })
+			return false
+		}
+
+		// Fire-and-forget save for now (T2.1 awaits). Keep auto-accept path.
+		void onFinishEdit()
+
+		if (this._settingsService.state.globalSettings.autoAcceptLLMChanges
+			|| this._settingsService.state.globalSettings.chatMode === 'agent') {
+			logEditDiagnostic('auto_accept', { uri: uriPathForLog(uri) })
+			void this.acceptOrRejectAllDiffAreas({ uri, removeCtrlKs: false, behavior: 'accept' })
+		}
+		return true
 	}
 
 
@@ -1599,25 +1627,50 @@ class EditCodeService extends Disposable implements IEditCodeService {
 	}
 
 
-	private _instantlyApplySRBlocks(uri: URI, blocksStr: string) {
+	private _instantlyApplySRBlocks(uri: URI, blocksStr: string): {
+		blocksMatched: number;
+		blocksTotal: number;
+		changed: boolean;
+		failureReason?: EditApplyResult['failureReason'];
+		failureDetail?: string;
+	} {
 		const blocks = extractSearchReplaceBlocks(normalizeSearchReplaceBlocks(blocksStr))
 		logEditDiagnostic('apply_blocks', { uri: uriPathForLog(uri), blockCount: blocks.length })
-		if (blocks.length === 0) throw new Error(`No Search/Replace blocks were received!`)
+		if (blocks.length === 0) {
+			return {
+				blocksMatched: 0,
+				blocksTotal: 0,
+				changed: false,
+				failureReason: 'no-blocks-parsed',
+				failureDetail: 'No Search/Replace blocks were received!',
+			}
+		}
 
 		const { model } = this._troveModelService.getModel(uri)
-		if (!model) throw new Error(`Error applying Search/Replace blocks: File does not exist.`)
+		if (!model) {
+			return {
+				blocksMatched: 0,
+				blocksTotal: blocks.length,
+				changed: false,
+				failureReason: 'model-unavailable',
+				failureDetail: 'Error applying Search/Replace blocks: File does not exist.',
+			}
+		}
 		const modelStr = model.getValue(EndOfLinePreference.LF)
-		// .split('\n').map(l => '\t' + l).join('\n') // for testing purposes only, remember to remove this
 		const modelStrLines = modelStr.split('\n')
-
-
-
 
 		const replacements: { origStart: number; origEnd: number; block: ExtractedSearchReplaceBlock }[] = []
 		for (const b of blocks) {
 			const res = findTextInCode(b.orig, modelStr, true, { returnType: 'lines' })
-			if (typeof res === 'string')
-				throw new Error(this._errContentOfInvalidStr(res, b.orig))
+			if (typeof res === 'string') {
+				return {
+					blocksMatched: replacements.length,
+					blocksTotal: blocks.length,
+					changed: false,
+					failureReason: 'block-not-found',
+					failureDetail: this._errContentOfInvalidStr(res, b.orig),
+				}
+			}
 			let [startLine, endLine] = res
 			startLine -= 1 // 0-index
 			endLine -= 1
@@ -1638,7 +1691,13 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		// ensure no overlap
 		for (let i = 1; i < replacements.length; i++) {
 			if (replacements[i].origStart <= replacements[i - 1].origEnd) {
-				throw new Error(this._errContentOfInvalidStr('Has overlap', replacements[i]?.block?.orig))
+				return {
+					blocksMatched: replacements.length,
+					blocksTotal: blocks.length,
+					changed: false,
+					failureReason: 'blocks-overlap',
+					failureDetail: this._errContentOfInvalidStr('Has overlap', replacements[i]?.block?.orig),
+				}
 			}
 		}
 
@@ -1649,10 +1708,25 @@ class EditCodeService extends Disposable implements IEditCodeService {
 			newCode = newCode.slice(0, origStart) + block.final + newCode.slice(origEnd + 1, Infinity)
 		}
 
+		if (newCode === modelStr) {
+			return {
+				blocksMatched: blocks.length,
+				blocksTotal: blocks.length,
+				changed: false,
+				failureReason: 'content-identical',
+				failureDetail: `The search/replace produced identical content for ${uri.fsPath}. No change was made.`,
+			}
+		}
+
 		this._writeURIText(uri, newCode,
 			'wholeFileRange',
 			{ shouldRealignDiffAreas: true }
 		)
+		return {
+			blocksMatched: blocks.length,
+			blocksTotal: blocks.length,
+			changed: true,
+		}
 	}
 
 	private _initializeSearchAndReplaceStream(opts: StartApplyingOpts & { from: 'ClickApply' }): [DiffZone, Promise<void>] | undefined {
