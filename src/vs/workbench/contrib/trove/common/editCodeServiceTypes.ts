@@ -121,3 +121,25 @@ export const pickDiffAreaSnapshotFields = <T extends DiffArea>(diffArea: T): Dif
 	return Object.fromEntries(diffAreaSnapshotKeys.map(key => [key, diffArea[key]])) as DiffAreaSnapshotEntry<T>;
 };
 
+/** Outcome of an instant apply/rewrite — threads through to the LLM-facing tool result. */
+export type EditApplyResult = {
+	/** True only if the model content actually changed and was persisted. */
+	applied: boolean;
+	/** Search/replace blocks that matched. Equals blocksTotal for rewrite_file. */
+	blocksMatched: number;
+	/** Search/replace blocks parsed from the tool params. 1 for rewrite_file. */
+	blocksTotal: number;
+	/** True once saveModel resolved. */
+	savedToDisk: boolean;
+	/** Set when applied === false. Machine-readable. */
+	failureReason?:
+		| 'model-unavailable'
+		| 'diffzone-unavailable'
+		| 'no-blocks-parsed'
+		| 'block-not-found'
+		| 'blocks-overlap'
+		| 'content-identical';
+	/** Human-readable detail for the agent. */
+	failureDetail?: string;
+};
+
