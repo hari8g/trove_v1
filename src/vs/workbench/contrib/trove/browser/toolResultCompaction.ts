@@ -25,6 +25,7 @@ export const COMPACTABLE_TOOL_NAMES: ReadonlySet<ToolName> = new Set([
 	'get_dir_tree',
 	'ls_dir',
 	'run_command',
+	'run_tests',
 	'run_persistent_command',
 ]);
 

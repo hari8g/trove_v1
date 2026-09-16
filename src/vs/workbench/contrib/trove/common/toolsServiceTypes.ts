@@ -32,6 +32,7 @@ export const approvalTypeOfBuiltinToolName: Partial<{ [T in BuiltinToolName]?: '
 	'rewrite_file': 'edits',
 	'edit_file': 'edits',
 	'run_command': 'terminal',
+	'run_tests': 'terminal',
 	'run_persistent_command': 'terminal',
 	'open_persistent_terminal': 'terminal',
 	'kill_persistent_terminal': 'terminal',
@@ -73,6 +74,7 @@ export type CoreBuiltinToolCallParams = {
 	'delete_file_or_folder': { uri: URI, isRecursive: boolean, isFolder: boolean },
 	// ---
 	'run_command': { command: string; cwd: string | null, terminalId: string },
+	'run_tests': { testCommand: string | null; filePattern: string | null; terminalId: string },
 	'open_persistent_terminal': { cwd: string | null },
 	'run_persistent_command': { command: string; persistentTerminalId: string },
 	'kill_persistent_terminal': { persistentTerminalId: string },
@@ -104,6 +106,16 @@ export type CoreBuiltinToolResultType = {
 	'delete_file_or_folder': {},
 	// ---
 	'run_command': { result: string; resolveReason: TerminalResolveReason; autoPersistentTerminalId?: string },
+	'run_tests': {
+		framework: string;
+		passed: number;
+		failed: number;
+		skipped: number;
+		failures: { test: string; file?: string; line?: number; message: string }[];
+		exitCode: number;
+		rawTail: string;
+		command: string;
+	},
 	'run_persistent_command': { result: string; resolveReason: TerminalResolveReason; },
 	'open_persistent_terminal': { persistentTerminalId: string },
 	'kill_persistent_terminal': {},

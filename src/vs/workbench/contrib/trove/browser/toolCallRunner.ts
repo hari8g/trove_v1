@@ -7,7 +7,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { isABuiltinToolName } from '../common/prompt/prompts.js';
 import { getErrorMessage, RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
-import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, TerminalResolveReason, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
+import { approvalTypeOfBuiltinToolName, BuiltinToolCallParams, BuiltinToolResultType, TerminalResolveReason, ToolCallParams, ToolName, ToolResult } from '../common/toolsServiceTypes.js';
 import { IMCPService } from '../common/mcpService.js';
 import { RawMCPToolCall } from '../common/mcpServiceTypes.js';
 import { IDirectoryStrService } from '../common/directoryStrService.js';
@@ -146,7 +146,7 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 		trackReadOnlyCall(opts.readOnlyCallCounts, toolName, opts.unvalidatedToolParams);
 	}
 
-	const runningTool = { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content: toolName === 'run_command' || toolName === 'run_persistent_command' ? '(starting terminal sandbox…)' : '(value not received yet...)', result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName } as const;
+	const runningTool = { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content: toolName === 'run_command' || toolName === 'run_persistent_command' || toolName === 'run_tests' ? '(starting terminal sandbox…)' : '(value not received yet...)', result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName } as const;
 	deps.updateLatestTool(threadId, runningTool, { batchInsert: opts.batchInsert });
 
 	if (isEditToolName(toolName)) {
@@ -162,19 +162,21 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 	const interruptorPromise = new Promise<() => void>(res => { resolveInterruptor = res; });
 	let liveOutputDisposable: IDisposable | undefined;
 	try {
-		const initialToolContent = toolName === 'run_command' || toolName === 'run_persistent_command'
+		const initialToolContent = toolName === 'run_command' || toolName === 'run_persistent_command' || toolName === 'run_tests'
 			? '(starting terminal sandbox…)'
 			: 'interrupted...';
 		deps.setStreamState(threadId, { isRunning: 'tool', interrupt: interruptorPromise, toolInfo: { toolName, toolParams, id: toolId, content: initialToolContent, rawParams: opts.unvalidatedToolParams, mcpServerName } });
 
-		if (toolName === 'run_command' || toolName === 'run_persistent_command') {
-			const terminalKey = toolName === 'run_command'
-				? (toolParams as BuiltinToolCallParams['run_command']).terminalId
+		if (toolName === 'run_command' || toolName === 'run_persistent_command' || toolName === 'run_tests') {
+			const terminalKey = toolName === 'run_command' || toolName === 'run_tests'
+				? (toolParams as BuiltinToolCallParams['run_command'] | BuiltinToolCallParams['run_tests']).terminalId
 				: (toolParams as BuiltinToolCallParams['run_persistent_command']).persistentTerminalId;
 			liveOutputDisposable = deps.terminalToolService.registerLiveOutputListener(terminalKey, (output) => {
 				const preview = output.length > 12_000 ? '…\n' + output.slice(-12_000) : output;
 				const content = preview.trim() ? preview : '(waiting for terminal output…)';
-				const command = (toolParams as { command?: string }).command ?? '';
+				const command = toolName === 'run_tests'
+					? ((toolParams as BuiltinToolCallParams['run_tests']).testCommand ?? 'tests')
+					: ((toolParams as { command?: string }).command ?? '');
 				deps.agentDeliveryService.handleLiveTerminalOutput(threadId, command, output);
 				deps.updateLatestTool(threadId, { role: 'tool', type: 'running_now', name: toolName, params: toolParams, content, result: null, id: toolId, rawParams: opts.unvalidatedToolParams, mcpServerName }, { batchInsert: opts.batchInsert });
 				const stream = deps.getStreamState(threadId);
@@ -190,14 +192,14 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 			} else {
 				const callPromise = deps.toolsService.callTool[toolName](toolParams as never);
 
-				if (toolName === 'run_command' || toolName === 'run_persistent_command') {
+				if (toolName === 'run_command' || toolName === 'run_persistent_command' || toolName === 'run_tests') {
 					callPromise.then(({ interruptTool }) => {
 						resolveInterruptor(() => { interrupted = true; interruptTool?.(); });
 					}).catch(() => { resolveInterruptor(() => { }); });
 				}
 
 				const { result, interruptTool } = await callPromise;
-				if (toolName !== 'run_command' && toolName !== 'run_persistent_command') {
+				if (toolName !== 'run_command' && toolName !== 'run_persistent_command' && toolName !== 'run_tests') {
 					resolveInterruptor(() => { interrupted = true; interruptTool?.(); });
 				}
 
@@ -329,6 +331,16 @@ export const createRunToolCall = (deps: ToolCallRunnerDeps) => async (
 			runParams,
 			runResult,
 		);
+	} else if (toolName === 'run_tests') {
+		const testResult = toolResult as BuiltinToolResultType['run_tests'];
+		if (opts.sandboxVerificationTracker) {
+			markSandboxVerified(
+				opts.sandboxVerificationTracker,
+				testResult.command || 'npm test',
+				testResult.rawTail,
+				{ type: 'done', exitCode: testResult.exitCode },
+			);
+		}
 	} else if (toolName === 'run_persistent_command') {
 		void deps.agentDeliveryService.handleTerminalToolResult(
 			threadId,

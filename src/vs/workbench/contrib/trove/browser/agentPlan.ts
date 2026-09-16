@@ -396,6 +396,7 @@ const getToolCategory = (toolName: ToolName): ToolCategory => {
 		case 'delete_file_or_folder':
 			return 'delete';
 		case 'run_command':
+		case 'run_tests':
 		case 'run_persistent_command':
 		case 'open_persistent_terminal':
 		case 'kill_persistent_terminal':

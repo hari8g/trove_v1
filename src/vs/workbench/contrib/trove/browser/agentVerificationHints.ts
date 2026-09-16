@@ -97,6 +97,6 @@ export const buildSandboxVerificationHint = (profile: WorkspaceProfile | null): 
 	return `\n\n<agent_hints>
 SANDBOX VERIFICATION REQUIRED — you made code changes but have NOT verified them in the terminal sandbox yet.
 ${reminder}
-Do NOT respond to the user until you complete the verification path above via run_command. This is mandatory.
+Do NOT respond to the user until you complete the verification path above via run_tests or run_command. This is mandatory.
 </agent_hints>`;
 };

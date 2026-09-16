@@ -12,6 +12,7 @@ suite('Trove - toolParamValidators', () => {
 
 	const validateParams = createBuiltinToolValidators({
 		getWorkspaceRoot: () => '/workspace',
+		getWorkspaceFolders: () => ['/workspace', '/proj'],
 	});
 
 	test('read_file validates uri and defaults page number', () => {
@@ -100,23 +101,23 @@ suite('Trove - toolParamValidators', () => {
 
 	test('edit_file normalizes search_replace_blocks', () => {
 		const params = validateParams.edit_file({
-			uri: '/a.ts',
+			uri: '/workspace/a.ts',
 			search_replace_blocks: '=======\nnew\n>>>>>>> UPDATED',
 		});
 		assert.ok(params.searchReplaceBlocks.includes('<<<<<<< ORIGINAL'));
-		assert.strictEqual(params.uri.fsPath, '/a.ts');
+		assert.strictEqual(params.uri.fsPath, '/workspace/a.ts');
 	});
 
 	test('edit_file rejects missing search_replace_blocks', () => {
 		assert.throws(
-			() => validateParams.edit_file({ uri: '/a.ts' }),
+			() => validateParams.edit_file({ uri: '/workspace/a.ts' }),
 			/searchReplaceBlocks/,
 		);
 	});
 
 	test('rewrite_file accepts JSON object content', () => {
 		const params = validateParams.rewrite_file({
-			uri: '/a.ts',
+			uri: '/workspace/a.ts',
 			new_content: { hello: 'world' } as unknown as string,
 		});
 		assert.ok(params.newContent.includes('"hello"'));
@@ -125,6 +126,23 @@ suite('Trove - toolParamValidators', () => {
 	test('create_file_or_folder detects folder trailing slash', () => {
 		const params = validateParams.create_file_or_folder({ uri: '/proj/new-dir/' });
 		assert.strictEqual(params.isFolder, true);
+	});
+
+	test('edit_file rejects path outside workspace', () => {
+		assert.throws(
+			() => validateParams.edit_file({
+				uri: '/outside/a.ts',
+				search_replace_blocks: '<<<<<<< ORIGINAL\na\n=======\nb\n>>>>>>> UPDATED',
+			}),
+			/outside the workspace/,
+		);
+	});
+
+	test('run_tests accepts optional params', () => {
+		const params = validateParams.run_tests({});
+		assert.strictEqual(params.testCommand, null);
+		assert.strictEqual(params.filePattern, null);
+		assert.ok(params.terminalId.length > 0);
 	});
 
 	test('run_command rejects heredoc commands', () => {

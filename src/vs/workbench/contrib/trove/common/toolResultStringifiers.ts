@@ -108,6 +108,30 @@ export const createBuiltinToolResultStringifiers = (deps: ToolResultStringifierD
 	rewrite_file: (params, result) => deps.formatEditResult(params.uri, result.lintErrors, result.edit, result.lintSettled),
 	create_file_or_folder: (params, result) => deps.formatCreateSuccess(params.uri, params.isFolder, result),
 	run_command: deps.formatRunCommandResult,
+	run_tests: (_params, result) => {
+		const { framework, passed, failed, skipped, failures, exitCode, command, rawTail } = result;
+		const lines: string[] = [
+			`Tests (${framework}): ${passed} passed, ${failed} failed, ${skipped} skipped (exit ${exitCode})`,
+		];
+		if (command) {
+			lines.push(`Command: ${command}`);
+		}
+		for (const f of failures.slice(0, 5)) {
+			const loc = f.file ? `${f.file}${f.line != null ? `:${f.line}` : ''}` : undefined;
+			lines.push(`FAIL ${loc ? `${loc} — ` : ''}${f.test}`);
+			if (f.message && f.message !== f.test) {
+				lines.push(`  ${f.message.slice(0, 300)}`);
+			}
+		}
+		if (failures.length > 5) {
+			lines.push(`…and ${failures.length - 5} more failure(s)`);
+		}
+		if (framework === 'unknown' && rawTail) {
+			lines.push('--- raw output (tail) ---');
+			lines.push(rawTail);
+		}
+		return lines.join('\n');
+	},
 	run_persistent_command: deps.formatRunPersistentCommandResult,
 	open_persistent_terminal: (_params, result) => {
 		const { persistentTerminalId } = result;

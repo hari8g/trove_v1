@@ -302,6 +302,12 @@ const validateParams: ValidateBuiltinParams = {
 		const terminalId = generateUuid()
 		return { command, cwd, terminalId }
 	},
+	run_tests: (params: RawToolParamsObj) => {
+		const testCommand = validateOptionalStr('test_command', params.test_command ?? params.testCommand)
+		const filePattern = validateOptionalStr('file_pattern', params.file_pattern ?? params.filePattern)
+		const terminalId = generateUuid()
+		return { testCommand, filePattern, terminalId }
+	},
 	run_persistent_command: (params: RawToolParamsObj) => {
 		const { command: commandUnknown, persistent_terminal_id: persistentTerminalIdUnknown } = params;
 		const command = validateStr('command', commandUnknown);

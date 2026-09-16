@@ -22,6 +22,7 @@ import { IEditCodeService } from './editCodeServiceInterface.js';
 import { ITerminalToolService } from './terminalToolService.js';
 import { ITroveCommandBarService } from './troveCommandBarService.js';
 import { errorEditDiagnostic, logEditDiagnostic, uriPathForLog } from './agentEditDiagnostics.js';
+import { runTests } from './testRunnerService.js';
 
 type CoreToolCallReturn<T extends BuiltinToolName> = Promise<{
 	result: BuiltinToolResultType[T] | Promise<BuiltinToolResultType[T]>;
@@ -334,6 +335,18 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 		}
 		const { resPromise, interrupt } = await deps.terminalToolService.runCommand(command, { type: 'temporary', cwd: resolvedCwd, terminalId });
 		return { result: resPromise, interruptTool: interrupt };
+	},
+
+	run_tests: async ({ testCommand, filePattern, terminalId }) => {
+		const { result, interruptTool } = await runTests(
+			{ testCommand, filePattern, terminalId },
+			{
+				terminalToolService: deps.terminalToolService,
+				getWorkspaceRoot: () => deps.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? null,
+				getDefaultTestCommand: () => deps.repoIntelligenceService.getProfileSync()?.testCommands[0]?.command ?? null,
+			},
+		);
+		return { result, interruptTool };
 	},
 
 	run_persistent_command: async ({ command, persistentTerminalId }) => {

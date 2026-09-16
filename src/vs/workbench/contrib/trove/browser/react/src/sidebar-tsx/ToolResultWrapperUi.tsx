@@ -297,6 +297,7 @@ const titleOfBuiltinToolName = {
 	'edit_file': { done: `Edited file`, proposed: 'Edit file', running: loadingTitleWrapper('Editing file') },
 	'rewrite_file': { done: `Wrote file`, proposed: 'Write file', running: loadingTitleWrapper('Writing file') },
 	'run_command': { done: `Ran terminal`, proposed: 'Run terminal', running: loadingTitleWrapper('Running terminal') },
+	'run_tests': { done: `Ran tests`, proposed: 'Run tests', running: loadingTitleWrapper('Running tests') },
 	'run_persistent_command': { done: `Ran terminal`, proposed: 'Run terminal', running: loadingTitleWrapper('Running terminal') },
 
 	'open_persistent_terminal': { done: `Opened terminal`, proposed: 'Open terminal', running: loadingTitleWrapper('Opening terminal') },
@@ -421,6 +422,12 @@ export const toolNameToDesc = (toolName: BuiltinToolName, _toolParams: BuiltinTo
 			return {
 				desc1: `"${toolParams.command}"`,
 			}
+		},
+		'run_tests': () => {
+			const toolParams = _toolParams as BuiltinToolCallParams['run_tests']
+			const cmd = toolParams.testCommand ?? 'default tests'
+			const pattern = toolParams.filePattern ? ` (${toolParams.filePattern})` : ''
+			return { desc1: `"${cmd}${pattern}"` }
 		},
 		'run_persistent_command': () => {
 			const toolParams = _toolParams as BuiltinToolCallParams['run_persistent_command']

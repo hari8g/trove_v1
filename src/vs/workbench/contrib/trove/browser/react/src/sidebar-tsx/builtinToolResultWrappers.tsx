@@ -501,6 +501,22 @@ export const buildBuiltinToolNameToComponent = (
 		}
 	},
 
+	'run_tests': {
+		resultWrapper: createStandardToolResultWrapper<'run_tests'>({
+			hideToolRequest: false,
+			customize: ({ toolMessage, componentParams }) => {
+				if (toolMessage.type === 'invalid_params') return;
+				const cmd = toolMessage.params.testCommand ?? 'tests';
+				componentParams.info = toolMessage.params.filePattern
+					? `${cmd} — ${toolMessage.params.filePattern}`
+					: cmd;
+				if (toolMessage.type === 'success') {
+					componentParams.numResults = toolMessage.result.failed + toolMessage.result.passed;
+				}
+			},
+		}),
+	},
+
 	'run_persistent_command': {
 		resultWrapper: (params) => {
 			return <CommandTool {...params} type='run_persistent_command' />

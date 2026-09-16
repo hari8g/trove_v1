@@ -402,6 +402,7 @@ const activityKindForTool = (toolName: BuiltinToolName): AgentTurnActivityItem['
 		case 'search_web':
 			return 'search';
 		case 'run_command':
+		case 'run_tests':
 		case 'run_persistent_command':
 		case 'open_persistent_terminal':
 		case 'kill_persistent_terminal':
@@ -466,6 +467,7 @@ const toolActivityLabel = (toolName: BuiltinToolName, count: number): string => 
 		ls_dir: ['folder listed', 'folders listed'],
 		get_dir_tree: ['tree listed', 'trees listed'],
 		run_command: ['command run', 'commands run'],
+		run_tests: ['test run', 'test runs'],
 		run_persistent_command: ['command run', 'commands run'],
 		edit_file: ['edit', 'edits'],
 		rewrite_file: ['write', 'writes'],

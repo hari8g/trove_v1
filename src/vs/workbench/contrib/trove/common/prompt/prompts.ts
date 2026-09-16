@@ -426,7 +426,7 @@ Especially valuable for shared services, utility modules, and types files.`,
 		name: 'get_tests_for_file',
 		description: `Returns the test files that cover a given source file, based on naming proximity and import analysis.
 Use after editing a source file to identify exactly which test to run for verification.
-Pairs with run_command to execute the test automatically — no manual search needed.`,
+Pairs with run_tests (file_pattern = test path) to execute the test automatically — no manual search needed.`,
 		params: {
 			uri: { description: 'Absolute path to the source file being tested.' },
 		},
@@ -516,6 +516,15 @@ ALWAYS call this tool after generating any .java controller, Feign client, appli
 		params: {
 			command: { description: 'The terminal command to run.' },
 			cwd: { description: cwdHelper },
+		},
+	},
+
+	run_tests: {
+		name: 'run_tests',
+		description: `Runs the project's test command and returns a structured pass/fail summary (framework, counts, up to 5 failures with file:line). Prefer this over run_command for verification after edits. When test_command is omitted, uses the detected test script from repository_context.`,
+		params: {
+			test_command: { description: 'Optional. Override test command (e.g. npm test, npx vitest run, pytest). Omit to use the repo profile default.' },
+			file_pattern: { description: 'Optional. Limit to a file or pattern (appended to the command).' },
 		},
 	},
 
@@ -810,9 +819,9 @@ export function buildVerificationReminder(profile: WorkspaceProfile | null): str
 		steps.push(`start server with \`${start}\` via run_command (auto-routes to persistent terminal)`)
 		steps.push(`verify with ONE run_command curl against localhost`)
 	} else if (test) {
-		steps.push(`run \`${test}\` via run_command`)
+		steps.push(`run \`${test}\` via run_tests`)
 	} else {
-		steps.push('run one compile/test command via run_command if this project has one')
+		steps.push('run one compile/test command via run_tests if this project has one')
 	}
 	steps.push('STOP after curl succeeds — Trove opens localhost in the editor. Server runs in Trove Agent terminal (background). User should only preview the app — never ask them to run install/build/start.')
 
