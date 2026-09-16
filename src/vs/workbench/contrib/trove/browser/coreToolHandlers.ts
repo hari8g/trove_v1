@@ -266,12 +266,16 @@ export const createCoreBuiltinToolCallHandlers = (deps: CoreToolHandlerDeps): Co
 	},
 
 	create_file_or_folder: async ({ uri, isFolder }) => {
+		const alreadyExisted = await deps.fileService.exists(uri);
+		if (alreadyExisted) {
+			return { result: { created: false, alreadyExisted: true } };
+		}
 		if (isFolder) {
 			await deps.fileService.createFolder(uri);
 		} else {
 			await deps.fileService.createFile(uri);
 		}
-		return { result: {} };
+		return { result: { created: true, alreadyExisted: false } };
 	},
 
 	delete_file_or_folder: async ({ uri, isRecursive }) => {

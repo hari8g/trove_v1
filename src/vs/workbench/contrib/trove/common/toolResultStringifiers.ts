@@ -27,7 +27,7 @@ export type ToolResultStringifierDeps = {
 	getModelLineContent: (uri: URI, line: number) => string | null;
 	stringifyDirectoryTree: typeof stringifyDirectoryTree1Deep;
 	formatEditResult: (uri: URI, lintErrors: LintErrorItem[] | null | undefined, edit: EditApplyResult, lintSettled?: boolean) => string;
-	formatCreateSuccess: (uri: URI, isFolder: boolean) => string;
+	formatCreateSuccess: (uri: URI, isFolder: boolean, result?: { created: boolean; alreadyExisted: boolean }) => string;
 	formatRunCommandResult: (
 		params: BuiltinToolCallParams['run_command'],
 		result: Awaited<BuiltinToolResultType['run_command']>,
@@ -106,7 +106,7 @@ export const createBuiltinToolResultStringifiers = (deps: ToolResultStringifierD
 	delete_file_or_folder: (params, _result) => `URI ${params.uri.fsPath} successfully deleted.`,
 	edit_file: (params, result) => deps.formatEditResult(params.uri, result.lintErrors, result.edit, result.lintSettled),
 	rewrite_file: (params, result) => deps.formatEditResult(params.uri, result.lintErrors, result.edit, result.lintSettled),
-	create_file_or_folder: (params, _result) => deps.formatCreateSuccess(params.uri, params.isFolder),
+	create_file_or_folder: (params, result) => deps.formatCreateSuccess(params.uri, params.isFolder, result),
 	run_command: deps.formatRunCommandResult,
 	run_persistent_command: deps.formatRunPersistentCommandResult,
 	open_persistent_terminal: (_params, result) => {

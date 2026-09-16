@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../base/common/uri.js';
+import { isWindows } from '../../../../base/common/platform.js';
 import { RawToolParamsObj } from '../common/sendLLMMessageTypes.js';
 
 export type FileReadRecord = {
@@ -15,10 +16,23 @@ export type FileReadRecord = {
 };
 
 export const readFileUriKey = (uri: URI | string): string => {
+	let key: string;
 	if (uri instanceof URI) {
-		return uri.fsPath.toLowerCase();
+		key = uri.toString();
+	} else {
+		const s = String(uri);
+		if (s.includes('://')) {
+			try {
+				key = URI.parse(s).toString();
+			} catch {
+				key = s;
+			}
+		} else {
+			// Normalize bare paths to file:// so they match URI.file(...).toString() keys.
+			key = URI.file(s).toString();
+		}
 	}
-	return String(uri).toLowerCase();
+	return isWindows ? key.toLowerCase() : key;
 };
 
 /** Drop a file's read record — call whenever its content may have changed. */

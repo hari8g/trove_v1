@@ -9,6 +9,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	buildRepeatFileReadHint,
 	formatReadFileRange,
+	readFileUriKey,
 	shouldSkipDuplicateFileRead,
 	trackFileRead,
 } from '../fileReadDedup.js';
@@ -42,8 +43,8 @@ suite('Trove - fileReadDedup', () => {
 		const counts = createReadOnlyCallCounts();
 		trackReadOnlyCall(counts, 'read_file', { uri: '/proj/clock.js', startLine: '1', endLine: '120' });
 		trackReadOnlyCall(counts, 'read_file', { uri: '/proj/clock.js', startLine: '270', endLine: '380' });
-		assert.strictEqual(counts.fileReads.get('/proj/clock.js')?.count, 2);
-		assert.deepStrictEqual(counts.fileReads.get('/proj/clock.js')?.ranges, [
+		assert.strictEqual(counts.fileReads.get(readFileUriKey('/proj/clock.js'))?.count, 2);
+		assert.deepStrictEqual(counts.fileReads.get(readFileUriKey('/proj/clock.js'))?.ranges, [
 			formatReadFileRange(1, 120),
 			formatReadFileRange(270, 380),
 		]);

@@ -66,6 +66,8 @@ export class ToolsService implements IToolsService {
 
 		this.validateParams = createBuiltinToolValidators({
 			getWorkspaceRoot: () => workspaceContextService.getWorkspace().folders[0]?.uri.fsPath,
+			getWorkspaceFolders: () => workspaceContextService.getWorkspace().folders.map(f => f.uri.fsPath),
+			allowEditsOutsideWorkspace: () => this.troveSettingsService.state.globalSettings.allowEditsOutsideWorkspace,
 		});
 
 		const assertOrgExtensionToolAvailable = (toolName: string) => {
@@ -132,7 +134,10 @@ export class ToolsService implements IToolsService {
 					: ''
 				return `Change successfully made to ${uri.fsPath}.${savedNote}${lintErrsString}${lintNote}${buildVerificationReminder(this.repoIntelligenceService.getProfileSync())}`
 			},
-			formatCreateSuccess: (uri, isFolder) => {
+			formatCreateSuccess: (uri, isFolder, result) => {
+				if (result?.alreadyExisted) {
+					return `URI ${uri.fsPath} already existed — not created.`
+				}
 				if (isFolder) {
 					return `URI ${uri.fsPath} successfully created.`
 				}

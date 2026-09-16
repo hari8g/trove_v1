@@ -459,6 +459,8 @@ export type GlobalSettings = {
 	enableLightAgent: boolean;
 	enablePromptCache: boolean;
 	enableParallelReadBatching: boolean;
+	/** When false (default), write/delete tools reject paths outside workspace folders. */
+	allowEditsOutsideWorkspace: boolean;
 	enableWebSearch: boolean;
 	webSearchApiKey: string;
 	maxAgentIterations: number;
@@ -492,6 +494,7 @@ export const defaultGlobalSettings: GlobalSettings = {
 	enableLightAgent: false,
 	enablePromptCache: true,
 	enableParallelReadBatching: false,
+	allowEditsOutsideWorkspace: false,
 	enableWebSearch: true,
 	webSearchApiKey: '',
 	maxAgentIterations: 25,

@@ -8,6 +8,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { normalizeSearchReplaceBlocks } from './helpers/extractCodeFromResult.js';
 import { RawToolParamsObj } from './sendLLMMessageTypes.js';
 import { BuiltinToolCallParams, BuiltinToolName } from './toolsServiceTypes.js';
+import { TROVE_MEMORY_FILE_NAME } from './troveMemoryPaths.js';
 
 export type ValidateBuiltinParams = { [T in BuiltinToolName]: (p: RawToolParamsObj) => BuiltinToolCallParams[T] };
 
@@ -36,6 +37,8 @@ throw new Error(`Invalid LLM output format: ${argName} must be a string or JSON 
 // Module-scoped workspace root provider — set by createBuiltinToolValidators.
 // ToolsService is an eagerly-registered singleton, so a module-level mutable is acceptable.
 let _getWorkspaceRoot: (() => string | undefined) = () => undefined;
+let _getWorkspaceFolders: (() => string[]) = () => [];
+let _allowEditsOutsideWorkspace: (() => boolean) = () => false;
 
 const validateURI = (uriStr: unknown) => {
 if (uriStr === null) throw new Error(`Invalid LLM output: uri was null.`)
@@ -62,6 +65,34 @@ if (!root) {
 }
 const cleaned = uriStr.replace(/^\.\//, '')
 return URI.file(root.replace(/[\\/]+$/, '') + '/' + cleaned)
+}
+
+const pathIsUnderFolder = (filePath: string, folderPath: string): boolean => {
+	const normFile = filePath.replace(/\\/g, '/').replace(/\/+$/, '')
+	const normFolder = folderPath.replace(/\\/g, '/').replace(/\/+$/, '')
+	return normFile === normFolder || normFile.startsWith(normFolder + '/')
+}
+
+/** Like validateURI, but rejects paths outside all workspace folders unless allowed. */
+const validateWorkspaceURI = (uriStr: unknown) => {
+	const uri = validateURI(uriStr)
+	if (_allowEditsOutsideWorkspace()) {
+		return uri
+	}
+	// Exempt Trove memory file (typically lives in userDataPath outside the workspace).
+	const base = uri.fsPath.replace(/\\/g, '/').split('/').pop() ?? ''
+	if (base === TROVE_MEMORY_FILE_NAME) {
+		return uri
+	}
+	const folders = _getWorkspaceFolders()
+	if (folders.length === 0) {
+		throw new Error(`Cannot edit "${uri.fsPath}" because no workspace folder is open. Open a folder, or enable allowEditsOutsideWorkspace in Trove Settings.`)
+	}
+	const inWorkspace = folders.some(folder => pathIsUnderFolder(uri.fsPath, folder))
+	if (!inWorkspace) {
+		throw new Error(`Refusing to edit outside the workspace: "${uri.fsPath}". Paths must be inside an open workspace folder (or enable allowEditsOutsideWorkspace in Trove Settings).`)
+	}
+	return uri
 }
 
 const validateOptionalURI = (uriStr: unknown) => {
@@ -229,7 +260,7 @@ const validateParams: ValidateBuiltinParams = {
 
 	create_file_or_folder: (params: RawToolParamsObj) => {
 		const { uri: uriUnknown } = params
-		const uri = validateURI(uriUnknown)
+		const uri = validateWorkspaceURI(uriUnknown)
 		const uriStr = validateStr('uri', uriUnknown)
 		const isFolder = checkIfIsFolder(uriStr)
 		return { uri, isFolder }
@@ -237,7 +268,7 @@ const validateParams: ValidateBuiltinParams = {
 
 	delete_file_or_folder: (params: RawToolParamsObj) => {
 		const { uri: uriUnknown, is_recursive: isRecursiveUnknown } = params
-		const uri = validateURI(uriUnknown)
+		const uri = validateWorkspaceURI(uriUnknown)
 		const isRecursive = validateBoolean(isRecursiveUnknown, { default: false })
 		const uriStr = validateStr('uri', uriUnknown)
 		const isFolder = checkIfIsFolder(uriStr)
@@ -246,14 +277,14 @@ const validateParams: ValidateBuiltinParams = {
 
 	rewrite_file: (params: RawToolParamsObj) => {
 		const { uri: uriStr, new_content: newContentUnknown } = params
-		const uri = validateURI(uriStr)
+		const uri = validateWorkspaceURI(uriStr)
 		const newContent = validateContentStr('newContent', newContentUnknown)
 		return { uri, newContent }
 	},
 
 	edit_file: (params: RawToolParamsObj) => {
 		const { uri: uriStr, search_replace_blocks: searchReplaceBlocksUnknown } = params
-		const uri = validateURI(uriStr)
+		const uri = validateWorkspaceURI(uriStr)
 		const rawBlocks = validateContentStr('searchReplaceBlocks', searchReplaceBlocksUnknown)
 		const searchReplaceBlocks = normalizeSearchReplaceBlocks(rawBlocks)
 		return { uri, searchReplaceBlocks }
@@ -329,10 +360,20 @@ const validateParams: ValidateBuiltinParams = {
 };
 
 export const createBuiltinToolValidators = (
-	deps?: { getWorkspaceRoot: () => string | undefined },
+	deps?: {
+		getWorkspaceRoot: () => string | undefined;
+		getWorkspaceFolders?: () => string[];
+		allowEditsOutsideWorkspace?: () => boolean;
+	},
 ): ValidateBuiltinParams => {
 	if (deps) {
 		_getWorkspaceRoot = deps.getWorkspaceRoot;
+		if (deps.getWorkspaceFolders) {
+			_getWorkspaceFolders = deps.getWorkspaceFolders;
+		}
+		if (deps.allowEditsOutsideWorkspace) {
+			_allowEditsOutsideWorkspace = deps.allowEditsOutsideWorkspace;
+		}
 	}
 	return validateParams;
 };

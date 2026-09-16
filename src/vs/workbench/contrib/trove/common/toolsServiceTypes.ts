@@ -100,7 +100,7 @@ export type CoreBuiltinToolResultType = {
 	// ---
 	'rewrite_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult; lintSettled?: boolean }>,
 	'edit_file': Promise<{ lintErrors: LintErrorItem[] | null; edit: EditApplyResult; lintSettled?: boolean }>,
-	'create_file_or_folder': {},
+	'create_file_or_folder': { created: boolean; alreadyExisted: boolean },
 	'delete_file_or_folder': {},
 	// ---
 	'run_command': { result: string; resolveReason: TerminalResolveReason; autoPersistentTerminalId?: string },

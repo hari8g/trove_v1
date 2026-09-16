@@ -336,6 +336,7 @@ class TroveSettingsService extends Disposable implements ITroveSettingsService {
 
 			if (readS.globalSettings.enablePromptCache === undefined) readS.globalSettings.enablePromptCache = true;
 			if (readS.globalSettings.enableParallelReadBatching === undefined) readS.globalSettings.enableParallelReadBatching = true;
+			if (readS.globalSettings.allowEditsOutsideWorkspace === undefined) readS.globalSettings.allowEditsOutsideWorkspace = false;
 			if (readS.globalSettings.enableWebSearch === undefined) readS.globalSettings.enableWebSearch = true;
 			if (readS.globalSettings.webSearchApiKey === undefined) readS.globalSettings.webSearchApiKey = '';
 			if (readS.globalSettings.maxAgentIterations === undefined) readS.globalSettings.maxAgentIterations = 25;

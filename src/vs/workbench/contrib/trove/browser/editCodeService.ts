@@ -779,6 +779,21 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		delete this.diffAreaOfId[diffZone.diffareaid]
 		this.diffAreasOfURI[diffZone._URI.fsPath]?.delete(diffZone.diffareaid.toString())
 		this._onDidAddOrDeleteDiffZones.fire({ uri: diffZone._URI })
+		this._unpinModelIfNoDiffZones(diffZone._URI)
+	}
+
+	private _unpinModelIfNoDiffZones(uri: URI) {
+		const ids = this.diffAreasOfURI[uri.fsPath]
+		if (!ids) {
+			this._troveModelService.unpin(uri)
+			return
+		}
+		for (const id of ids) {
+			if (this.diffAreaOfId[id]?.type === 'DiffZone') {
+				return
+			}
+		}
+		this._troveModelService.unpin(uri)
 	}
 
 	private _deleteTrackingZone(trackingZone: TrackingZone<unknown>) {
@@ -1340,6 +1355,7 @@ class EditCodeService extends Disposable implements IEditCodeService {
 		}
 
 		const diffZone = this._addDiffArea(adding)
+		this._troveModelService.pin(uri)
 		this._onDidChangeStreamingInDiffZone.fire({ uri, diffareaid: diffZone.diffareaid })
 		this._onDidAddOrDeleteDiffZones.fire({ uri })
 
